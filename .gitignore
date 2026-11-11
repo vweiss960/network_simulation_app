@@ -1,0 +1,62 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+ldap_config.yaml
+certs/
+backend/certs/
+
+# Claude Code personal/local settings (shared settings.json is committed)
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+
+# Database
+*.db
+*.sqlite3
+backend/data/
+
+# Docker volumes
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Vendor device images (large container/OVA blobs). Image build recipes
+# (Dockerfile dirs) are committed; blobs and the vrnetlab clone are not.
+device_images/*
+!device_images/frr-lab/
+!device_images/automation-workstation/
+
+# DB backups taken by scripts/upgrade.sh
+backups/
+
+# Containerlab workdirs created at deploy-time
+clab-*/
+lab_state/
+
+# Sample/test KMZ fiber routes (local test fixtures)
+samples/

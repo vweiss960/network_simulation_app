@@ -1,0 +1,16 @@
+# Production overrides — run on a deployed instance with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Only the frontend changes: instead of the Vite dev server (slow to load
+# remotely, since the browser pulls thousands of unbundled modules), it builds
+# the bundle and serves it as static files via nginx on the same port 5173.
+# The edge nginx, backend, and everything else are unchanged.
+services:
+  frontend:
+    build:
+      dockerfile: Dockerfile.prod
+    # The dev source bind-mounts (from docker-compose.yml) are irrelevant to the
+    # static nginx image — it serves the baked-in /usr/share/nginx/html — but
+    # null them so nothing from the host shadows the build.
+    volumes: []
+    command: ["nginx", "-g", "daemon off;"]
