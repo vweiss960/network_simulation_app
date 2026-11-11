@@ -1,6 +1,6 @@
 """Containerlab lab orchestration service.
 
-Wraps the `containerlab` CLI to deploy/destroy/inspect labs derived from Phanero
+Wraps the `containerlab` CLI to deploy/destroy/inspect labs derived from Phanero Labs
 topologies. Also handles loading vendor container images from the
 device_images/ directory into the host Docker daemon.
 
@@ -24,42 +24,15 @@ from app.models.lab_deployment import LabDeployment
 from app.services.clab_yaml import generate_clab_yaml
 
 
-LAB_STATE_DIR = os.environ.get("LAB_STATE_DIR", "/app/lab_state")
-DEVICE_IMAGES_DIR = os.environ.get("DEVICE_IMAGES_DIR", "/app/device_images")
+from app.config import LAB_STATE_DIR
+from app.config import DEVICE_IMAGES_DIR
 
 
 class LabError(Exception):
     """Lab orchestration failure with a user-facing message."""
 
 
-class LabBusyError(LabError):
-    """Another topology already has a lab deployed (only one lab runs at a time).
-    Carries the occupying topology's id so the API can report it (as a 409)."""
-    def __init__(self, other_topology_id: int, other_topology_name: str = ""):
-        self.other_topology_id = other_topology_id
-        self.other_topology_name = other_topology_name
-        name = f" ({other_topology_name})" if other_topology_name else ""
-        super().__init__(
-            f"Topology {other_topology_id}{name} already has a running lab — "
-            f"only one lab can run at a time. Destroy it first."
-        )
-
-
-def _assert_no_other_lab_running(db: Session, topology_id: int) -> None:
-    """Enforce a single active lab across all topologies. Raises LabBusyError if
-    a DIFFERENT topology holds the slot (deploying/running/destroying)."""
-    other = (
-        db.query(LabDeployment)
-        .filter(
-            LabDeployment.topology_id != topology_id,
-            LabDeployment.status.in_(["deploying", "running", "destroying"]),
-        )
-        .first()
-    )
-    if other:
-        from app.models.topology import Topology
-        topo = db.query(Topology).filter(Topology.id == other.topology_id).first()
-        raise LabBusyError(other.topology_id, topo.name if topo else "")
+CLAB_BIN = os.environ.get("PLABS_CONTAINERLAB_BIN", "containerlab")
 
 
 def load_gnmi_subscriptions(db: Session, topology_id: int) -> list[dict]:
@@ -88,9 +61,13 @@ def _yaml_path_for(lab_name: str) -> Path:
 
 def _run(cmd: list[str], timeout: int = 600, cwd: Optional[str] = None) -> tuple[int, str, str]:
     """Run a command, return (rc, stdout, stderr). Never raises on non-zero rc."""
+    if cmd and cmd[0] == "containerlab":
+        cmd = [CLAB_BIN, *cmd[1:]]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
         return proc.returncode, proc.stdout, proc.stderr
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]}: not found (is it installed on the lab host?)"
     except subprocess.TimeoutExpired:
         return 124, "", f"command timed out after {timeout}s: {' '.join(cmd)}"
 
@@ -252,6 +229,7 @@ def get_host_prereqs(db: Session, topology_id: Optional[int] = None) -> dict:
     """
     pkg = _host_pkg_manager()  # tailor copy-paste fixes to the host's distro
     xrd_count = 0
+    hugepage_nodes = 0
     total_nodes = 0
     if topology_id is not None:
         try:
@@ -261,6 +239,8 @@ def get_host_prereqs(db: Session, topology_id: Optional[int] = None) -> dict:
             for n in view.get("nodes", []):
                 if n.get("lab_kind") in ("cisco_xrd", "cisco_xrv9k"):
                     xrd_count += 1
+                if n.get("requires_hugepages"):
+                    hugepage_nodes += 1
         except Exception:
             xrd_count = 0
 
@@ -270,7 +250,8 @@ def get_host_prereqs(db: Session, topology_id: Optional[int] = None) -> dict:
     #   isn't supported by containerlab).
     needed_inotify_instances = max(64000, 4000 * xrd_count) if xrd_count else 0
     needed_inotify_watches = max(1048576, 4000 * xrd_count) if xrd_count else 0
-    needed_hugepages = 0
+    # XRd vRouter wants ~3 GiB of 2 MiB hugepages per instance.
+    needed_hugepages = 1536 * hugepage_nodes
 
     checks: list[dict] = []
 
@@ -301,7 +282,7 @@ def get_host_prereqs(db: Session, topology_id: Optional[int] = None) -> dict:
     })
 
     hp = _read_int("/proc/sys/vm/nr_hugepages")
-    hugepages_target = max(needed_hugepages, 3000)
+    hugepages_target = max(needed_hugepages, 1536)
     # Hugepages require *contiguous* free memory. On a host that's been up a
     # while, fragmentation often blocks `sysctl -w` from reaching the target —
     # the kernel allocates what it can and silently drops the rest. Dropping
@@ -330,7 +311,7 @@ def get_host_prereqs(db: Session, topology_id: Optional[int] = None) -> dict:
         "ok": (needed_hugepages == 0) or (hp is not None and hp >= needed_hugepages),
         "fix_command": hugepages_fix,
         "revert_command": hugepages_revert,
-        "reason": "Not required — XRd Control Plane doesn't use hugepages, and the vRouter variant isn't supported by containerlab",
+        "reason": "XRd vRouter needs ~3 GiB of 2 MiB hugepages per device; other kinds don't use them",
     })
 
     # KSM (Kernel Samepage Merging) — the kernel scans process memory and
@@ -513,10 +494,10 @@ def get_host_prereqs(db: Session, topology_id: Optional[int] = None) -> dict:
         if lines:
             body = "\n".join(lines)
             persistent = (
-                "sudo tee /etc/sysctl.d/99-phanero-lab.conf >/dev/null <<'EOF'\n"
+                "sudo tee /etc/sysctl.d/99-plabs-lab.conf >/dev/null <<'EOF'\n"
                 f"{body}\n"
                 "EOF\n"
-                "sudo sysctl -p /etc/sysctl.d/99-phanero-lab.conf\n"
+                "sudo sysctl -p /etc/sysctl.d/99-plabs-lab.conf\n"
                 "# Note: persistent sysctls re-apply at boot but hugepages can\n"
                 "# still fail to allocate on a fragmented host. For guaranteed\n"
                 "# hugepage availability, see the boot-param option in the\n"
@@ -531,7 +512,7 @@ def get_host_prereqs(db: Session, topology_id: Optional[int] = None) -> dict:
     # Wrapped in `|| true` so missing files don't break the script.
     revert_persistent = (
         "# Remove the auto-generated sysctl drop-in:\n"
-        "sudo rm -f /etc/sysctl.d/99-phanero-lab.conf\n"
+        "sudo rm -f /etc/sysctl.d/99-plabs-lab.conf\n"
         "# Reload sysctls so defaults from /etc/sysctl.conf re-apply:\n"
         "sudo sysctl --system >/dev/null\n"
         "\n"
@@ -626,7 +607,7 @@ def _extract_member_to_tempfile(tar_path: Path, member: str) -> Path:
     """Stream a named member out of an outer tarball into a temp file. Returns
     the temp file path. Caller is responsible for unlinking."""
     suffix = "." + member.split("/")[-1]
-    fd, tmp_name = tempfile.mkstemp(suffix=suffix, prefix="phanero-clab-")
+    fd, tmp_name = tempfile.mkstemp(suffix=suffix, prefix="plabs-clab-")
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
@@ -743,45 +724,46 @@ def load_device_image(filename: str) -> dict:
     return {"filename": filename, "loaded_refs": loaded, "raw_output": out, "notes": notes}
 
 
-# Per-kind "running but still booting" threshold. Container shows state=running
-# but the platform inside isn't ready to take CLI/SSH for this many seconds.
-# After this elapses we consider the node "up" rather than "booting".
-_KIND_BOOT_THRESHOLD_SEC: dict[str, int] = {
-    "linux": 5,
-    "cisco_xrd": 120,
-    "cisco_xrv9k": 240,
-    "arista_ceos": 60,
-    "nokia_srlinux": 30,
-    "juniper_crpd": 15,
-}
-_DEFAULT_BOOT_THRESHOLD_SEC = 30
+# ---------------------------------------------------------------------------
+# Lifecycle
+#
+# The canvas IS the lab. Every change to a deployed topology regenerates the
+# containerlab YAML and runs `containerlab deploy` again; containerlab (>=
+# 0.83) reconciles a deployed lab in place — it adds new nodes and links,
+# removes deleted ones, recreates only nodes whose definition changed, and
+# leaves everything else running. Reconciles are serialized per topology and
+# coalesced: edits made while one is running trigger exactly one follow-up.
+# ---------------------------------------------------------------------------
+
+import threading
+
+_ACTIVE_STATES = ("deploying", "running", "syncing")
+_sync_locks: dict[int, threading.Lock] = {}
+_sync_pending: set[int] = set()
+_sync_guard = threading.Lock()
+
+
+def _lock_for(topology_id: int) -> threading.Lock:
+    with _sync_guard:
+        return _sync_locks.setdefault(topology_id, threading.Lock())
+
+
+def _boot_threshold(kind: str) -> int:
+    from app.services.device_kinds import get_kind
+    return get_kind(kind).boot_seconds
 
 
 def _normalize_inspect_payload(data, lab_name: str) -> list[dict]:
-    """Coerce `containerlab inspect --format json` output into a flat list of
-    container entries, regardless of which clab major reformatted it.
-
-    Known shapes:
-      - 0.55 era: {"containers": [ {...}, {...} ]}
-      - even older / some commands: [ {...}, {...} ]
-      - 0.75+:    {"<lab_name>": [ {...}, {...} ]}  (key is the lab name)
-
-    When the top-level dict has multiple lab keys (e.g. --all without a
-    --name filter), we prefer the one matching `lab_name`; if no match we
-    fall back to concatenating all values so the caller still sees
-    *something* rather than an empty list.
-    """
+    """Flatten `containerlab inspect --format json` across clab versions:
+    {"containers": [...]}, [...], or {"<lab_name>": [...]} (0.75+)."""
     if isinstance(data, list):
         return data
     if not isinstance(data, dict):
         return []
-    if "containers" in data and isinstance(data["containers"], list):
+    if isinstance(data.get("containers"), list):
         return data["containers"]
-    # 0.75+ shape: dict keyed by lab name. The values are lists of containers.
-    if lab_name and lab_name in data and isinstance(data[lab_name], list):
+    if lab_name and isinstance(data.get(lab_name), list):
         return data[lab_name]
-    # Last resort: gather every list-typed value. Useful when inspect was
-    # called without --name and clab returned multiple labs.
     out: list[dict] = []
     for v in data.values():
         if isinstance(v, list):
@@ -790,631 +772,390 @@ def _normalize_inspect_payload(data, lab_name: str) -> list[dict]:
 
 
 def _strip_cidr(ip: str) -> str:
-    """clab 0.75 reports mgmt IPs with a CIDR suffix ('172.20.20.2/24');
-    earlier versions returned the bare address. The UI / SSH-link builders
-    want the address only — strip the suffix uniformly."""
-    if not ip or ip in ("N/A", "n/a"):
+    ip = (ip or "").strip()
+    if ip in ("", "N/A"):
         return ""
     return ip.split("/", 1)[0]
 
 
+def _container_started(cid: str) -> tuple[Optional[str], Optional[int]]:
+    rc, out, _ = _run(["docker", "inspect", "--format", "{{.State.StartedAt}}", cid], timeout=10)
+    if rc != 0 or not out.strip() or out.startswith("0001-"):
+        return None, None
+    s = out.strip()
+    try:
+        from datetime import timezone
+        iso = s.replace("Z", "+00:00")
+        if "." in iso:  # docker emits nanoseconds; fromisoformat takes ≤ 6 digits
+            head, rest = iso.split(".", 1)
+            tz_at = max(rest.find("+"), rest.find("-"))
+            frac, tz = (rest[:tz_at], rest[tz_at:]) if tz_at >= 0 else (rest, "")
+            iso = f"{head}.{frac[:6]}{tz}"
+        dt = datetime.fromisoformat(iso)
+        return s, int((datetime.now(timezone.utc) - dt).total_seconds())
+    except Exception:
+        return s, None
+
+
 def _enrich_container(c: dict) -> dict:
-    """Add docker-inspect-derived fields (started_at, uptime_sec, mgmt_ip)
-    and a high-level ready_state to a containerlab inspect entry."""
-    cid = c.get("container_id") or c.get("ContainerID") or ""
+    cid = c.get("container_id") or c.get("ContainerID") or c.get("name") or ""
     kind = c.get("kind") or "linux"
     state = (c.get("state") or "").lower()
-
-    uptime_sec = None
-    started_at_iso = None
-    # clab 0.75+ returns mgmt IPs with a CIDR suffix; older versions returned
-    # the bare address. _strip_cidr normalises both forms.
-    mgmt_ip = _strip_cidr(c.get("ipv4_address") or "")
-
-    if cid:
-        rc, out, _err = _run(
-            ["docker", "inspect", "--format",
-             "{{.State.StartedAt}}\t{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}};{{end}}",
-             cid],
-            timeout=10,
-        )
-        if rc == 0 and out.strip():
-            try:
-                line = out.strip()
-                started_at_str, networks_str = line.split("\t", 1) if "\t" in line else (line, "")
-                # StartedAt is "0001-01-01T00:00:00Z" before first run; treat as None
-                if started_at_str and not started_at_str.startswith("0001-"):
-                    started_at_iso = started_at_str
-                    try:
-                        from datetime import datetime, timezone
-                        # Docker emits RFC3339; tolerate fractional seconds
-                        s = started_at_str.replace("Z", "+00:00")
-                        # Truncate sub-microsecond precision if present
-                        if "." in s:
-                            head, rest = s.split(".", 1)
-                            tz_idx = max(rest.find("+"), rest.find("-"))
-                            tz_part = rest[tz_idx:] if tz_idx >= 0 else ""
-                            frac = rest[:tz_idx] if tz_idx >= 0 else rest
-                            frac = frac[:6]  # microseconds max
-                            s = f"{head}.{frac}{tz_part}"
-                        dt = datetime.fromisoformat(s)
-                        now = datetime.now(timezone.utc)
-                        uptime_sec = int((now - dt).total_seconds())
-                    except Exception:
-                        pass
-                # If clab didn't give us an IPv4, pluck one from network settings
-                if not mgmt_ip and networks_str:
-                    for entry in networks_str.split(";"):
-                        if "=" not in entry:
-                            continue
-                        net_name, ip = entry.split("=", 1)
-                        if ip and net_name.lower() in ("clab", "mgmt", "bridge") or (ip and not mgmt_ip):
-                            mgmt_ip = ip
-                            if net_name.lower() == "clab":
-                                break
-            except Exception:
-                pass
-
-    # Derive ready_state
+    started_at, uptime = _container_started(cid) if cid else (None, None)
+    threshold = _boot_threshold(kind)
     if state == "running":
-        threshold = _KIND_BOOT_THRESHOLD_SEC.get(kind, _DEFAULT_BOOT_THRESHOLD_SEC)
-        if uptime_sec is None or uptime_sec < threshold:
-            ready_state = "booting"
-        else:
-            ready_state = "up"
+        ready = "up" if (uptime is not None and uptime >= threshold) else "booting"
     elif state in ("exited", "dead"):
-        ready_state = "down"
+        ready = "down"
     elif state in ("created", "restarting", "paused"):
-        ready_state = "starting"
+        ready = "starting"
     else:
-        ready_state = "unknown"
-
+        ready = "unknown"
     return {
         **c,
-        "started_at": started_at_iso,
-        "uptime_sec": uptime_sec,
-        "mgmt_ip": mgmt_ip,
-        "ready_state": ready_state,
-        "boot_threshold_sec": _KIND_BOOT_THRESHOLD_SEC.get(kind, _DEFAULT_BOOT_THRESHOLD_SEC),
+        "started_at": started_at, "uptime_sec": uptime,
+        "mgmt_ip": _strip_cidr(c.get("ipv4_address") or ""),
+        "ready_state": ready, "boot_threshold_sec": threshold,
     }
 
 
+def inspect_lab(lab_name: str) -> list[dict]:
+    if not lab_name:
+        return []
+    rc, out, _err = _run(["containerlab", "inspect", "--name", lab_name, "--format", "json"], timeout=20)
+    if rc != 0 or not out.strip():
+        return []
+    try:
+        return [_enrich_container(c) for c in _normalize_inspect_payload(json.loads(out), lab_name)]
+    except Exception:
+        return []
+
+
 def get_deployment_state(db: Session, topology_id: int) -> dict:
-    """Return the recorded state for a lab plus a fresh `containerlab inspect`
-    against any live containers, enriched with uptime / ready_state / mgmt IP."""
+    """Recorded lab state plus live per-container state, keyed back to node ids."""
+    from app.services.lab_view import compute_lab_view
     dep = _get_or_create_deployment(db, topology_id)
-    live = []
-    if dep.lab_name:
-        rc, out, _err = _run(
-            ["containerlab", "inspect", "--name", dep.lab_name, "--format", "json"],
-            timeout=15,
-        )
-        if rc == 0 and out.strip():
-            try:
-                data = json.loads(out)
-                live = _normalize_inspect_payload(data, dep.lab_name)
-            except Exception:
-                live = []
-    enriched = [_enrich_container(c) for c in live]
+    view = compute_lab_view(db, topology_id)
+    lab_name = dep.lab_name or view["lab_name"]
+    containers = inspect_lab(lab_name)
+    by_cname = {c.get("name"): c for c in containers}
+    nodes = {}
+    for n in view["nodes"]:
+        c = by_cname.get(n["lab_container_name"])
+        nodes[n["id"]] = {
+            "container": n["lab_container_name"],
+            "state": (c or {}).get("state", "absent"),
+            "ready_state": (c or {}).get("ready_state", "absent"),
+            "uptime_sec": (c or {}).get("uptime_sec"),
+            "mgmt_ip": (c or {}).get("mgmt_ip") or n["mgmt_ip"],
+        }
     return {
         "status": dep.status,
-        "lab_name": dep.lab_name,
+        "lab_name": lab_name,
         "lab_dir": dep.lab_dir,
         "last_error": dep.last_error,
         "started_at": dep.started_at.isoformat() if dep.started_at else None,
         "finished_at": dep.finished_at.isoformat() if dep.finished_at else None,
-        "containers": enriched,
+        "pending_sync": topology_id in _sync_pending,
+        "nodes": nodes,
+        "skipped_nodes": view["skipped_nodes"],
+        "containers": containers,
     }
 
 
 def _ensure_fresh_yaml(db: Session, topology_id: int) -> tuple[Path, str, dict]:
-    """(Re)generate the clab YAML for a topology and write it to disk.
-
-    Used by every operation that touches the on-disk YAML so that per-node
-    actions (Start/Stop/Restart) always see template changes — without
-    forcing the user to click Deploy after every edit. The deploy itself
-    also routes through here so there's one canonical "write the YAML"
-    code path.
-
-    Returns (yaml_path, lab_name, spec). Updates the LabDeployment row's
-    lab_name/lab_dir/last_yaml so subsequent reads agree with disk.
-    Raises LabError if the topology has nothing deployable.
-    """
+    """Regenerate + write the topology YAML; record it on the deployment row."""
     spec = generate_clab_yaml(db, topology_id)
-    if not spec["included_nodes"]:
-        raise LabError("Topology has no deployable nodes (set clab_kind + image_ref on the templates first).")
     lab_name = spec["lab_name"]
     yaml_path = _yaml_path_for(lab_name)
     yaml_path.write_text(spec["yaml"])
-
     dep = _get_or_create_deployment(db, topology_id)
-    if dep.lab_name != lab_name:
-        dep.lab_name = lab_name
+    dep.lab_name = lab_name
     dep.lab_dir = str(yaml_path.parent)
     dep.last_yaml = spec["yaml"]
     db.commit()
     return yaml_path, lab_name, spec
 
 
-def _resolve_subset_short_names(db: Session, topology_id: int) -> Optional[list[str]]:
-    """Read the per-topology deployment subset and resolve to clab short names.
-
-    Three return states:
-      - None       → no explicit preference saved → caller deploys everything
-      - []         → user explicitly cleared the selection → caller refuses
-      - [a, b, c]  → explicit subset → caller passes --node-filter
-    """
-    dep = _get_or_create_deployment(db, topology_id)
-    raw = (dep.deployment_subset_json or "").strip()
-    if not raw:
-        return None  # column never set: implicit "deploy all"
-    try:
-        node_ids = json.loads(raw)
-    except Exception:
-        return None
-    if not isinstance(node_ids, list):
-        return None
-    names: list[str] = []
-    for nid in node_ids:
+def _assert_capacity(db: Session, topology_id: int, spec: dict) -> None:
+    """Refuse a deploy whose RAM estimate (plus every other running lab's)
+    exceeds what the host has. Multiple labs can run side by side — devices
+    are addressed by their own mgmt IP, so labs don't contend for host ports."""
+    from app.services.clab_yaml import get_host_capacity
+    cap = get_host_capacity()
+    if not cap.get("memory_mb"):
+        return
+    others = (
+        db.query(LabDeployment)
+        .filter(LabDeployment.topology_id != topology_id, LabDeployment.status.in_(_ACTIVE_STATES))
+        .all()
+    )
+    used = 0
+    for o in others:
         try:
-            short = _safe_node_name_for(db, topology_id, int(nid))
+            used += generate_clab_yaml(db, o.topology_id)["resource_estimate"]["memory_mb"]
         except Exception:
-            short = None
-        if short:
-            names.append(short)
-    return names  # may be [] (explicit empty) or populated
+            pass
+    need = spec["resource_estimate"]["memory_mb"]
+    budget = int(cap["memory_mb"] * 0.9)
+    if used + need > budget:
+        raise LabError(
+            f"Not enough memory: this lab needs ~{need} MB, other running labs use ~{used} MB, "
+            f"host budget is {budget} MB (90% of {cap['memory_mb']} MB). Stop another lab first."
+        )
 
 
-def deploy_lab(db: Session, topology_id: int) -> dict:
-    """Generate the clab YAML for a topology and run `containerlab deploy`.
-    If a deployment subset is configured, only those nodes are brought up
-    via `--node-filter` — useful for hosts that can't run the full topology
-    at once."""
-    _assert_no_other_lab_running(db, topology_id)  # one lab globally at a time
-    yaml_path, lab_name, spec = _ensure_fresh_yaml(db, topology_id)
+def _clab_deploy(yaml_path: Path) -> tuple[int, str, str]:
+    # No --reconfigure: plain deploy reconciles an existing lab in place.
+    return _run(["containerlab", "deploy", "-t", str(yaml_path)], timeout=1800, cwd=str(yaml_path.parent))
 
-    dep = _get_or_create_deployment(db, topology_id)
-    dep.status = "deploying"
-    dep.last_error = ""
-    dep.started_at = datetime.utcnow()
-    dep.finished_at = None
-    db.commit()
 
-    subset_names = _resolve_subset_short_names(db, topology_id)
-    if subset_names is not None and not subset_names:
-        # Explicit empty selection — user cleared the subset. Refuse rather
-        # than silently deploying everything.
-        dep.status = "failed"
-        dep.last_error = "No nodes selected for deployment — pick at least one in the Lab panel."
-        db.commit()
-        raise LabError(dep.last_error)
-
-    # Run from the YAML's parent dir so clab's working directory
-    # (`clab-<lab_name>/`) lands at the same mirrored host+container path as
-    # the YAML. Otherwise it ends up at the backend's CWD (/app), which
-    # doesn't exist on the host and breaks bind-mounts.
-    deploy_cmd = ["containerlab", "deploy", "-t", str(yaml_path), "--reconfigure"]
-    if subset_names:
-        deploy_cmd += ["--node-filter", ",".join(subset_names)]
-    rc, out, err = _run(deploy_cmd, timeout=900, cwd=str(yaml_path.parent))
-    if rc != 0:
-        dep.status = "failed"
-        dep.last_error = (err or out or "containerlab deploy failed")[-4000:]
-        dep.finished_at = datetime.utcnow()
-        db.commit()
-        raise LabError(f"containerlab deploy failed: {dep.last_error}")
-
-    dep.status = "running"
-    dep.finished_at = datetime.utcnow()
-    db.commit()
-
-    # Lab telemetry add-on sidecars (no-op unless the add-on is enabled).
-    # Best-effort: failures here must not fail the deploy.
+def _start_addons(db: Session, topology_id: int, lab_name: str) -> None:
     try:
         from app.services import lab_addons
         if lab_addons.addon_enabled():
             state = get_deployment_state(db, topology_id)
             nodes = [{"name": c.get("name"), "mgmt_ip": c.get("mgmt_ip"), "kind": c.get("kind")}
                      for c in state.get("containers", [])]
-            subs = load_gnmi_subscriptions(db, topology_id)
-            lab_addons.start_lab_addons(lab_name, nodes, extra_subscriptions=subs)
+            lab_addons.start_lab_addons(lab_name, nodes, extra_subscriptions=load_gnmi_subscriptions(db, topology_id))
     except Exception:
         pass
 
+
+def deploy_lab(db: Session, topology_id: int) -> dict:
+    """Deploy (or reconcile) the whole topology."""
+    with _lock_for(topology_id):
+        _sync_pending.discard(topology_id)
+        yaml_path, lab_name, spec = _ensure_fresh_yaml(db, topology_id)
+        if not spec["included_nodes"]:
+            raise LabError("Nothing to deploy — add devices with an image to the canvas first.")
+        _assert_capacity(db, topology_id, spec)
+        dep = _get_or_create_deployment(db, topology_id)
+        dep.status, dep.last_error = "deploying", ""
+        dep.started_at, dep.finished_at = datetime.utcnow(), None
+        db.commit()
+        rc, out, err = _clab_deploy(yaml_path)
+        dep.finished_at = datetime.utcnow()
+        if rc != 0:
+            dep.status = "failed"
+            dep.last_error = (err or out or "containerlab deploy failed")[-4000:]
+            db.commit()
+            raise LabError(f"containerlab deploy failed: {dep.last_error}")
+        dep.status = "running"
+        db.commit()
+    _start_addons(db, topology_id, lab_name)
     return {
         "ok": True, "lab_name": lab_name,
-        "skipped_nodes": spec["skipped_nodes"],
-        "skipped_links": spec["skipped_links"],
-        "output_tail": out[-2000:],
+        "skipped_nodes": spec["skipped_nodes"], "skipped_links": spec["skipped_links"],
+        "output_tail": (out or "")[-2000:],
     }
 
 
-def _container_name_for_node(db: Session, topology_id: int, node_id: int) -> Optional[str]:
-    """Resolve a Phanero node id → its clab container name via the lab view."""
+def _sync_worker(topology_id: int) -> None:
+    from app.models.database import SessionLocal
+    lock = _lock_for(topology_id)
+    while True:
+        with lock:
+            if topology_id not in _sync_pending:
+                return
+            _sync_pending.discard(topology_id)
+            db = SessionLocal()
+            try:
+                dep = _get_or_create_deployment(db, topology_id)
+                if dep.status not in ("running", "syncing", "failed") or not dep.lab_name:
+                    return
+                dep.status = "syncing"
+                db.commit()
+                try:
+                    yaml_path, _lab, spec = _ensure_fresh_yaml(db, topology_id)
+                    if not spec["included_nodes"]:
+                        # Last device removed → tear the lab down entirely.
+                        db.commit()
+                        _destroy_locked(db, topology_id)
+                        return
+                    rc, out, err = _clab_deploy(yaml_path)
+                except LabError as e:
+                    rc, out, err = 1, "", str(e)
+                dep = _get_or_create_deployment(db, topology_id)
+                dep.finished_at = datetime.utcnow()
+                if rc != 0:
+                    dep.status = "failed"
+                    dep.last_error = (err or out or "reconcile failed")[-4000:]
+                else:
+                    dep.status, dep.last_error = "running", ""
+                db.commit()
+            finally:
+                db.close()
+
+
+def request_sync(db: Session, topology_id: int) -> bool:
+    """Called after any canvas change. If the topology has a deployed lab,
+    schedule a background reconcile (coalesced). Returns True if scheduled."""
+    dep = db.query(LabDeployment).filter(LabDeployment.topology_id == topology_id).first()
+    if not dep or dep.status not in ("running", "syncing", "failed") or not dep.lab_name:
+        return False
+    if dep.status == "failed" and not inspect_lab(dep.lab_name):
+        return False  # failed before anything came up; wait for an explicit Deploy
+    _schedule_sync(topology_id)
+    return True
+
+
+def _schedule_sync(topology_id: int) -> None:
+    with _sync_guard:
+        already = topology_id in _sync_pending
+        _sync_pending.add(topology_id)
+    if not already:
+        threading.Thread(target=_sync_worker, args=(topology_id,), daemon=True).start()
+
+
+def _node_short_name(db: Session, topology_id: int, node_id: int) -> str:
     from app.services.lab_view import compute_lab_view
-    try:
-        view = compute_lab_view(db, topology_id)
-    except Exception:
-        return None
-    for n in view.get("nodes", []):
-        if n.get("id") == node_id:
-            return n.get("lab_container_name")
-    return None
+    for n in compute_lab_view(db, topology_id)["nodes"]:
+        if n["id"] == node_id:
+            return n["clab_name"]
+    raise LabError("Node is not deployable (no image set?)")
 
 
-def _safe_node_name_for(db: Session, topology_id: int, node_id: int) -> Optional[str]:
-    """Resolve a Phanero node id → its containerlab-side short name (the bit
-    after the `clab-<lab_name>-` prefix). Used for `--node-filter`."""
-    cname = _container_name_for_node(db, topology_id, node_id)
-    if not cname:
-        return None
+def _node_action(db: Session, topology_id: int, node_id: int, action: str, timeout: int) -> dict:
     dep = _get_or_create_deployment(db, topology_id)
-    prefix = f"clab-{dep.lab_name}-" if dep.lab_name else ""
-    return cname[len(prefix):] if cname.startswith(prefix) else cname
+    if dep.status not in _ACTIVE_STATES + ("failed",) or not dep.lab_name:
+        raise LabError("The lab is not deployed. Deploy it first.")
+    short = _node_short_name(db, topology_id, node_id)
+    with _lock_for(topology_id):
+        yaml_path = _yaml_path_for(dep.lab_name)
+        if not yaml_path.exists():
+            yaml_path, _lab, _spec = _ensure_fresh_yaml(db, topology_id)
+        rc, out, err = _run(["containerlab", action, "-t", str(yaml_path), "--node", short],
+                            timeout=timeout, cwd=str(yaml_path.parent))
+    if rc != 0:
+        raise LabError(f"containerlab {action} --node {short} failed: {err or out}")
+    return {"ok": True, "node_id": node_id, "action": action}
 
 
 def start_node(db: Session, topology_id: int, node_id: int) -> dict:
-    """Start a single node.
-
-    The on-disk YAML is regenerated from the current templates first so the
-    partial-deploy path always uses up-to-date image_ref / interfaces /
-    links — users don't have to remember to click full Deploy after a
-    template edit.
-
-    If the container already exists (was stopped), use containerlab's
-    `start --node` subcommand — clab 0.75+ "parks" data-plane veth
-    endpoints in a dedicated namespace when a node stops and moves them
-    back on start, so connectivity is preserved across the cycle even for
-    cisco_xrd (whose userland TAP↔veth bridge would otherwise be lost on
-    a plain `docker start`). If the container doesn't exist yet, fall
-    through to the partial-deploy path that brings up a brand-new node.
-    """
-    cname = _container_name_for_node(db, topology_id, node_id)
-    if not cname:
-        raise LabError("Node has no clab container name (not deployable?)")
-
-    # Regenerate the YAML so per-node Start uses current template state.
-    yaml_path, lab_name, _spec = _ensure_fresh_yaml(db, topology_id)
-    short = _safe_node_name_for(db, topology_id, node_id) or ""
-
-    # Already exists?
-    rc, out, _err = _run(["docker", "inspect", "--format", "{{.State.Status}}", cname], timeout=10)
-    if rc == 0 and out.strip():
-        state = out.strip()
-        if state == "running":
-            return {"ok": True, "node_id": node_id, "container": cname, "state": "running", "action": "noop"}
-        # clab parks the node's veth endpoints on stop and restores them on
-        # start, so we don't have to manage the rewire ourselves anymore.
-        rc2, out2, err2 = _run(
-            ["containerlab", "start", "-t", str(yaml_path), "--node", short],
-            timeout=180, cwd=str(yaml_path.parent),
-        )
-        if rc2 != 0:
-            raise LabError(f"containerlab start --node failed: {err2 or out2}")
-        return {"ok": True, "node_id": node_id, "container": cname, "state": "running", "action": "started"}
-
-    # Container doesn't exist — partial-deploy via containerlab using the
-    # fresh YAML we just wrote.
-    dep = _get_or_create_deployment(db, topology_id)
-
-    # Is anything else already deployed for this lab?
-    rc_chk, out_chk, _err_chk = _run(
-        ["containerlab", "inspect", "--name", dep.lab_name, "--format", "json"],
-        timeout=15,
-    )
-    other_running = False
-    if rc_chk == 0 and out_chk.strip():
-        try:
-            containers = _normalize_inspect_payload(json.loads(out_chk), dep.lab_name)
-            for c in containers:
-                if c.get("name") and c.get("name") != cname:
-                    other_running = True
-                    break
-        except Exception:
-            pass
-
-    if not other_running:
-        # Clean partial-deploy path: clab handles this when nothing else is up.
-        # This brings a lab up without going through deploy_lab, so honor the
-        # single-active-lab rule here too.
-        _assert_no_other_lab_running(db, topology_id)
-        short = _safe_node_name_for(db, topology_id, node_id) or ""
-        rc, out, err = _run(
-            ["containerlab", "deploy", "-t", str(yaml_path), "--node-filter", short],
-            timeout=600,
-            cwd=str(yaml_path.parent),
-        )
-        if rc != 0:
-            raise LabError(f"containerlab deploy --node-filter failed: {err or out}")
-        return {"ok": True, "node_id": node_id, "container": cname, "state": "running", "action": "deployed"}
-
-    # Partial-deploy add-on path: clab's --node-filter refuses on a lab that
-    # already has containers, so we mimic what clab would do — docker run the
-    # new container and stitch its veth pairs in via `containerlab tools veth
-    # create`. v1 limit: only the `linux` kind (FRR etc.) goes through here.
-    # Heavier platforms (XRd, cEOS, SRL) need kind-specific setup we don't
-    # replicate, so fall back to a clear error for them.
-    return _add_node_to_running_lab(db, topology_id, node_id, cname, yaml_path, dep.lab_name)
-
-
-def _add_node_to_running_lab(db: Session, topology_id: int, node_id: int, cname: str, yaml_path: Path, lab_name: str) -> dict:
-    """Spawn a single new container and wire its links into an existing
-    clab-managed lab, without going through `clab deploy` (which refuses to
-    add nodes to a running lab)."""
+    """Start a stopped node. A node that was never created (added while the
+    lab was down, or a failed reconcile) is brought up by a reconcile."""
     from app.services.lab_view import compute_lab_view
-    view = compute_lab_view(db, topology_id)
-    node_data = next((n for n in view["nodes"] if n["id"] == node_id), None)
-    if not node_data:
-        raise LabError(f"Node {node_id} is not in the lab view")
-
-    kind = node_data.get("lab_kind") or ""
-    image = node_data.get("lab_image") or ""
-    if kind != "linux":
-        raise LabError(
-            f"Adding a '{kind}' node to a running lab is not yet supported. "
-            f"Options: (1) Destroy the whole lab and Deploy again, or "
-            f"(2) Stop nodes you don't need with right-click instead of removing them."
-        )
-    if not image:
-        raise LabError(f"Node template has no image_ref set")
-
-    # Short clab-side name = container name minus the "clab-<lab_name>-" prefix
-    short = cname[len(f"clab-{lab_name}-"):] if cname.startswith(f"clab-{lab_name}-") else cname
-
-    # Pull the YAML so we know which links involve this node
-    try:
-        import yaml as _yaml
-        with open(yaml_path) as f:
-            topo = _yaml.safe_load(f) or {}
-    except Exception as e:
-        raise LabError(f"Could not read topology YAML: {e}")
-
-    links = ((topo.get("topology") or {}).get("links") or [])
-    # Each link is {"endpoints": ["nodeA:iface", "nodeB:iface"]}
-    my_links: list[tuple[str, str, str]] = []  # (my_iface, peer_short, peer_iface)
-    for l in links:
-        eps = l.get("endpoints") or []
-        if len(eps) != 2:
-            continue
-        a_node, _, a_if = eps[0].partition(":")
-        b_node, _, b_if = eps[1].partition(":")
-        if a_node == short:
-            my_links.append((a_if, b_node, b_if))
-        elif b_node == short:
-            my_links.append((b_if, a_node, a_if))
-
-    # docker run — clab-compatible labels so `containerlab inspect` finds it.
-    # We use --network=clab to attach to clab's default management bridge.
-    docker_args = [
-        "docker", "run", "-d",
-        "--name", cname,
-        "--hostname", short,
-        "--network", "clab",
-        "--privileged",
-        "--label", f"containerlab={lab_name}",
-        "--label", f"clab-node-name={short}",
-        "--label", f"clab-node-kind=linux",
-        "--label", f"clab-node-type=",
-        "--label", f"clab-node-group=",
-        "--label", f"clab-topo-file={yaml_path}",
-        "--label", f"clab-node-lab-dir={yaml_path.parent}/clab-{lab_name}/{short}",
-    ]
-    docker_args.append(image)
-    rc, out, err = _run(docker_args, timeout=120)
+    cname = next((n["lab_container_name"] for n in compute_lab_view(db, topology_id)["nodes"]
+                  if n["id"] == node_id), None)
+    if not cname:
+        raise LabError("Node is not deployable (no image set?)")
+    rc, out, _ = _run(["docker", "inspect", "--format", "{{.State.Status}}", cname], timeout=10)
     if rc != 0:
-        raise LabError(f"docker run failed: {err or out}")
-
-    # Give the container's netns a moment to settle
-    import time
-    time.sleep(1)
-
-    # Stitch the veth pairs in
-    veth_errors: list[str] = []
-    for my_if, peer_short, peer_if in my_links:
-        peer_cname = f"clab-{lab_name}-{peer_short}"
-        # Verify peer is running before trying to wire
-        rc_p, out_p, _ = _run(["docker", "inspect", "--format", "{{.State.Status}}", peer_cname], timeout=5)
-        if rc_p != 0 or out_p.strip() != "running":
-            veth_errors.append(f"  - {my_if} ↔ {peer_short}:{peer_if}  (peer not running, skipped)")
-            continue
-        rc_v, out_v, err_v = _run([
-            "containerlab", "tools", "veth", "create",
-            "-a", f"{cname}:{my_if}",
-            "-b", f"{peer_cname}:{peer_if}",
-        ], timeout=15, cwd=str(yaml_path.parent))
-        if rc_v != 0:
-            veth_errors.append(f"  - {my_if} ↔ {peer_short}:{peer_if}  → {err_v or out_v}".strip())
-
-    result_msg = f"Added {cname} to running lab"
-    if veth_errors:
-        result_msg += f". Some links could not be wired:\n" + "\n".join(veth_errors[:5])
-    return {
-        "ok": True, "node_id": node_id, "container": cname,
-        "state": "running", "action": "added-to-running-lab",
-        "links_wired": len(my_links) - len(veth_errors),
-        "links_failed": len(veth_errors),
-        "message": result_msg,
-    }
+        dep = _get_or_create_deployment(db, topology_id)
+        if dep.status in _ACTIVE_STATES or dep.status == "failed":
+            _schedule_sync(topology_id)
+            return {"ok": True, "node_id": node_id, "action": "reconcile"}
+        return deploy_lab(db, topology_id)
+    if out.strip() == "running":
+        return {"ok": True, "node_id": node_id, "action": "noop"}
+    return _node_action(db, topology_id, node_id, "start", 300)
 
 
 def stop_node(db: Session, topology_id: int, node_id: int) -> dict:
-    """Stop a single node via `containerlab stop --node`.
-
-    clab parks the node's data-plane veth endpoints in a dedicated
-    namespace rather than destroying them, so `start_node` can move them
-    back without our needing to recreate veths or worry about cisco_xrd's
-    TAP↔veth bridge being torn down.
-    """
-    cname = _container_name_for_node(db, topology_id, node_id)
-    if not cname:
-        raise LabError("Node has no clab container name")
-    yaml_path, _lab_name, _spec = _ensure_fresh_yaml(db, topology_id)
-    short = _safe_node_name_for(db, topology_id, node_id) or ""
-    rc, out, err = _run(
-        ["containerlab", "stop", "-t", str(yaml_path), "--node", short],
-        timeout=120, cwd=str(yaml_path.parent),
-    )
-    if rc != 0:
-        raise LabError(f"containerlab stop --node failed: {err or out}")
-    return {"ok": True, "node_id": node_id, "container": cname, "action": "stopped"}
+    return _node_action(db, topology_id, node_id, "stop", 180)
 
 
 def restart_node(db: Session, topology_id: int, node_id: int) -> dict:
-    """Restart a single node via `containerlab restart --node`.
-
-    Works uniformly across kinds, including cisco_xrd — clab moves the
-    veth endpoints into its parking namespace during the bounce and
-    restores them after the container is back up.
-    """
-    cname = _container_name_for_node(db, topology_id, node_id)
-    if not cname:
-        raise LabError("Node has no clab container name")
-    yaml_path, _lab_name, _spec = _ensure_fresh_yaml(db, topology_id)
-    short = _safe_node_name_for(db, topology_id, node_id) or ""
-    rc, out, err = _run(
-        ["containerlab", "restart", "-t", str(yaml_path), "--node", short],
-        timeout=240, cwd=str(yaml_path.parent),
-    )
-    if rc != 0:
-        raise LabError(f"containerlab restart --node failed: {err or out}")
-    return {"ok": True, "node_id": node_id, "container": cname, "action": "restarted"}
+    return _node_action(db, topology_id, node_id, "restart", 600)
 
 
-def destroy_lab(db: Session, topology_id: int) -> dict:
-    """Tear down everything Phanero spawned for this topology.
-
-    `containerlab destroy` alone isn't enough in practice:
-      - it doesn't always clean up Exited containers (e.g. crashed XRd or
-        anything the per-node stop endpoint stopped before destroy ran);
-      - it won't catch containers added via the per-node fallback path
-        (docker run + veth) since those aren't in the topology YAML.
-
-    So we run clab destroy as best-effort (it handles netns / link cleanup
-    nicely when it works) and then sweep `docker rm -f` over every container
-    still labeled with this lab name. That label is set on every container
-    we spawn — whether via clab or the fallback — so the sweep is exhaustive.
-    """
+def _destroy_locked(db: Session, topology_id: int) -> dict:
     dep = _get_or_create_deployment(db, topology_id)
     if not dep.lab_name:
-        raise LabError("No lab has been deployed for this topology")
-
+        dep.status = "idle"
+        db.commit()
+        return {"ok": True, "removed_containers": [], "removed_count": 0}
     dep.status = "destroying"
     db.commit()
-
-    # Remove lab telemetry add-on sidecars first (best-effort). They
-    # carry a phanero-lab-addon label (not containerlab=), so the clab sweep
-    # below won't catch them.
     try:
         from app.services import lab_addons
         lab_addons.stop_lab_addons(dep.lab_name)
     except Exception:
         pass
-
-    clab_out = ""
-    clab_err = ""
     yaml_path = _yaml_path_for(dep.lab_name)
     if yaml_path.exists():
-        _rc, clab_out, clab_err = _run(
-            ["containerlab", "destroy", "-t", str(yaml_path), "--cleanup"],
-            timeout=300,
-            cwd=str(yaml_path.parent),
-        )
+        _rc, clab_out, clab_err = _run(["containerlab", "destroy", "-t", str(yaml_path), "--cleanup"],
+                                       timeout=600, cwd=str(yaml_path.parent))
     else:
-        _rc, clab_out, clab_err = _run(
-            ["containerlab", "destroy", "--name", dep.lab_name, "--cleanup"],
-            timeout=300,
-        )
-
-    # Sweep: anything still labeled containerlab=<lab_name> gets force-removed.
-    # Covers exited containers, per-node-fallback containers, and anything
-    # clab missed. -a so we catch non-running containers too.
-    rc, out, _err = _run(
-        ["docker", "ps", "-a",
-         "--filter", f"label=containerlab={dep.lab_name}",
-         "--format", "{{.ID}} {{.Names}}"],
-        timeout=30,
-    )
-    removed: list[str] = []
-    failed_removes: list[str] = []
-    if rc == 0 and out.strip():
+        _rc, clab_out, clab_err = _run(["containerlab", "destroy", "--name", dep.lab_name, "--cleanup"], timeout=600)
+    # Sweep anything clab missed (exited containers etc.) by its lab label.
+    rc, out, _ = _run(["docker", "ps", "-a", "--filter", f"label=containerlab={dep.lab_name}",
+                       "--format", "{{.ID}} {{.Names}}"], timeout=30)
+    removed, failed = [], []
+    if rc == 0:
         for line in out.strip().splitlines():
-            parts = line.split(" ", 1)
-            if not parts:
-                continue
-            cid = parts[0]
-            name = parts[1] if len(parts) > 1 else cid
-            r, _o, e = _run(["docker", "rm", "-f", cid], timeout=30)
+            cid, _, name = line.partition(" ")
+            r, o, e = _run(["docker", "rm", "-f", cid], timeout=60)
             if r == 0:
-                removed.append(name)
+                removed.append(name or cid)
             else:
-                failed_removes.append(f"{name}: {(e or _o).strip()[:200]}")
-
-    if failed_removes:
+                failed.append(f"{name or cid}: {(e or o).strip()[:200]}")
+    dep.finished_at = datetime.utcnow()
+    if failed:
         dep.status = "failed"
-        dep.last_error = "Some containers couldn't be removed:\n" + "\n".join(failed_removes)
-        dep.finished_at = datetime.utcnow()
+        dep.last_error = "Some containers couldn't be removed:\n" + "\n".join(failed)
         db.commit()
         raise LabError(dep.last_error)
-
-    dep.status = "idle"
-    dep.last_error = ""
-    dep.finished_at = datetime.utcnow()
+    dep.status, dep.last_error = "idle", ""
     db.commit()
-    return {
-        "ok": True,
-        "removed_containers": removed,
-        "removed_count": len(removed),
-        "clab_output_tail": (clab_out or clab_err)[-1000:],
-    }
+    return {"ok": True, "removed_containers": removed, "removed_count": len(removed),
+            "clab_output_tail": (clab_out or clab_err)[-1000:]}
 
 
-# --- Link impairments (netem) — query/modify per-link degradation at runtime ---
-# Requires the `sch_netem` kernel module on the host (`sudo modprobe sch_netem`);
-# containerlab's container can't load it itself.
+def destroy_lab(db: Session, topology_id: int) -> dict:
+    """Tear down every container this topology's lab spawned."""
+    _sync_pending.discard(topology_id)
+    with _lock_for(topology_id):
+        return _destroy_locked(db, topology_id)
+
+
+def destroy_lab_by_name(lab_name: str) -> None:
+    """Best-effort teardown for a topology that is being deleted."""
+    yaml_path = Path(LAB_STATE_DIR) / lab_name / "topology.clab.yml"
+    if yaml_path.exists():
+        _run(["containerlab", "destroy", "-t", str(yaml_path), "--cleanup"], timeout=600, cwd=str(yaml_path.parent))
+    rc, out, _ = _run(["docker", "ps", "-aq", "--filter", f"label=containerlab={lab_name}"], timeout=30)
+    for cid in out.split():
+        _run(["docker", "rm", "-f", cid], timeout=60)
+
+
+# --- Link impairments (netem) ----------------------------------------------
+# Requires the `sch_netem` kernel module on the host (`sudo modprobe sch_netem`).
 
 def _link_endpoints_for(db: Session, topology_id: int, link_id: int) -> list[tuple[str, str]]:
-    """Resolve a (merged) link id to [(container_name, iface), ...] for both
-    endpoints, using the same lab view the canvas renders."""
     from app.services.lab_view import compute_lab_view
     view = compute_lab_view(db, topology_id)
-    node_container = {n.get("id"): n.get("lab_container_name") for n in view.get("nodes", [])}
-    for l in view.get("links", []):
-        if l.get("id") == link_id:
-            eps = []
-            for nid, iface in [(l.get("source_node_id"), l.get("source_interface")),
-                               (l.get("target_node_id"), l.get("target_interface"))]:
-                cname = node_container.get(nid)
-                if cname and iface:
-                    eps.append((cname, iface))
-            return eps
+    cname = {n["id"]: n["lab_container_name"] for n in view["nodes"]}
+    for l in view["links"]:
+        if l["id"] == link_id:
+            return [(cname[nid], iface) for nid, iface in
+                    [(l["source_node_id"], l["source_interface"]), (l["target_node_id"], l["target_interface"])]
+                    if cname.get(nid) and iface]
     return []
 
 
 def _netem_hint(msg: str) -> str:
-    if "netem" in msg.lower() or "modprobe" in msg.lower() or "module" in msg.lower():
-        return (msg + "  (If this mentions sch_netem, load it on the host: "
-                "`sudo modprobe sch_netem`.)")
+    if any(w in msg.lower() for w in ("netem", "modprobe", "module")):
+        return msg + "  (If this mentions sch_netem, load it on the host: `sudo modprobe sch_netem`.)"
     return msg
 
 
 def get_link_netem(db: Session, topology_id: int, link_id: int) -> dict:
-    """Current netem impairments for both endpoints of a link."""
     eps = _link_endpoints_for(db, topology_id, link_id)
     if not eps:
-        raise LabError("Link not found in the lab view — deploy the lab first.")
+        raise LabError("Link not found in the lab — deploy the lab first.")
     endpoints = []
     for cname, iface in eps:
-        rc, out, err = _run(["containerlab", "tools", "netem", "show", "-n", cname, "--format", "json"], timeout=15)
+        rc, out, _ = _run(["containerlab", "tools", "netem", "show", "-n", cname, "--format", "json"], timeout=15)
         impair = None
         if rc == 0 and out.strip():
             try:
                 for item in (json.loads(out).get(cname) or []):
                     if item.get("interface") == iface:
                         impair = {
-                            "delay": item.get("delay") or "",
-                            "jitter": item.get("jitter") or "",
-                            "loss": item.get("packet_loss") or 0,
-                            "rate": item.get("rate") or 0,
+                            "delay": item.get("delay") or "", "jitter": item.get("jitter") or "",
+                            "loss": item.get("packet_loss") or 0, "rate": item.get("rate") or 0,
                             "corruption": item.get("corruption") or 0,
                         }
                         break
@@ -1426,11 +1167,9 @@ def get_link_netem(db: Session, topology_id: int, link_id: int) -> dict:
 
 def set_link_netem(db: Session, topology_id: int, link_id: int, delay: str = "", jitter: str = "",
                    loss: float = 0, rate: int = 0, corruption: float = 0) -> dict:
-    """Apply impairments symmetrically to BOTH endpoints of a link. Empty/zero
-    values across the board resets the link instead."""
     eps = _link_endpoints_for(db, topology_id, link_id)
     if not eps:
-        raise LabError("Link not found in the lab view — deploy the lab first.")
+        raise LabError("Link not found in the lab — deploy the lab first.")
     if not (delay or jitter or float(loss or 0) or int(rate or 0) or float(corruption or 0)):
         return reset_link_netem(db, topology_id, link_id)
     errors = []
@@ -1455,10 +1194,16 @@ def set_link_netem(db: Session, topology_id: int, link_id: int, delay: str = "",
 
 
 def reset_link_netem(db: Session, topology_id: int, link_id: int) -> dict:
-    """Clear impairments on both endpoints of a link."""
     eps = _link_endpoints_for(db, topology_id, link_id)
     if not eps:
-        raise LabError("Link not found in the lab view — deploy the lab first.")
+        raise LabError("Link not found in the lab — deploy the lab first.")
     for cname, iface in eps:
         _run(["containerlab", "tools", "netem", "reset", "-n", cname, "-i", iface], timeout=15)
     return get_link_netem(db, topology_id, link_id)
+
+
+def local_docker_images() -> set[str]:
+    rc, out, _ = _run(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], timeout=20)
+    if rc != 0:
+        return set()
+    return {l.strip() for l in out.splitlines() if l.strip() and "<none>" not in l}

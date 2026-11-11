@@ -12,7 +12,7 @@ from app.models.database import get_db
 from app.services.clab_yaml import generate_clab_yaml, get_host_capacity
 from app.services.lab_view import compute_lab_view
 from app.services.lab_service import (
-    LabError, LabBusyError, deploy_lab, destroy_lab, get_deployment_state,
+    LabError, deploy_lab, destroy_lab, get_deployment_state,
     list_device_images, load_device_image, save_uploaded_image, get_host_prereqs,
     start_node, stop_node, restart_node,
     get_link_netem, set_link_netem, reset_link_netem,
@@ -25,9 +25,8 @@ images_router = APIRouter(prefix="/api/lab", tags=["lab"])
 
 @router.get("/view")
 def lab_view(topology_id: int, db: Session = Depends(get_db)):
-    """Translated lab view of this topology — same shape as the design, but
-    with templates and interface names swapped for what'll actually deploy.
-    Frontend renders this in lab mode."""
+    """Runtime view of this topology (clab names, container names, kernel
+    interface names)."""
     return compute_lab_view(db, topology_id)
 
 
@@ -81,8 +80,6 @@ def lab_prereqs(topology_id: int, db: Session = Depends(get_db)):
 def lab_deploy(topology_id: int, db: Session = Depends(get_db)):
     try:
         return deploy_lab(db, topology_id)
-    except LabBusyError as e:
-        raise HTTPException(409, str(e))
     except LabError as e:
         raise HTTPException(400, str(e))
 
@@ -97,10 +94,8 @@ def lab_destroy(topology_id: int, db: Session = Depends(get_db)):
 
 @router.post("/redeploy")
 def lab_redeploy(topology_id: int, db: Session = Depends(get_db)):
-    """Destroy whatever's currently running for this topology, then deploy
-    using the latest YAML + subset selection. Loses any in-container running
-    config that isn't in the YAML's startup-config — surfaced to the user via
-    a confirm dialog on the frontend."""
+    """Destroy and deploy from scratch. Loses running config that isn't in a
+    node's startup config (the UI confirms first)."""
     try:
         destroy_lab(db, topology_id)
     except LabError:
@@ -109,8 +104,6 @@ def lab_redeploy(topology_id: int, db: Session = Depends(get_db)):
         pass
     try:
         return deploy_lab(db, topology_id)
-    except LabBusyError as e:
-        raise HTTPException(409, str(e))
     except LabError as e:
         raise HTTPException(400, str(e))
 
@@ -129,7 +122,7 @@ def _require_telemetry_addon():
     from app.services import lab_addons
     if not lab_addons.addon_enabled():
         raise HTTPException(404, "Lab telemetry add-on is not enabled "
-                            "(set PHANERO_LAB_TELEMETRY_ENABLED=1).")
+                            "(set PLABS_LAB_TELEMETRY_ENABLED=1).")
 
 
 def _sub_to_dict(s) -> dict:
@@ -266,72 +259,19 @@ def lab_reset_link_netem(topology_id: int, link_id: int, db: Session = Depends(g
         raise HTTPException(400, str(e))
 
 
-@router.get("/subset")
-def lab_get_subset(topology_id: int, db: Session = Depends(get_db)):
-    """Read the persisted deploy-subset.
-
-    Returns `{node_ids, explicit}`:
-      - explicit=False — no user preference saved; the UI should treat
-        every deployable node as included ("Select all" state).
-      - explicit=True with non-empty list — user picked a specific subset.
-      - explicit=True with empty list — user explicitly cleared the
-        selection; Deploy will refuse with a helpful error.
-    """
-    from app.models.lab_deployment import LabDeployment
-    import json as _json
-    dep = db.query(LabDeployment).filter(LabDeployment.topology_id == topology_id).first()
-    raw = (dep.deployment_subset_json if dep else "") or ""
-    if not raw.strip():
-        return {"node_ids": [], "explicit": False}
-    try:
-        ids = _json.loads(raw)
-    except Exception:
-        return {"node_ids": [], "explicit": False}
-    if not isinstance(ids, list):
-        return {"node_ids": [], "explicit": False}
-    return {"node_ids": list(ids), "explicit": True}
-
-
-class SubsetIn(BaseModel):
-    node_ids: list[int] = []
-    explicit: bool = True
-
-
-@router.put("/subset")
-def lab_set_subset(topology_id: int, data: SubsetIn, db: Session = Depends(get_db)):
-    """Persist the deploy-subset.
-
-    explicit=False clears the saved preference (deploy will include every
-    deployable node, including any added later). explicit=True saves the
-    exact list — even an empty list, which makes Deploy refuse.
-    """
-    from app.services.lab_service import _get_or_create_deployment
-    import json as _json
-    dep = _get_or_create_deployment(db, topology_id)
-    if not data.explicit:
-        dep.deployment_subset_json = ""
-    else:
-        dep.deployment_subset_json = _json.dumps([int(n) for n in (data.node_ids or [])])
-    db.commit()
-    return {"ok": True, "node_ids": data.node_ids, "explicit": data.explicit}
-
-
 @router.post("/node/{node_id}/start")
 def lab_start_node(topology_id: int, node_id: int, db: Session = Depends(get_db)):
-    """Start a single lab node. If the container already exists it's
-    docker-started; otherwise containerlab deploys just this node."""
+    """Start a stopped node (or reconcile it into existence)."""
     try:
         return start_node(db, topology_id, node_id)
-    except LabBusyError as e:
-        raise HTTPException(409, str(e))
     except LabError as e:
         raise HTTPException(400, str(e))
 
 
 @router.post("/node/{node_id}/stop")
 def lab_stop_node(topology_id: int, node_id: int, db: Session = Depends(get_db)):
-    """docker stop a single node, freeing its RAM. Veth wiring + config
-    persist so Start brings it back instantly."""
+    """Stop a node, freeing its RAM. containerlab parks its dataplane so Start
+    restores the links."""
     try:
         return stop_node(db, topology_id, node_id)
     except LabError as e:
@@ -419,13 +359,19 @@ def host_capacity():
     return get_host_capacity()
 
 
-@images_router.get("/kind-defaults")
-def kind_defaults():
-    """Recommended resource defaults per containerlab kind. Used by the
-    Templates panel to auto-fill memory/CPU/hugepages when the user picks
-    a kind."""
-    from app.services.clab_kind_defaults import CLAB_KIND_DEFAULTS
-    return {"kinds": CLAB_KIND_DEFAULTS}
+@images_router.get("/kinds")
+def kinds():
+    """Device kind registry (interface naming, credentials, sizing)."""
+    from app.services.device_kinds import kind_catalog
+    return {"kinds": kind_catalog()}
+
+
+@images_router.get("/docker-images")
+def docker_images():
+    """Image references present in the local Docker daemon — lets the palette
+    flag templates whose image hasn't been loaded/built yet."""
+    from app.services.lab_service import local_docker_images
+    return {"images": sorted(local_docker_images())}
 
 
 # --- QCOW VM image flow (upload -> vrnetlab build -> built docker tag) ---

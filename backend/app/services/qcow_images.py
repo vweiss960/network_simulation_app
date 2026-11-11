@@ -41,7 +41,7 @@ from app.models.database import SessionLocal
 from app.models.device_image import DeviceImage
 
 
-DEVICE_IMAGES_DIR = Path(os.environ.get("DEVICE_IMAGES_DIR", "/app/device_images"))
+from app.config import DEVICE_IMAGES_DIR
 QCOW_DIR = DEVICE_IMAGES_DIR / "qcow"
 LOG_DIR = DEVICE_IMAGES_DIR / "qcow_logs"
 VRNETLAB_DIR = DEVICE_IMAGES_DIR / "vrnetlab"
@@ -68,6 +68,20 @@ class QcowImageError(Exception):
 # (cisco/csr1000v, cisco/vios, …). The `subdir` value here is the path
 # RELATIVE to the cloned repo root — Path joins it correctly.
 PLATFORMS: dict[str, dict] = {
+    "c8000v": {
+        "vendor": "cisco",
+        "label": "Cisco Catalyst 8000v",
+        "subdir": "cisco/c8000v",
+        "clab_kind": "cisco_c8000v",
+        "qcow_hint": "c8000v-universalk9_8G_serial.<ver>.qcow2 (the *serial* console build)",
+    },
+    "xrv9k": {
+        "vendor": "cisco",
+        "label": "Cisco XRv 9000",
+        "subdir": "cisco/xrv9k",
+        "clab_kind": "cisco_xrv9k",
+        "qcow_hint": "xrv9k-fullk9-x.vrr-<ver>.qcow2",
+    },
     "csr1000v": {
         "vendor": "cisco",
         "label": "Cisco CSR 1000v",
@@ -392,7 +406,7 @@ def _run_build(image_id: int) -> None:
 
         before_tags = _list_docker_image_tags()
         with open(log_path, "w") as log:
-            log.write(f"=== Phanero vrnetlab build for image {img.id} ({img.filename}) ===\n")
+            log.write(f"=== vrnetlab build for image {img.id} ({img.filename}) ===\n")
             log.write(f"=== Platform: {img.platform} ({platform['label']}) ===\n")
             log.write(f"=== Build dir: {build_dir} ===\n\n")
             log.flush()
@@ -405,7 +419,7 @@ def _run_build(image_id: int) -> None:
                 )
                 rc = proc.returncode
             except subprocess.TimeoutExpired:
-                log.write("\n=== Phanero: build exceeded 1 hour timeout — aborted ===\n")
+                log.write("\n=== build exceeded 1 hour timeout — aborted ===\n")
                 rc = 124
 
         after_tags = _list_docker_image_tags()
@@ -419,6 +433,7 @@ def _run_build(image_id: int) -> None:
             img.built_image_tag = preferred[0] if preferred else new_tags[0]
             img.status = "built"
             img.built_at = datetime.now(timezone.utc)
+            _fill_template_images(db, img.clab_kind, img.built_image_tag)
         elif rc == 0 and not new_tags:
             _mark_failed(db, img, "Build exited 0 but no new Docker image appeared — check the log.")
             return
@@ -512,3 +527,11 @@ def delete_image(db: Session, image_id: int, also_docker_rmi: bool = True) -> di
 
 def get_image(db: Session, image_id: int) -> DeviceImage | None:
     return db.query(DeviceImage).filter(DeviceImage.id == image_id).first()
+
+
+def _fill_template_images(db, kind: str, tag: str) -> None:
+    """Point palette templates of this kind that have no image yet at the
+    freshly built tag, so a successful build makes the device usable."""
+    from app.models.node_template import NodeTemplate
+    for t in db.query(NodeTemplate).filter(NodeTemplate.kind == kind, NodeTemplate.image_ref == "").all():
+        t.image_ref = tag

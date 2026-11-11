@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
-import { useStore } from '../stores/useStore';
+import { useLabStore } from '../stores/useLabStore';
 
 export type ConsoleTab = {
   id: string;        // node-id + kind ("console:42" or "logs:42")
@@ -73,7 +73,7 @@ function LabConsole({ nodeId, cli }: { nodeId: number; cli?: string }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const currentTopologyId = useStore(s => s.currentTopologyId);
+  const currentTopologyId = useLabStore(s => s.currentTopologyId);
 
   useEffect(() => {
     if (!containerRef.current || !currentTopologyId) return;
@@ -145,7 +145,7 @@ function LabLogs({ nodeId }: { nodeId: number }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const currentTopologyId = useStore(s => s.currentTopologyId);
+  const currentTopologyId = useLabStore(s => s.currentTopologyId);
 
   useEffect(() => {
     if (!containerRef.current || !currentTopologyId) return;

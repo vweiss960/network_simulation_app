@@ -17,7 +17,7 @@ class LabDeployment(Base):
     )
 
     id = Column(Integer, primary_key=True, index=True)
-    topology_id = Column(Integer, ForeignKey("topologies.id"), nullable=False)
+    topology_id = Column(Integer, ForeignKey("topologies.id", ondelete="CASCADE"), nullable=False)
     status = Column(String, default="idle")  # idle, deploying, running, destroying, failed
     lab_name = Column(String, default="")    # containerlab-side lab name (used in CLI calls)
     lab_dir = Column(String, default="")     # filesystem path where the YAML + state live
@@ -26,7 +26,3 @@ class LabDeployment(Base):
     started_at = Column(DateTime, nullable=True)   # last deploy start time
     finished_at = Column(DateTime, nullable=True)  # last terminal-state transition time
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    # Persisted subset selection — JSON list of node ids the user wants
-    # included in deploys. Empty/null means "all deployable nodes". Per-topology;
-    # the canvas dims nodes not in the list while in Lab mode.
-    deployment_subset_json = Column(Text, default="")

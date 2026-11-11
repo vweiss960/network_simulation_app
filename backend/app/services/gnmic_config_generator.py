@@ -6,7 +6,7 @@ Prometheus output that Prometheus scrapes. This mirrors how
 prometheus_config_generator.py builds scrape config from node inventory — but
 for gNMI streaming telemetry instead of SNMP.
 
-Lab-telemetry add-on only (gated by PHANERO_LAB_TELEMETRY_ENABLED).
+Lab-telemetry add-on only (gated by PLABS_LAB_TELEMETRY_ENABLED).
 """
 from __future__ import annotations
 

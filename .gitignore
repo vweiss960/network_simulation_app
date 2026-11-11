@@ -49,6 +49,7 @@ Thumbs.db
 # (Dockerfile dirs) are committed; blobs and the vrnetlab clone are not.
 device_images/*
 !device_images/frr-lab/
+!device_images/linux-host/
 !device_images/automation-workstation/
 
 # DB backups taken by scripts/upgrade.sh

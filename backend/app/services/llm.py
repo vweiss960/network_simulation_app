@@ -7,13 +7,13 @@ provider-native message history lives inside a `Conversation` so the routes
 never touch tool_use / tool_calls blocks directly.
 
 Configured from env (read at import; recreate the backend container to change):
-    PHANERO_AI_PROVIDER   anthropic (default) | openai | litellm
-    PHANERO_AI_API_KEY    provider key (anthropic falls back to ANTHROPIC_API_KEY;
+    PLABS_AI_PROVIDER   anthropic (default) | openai | litellm
+    PLABS_AI_API_KEY    provider key (anthropic falls back to ANTHROPIC_API_KEY;
                           optional for a LiteLLM proxy without a master key)
-    PHANERO_AI_BASE_URL   API base URL — required for litellm (e.g. http://localhost:4000)
-    PHANERO_AI_MODEL      main model; required for openai / litellm (a LiteLLM model alias)
-    PHANERO_AI_TOOL_MODEL optional fast model for chat's tool-selection turns
-                          (defaults to Haiku on anthropic, else PHANERO_AI_MODEL)
+    PLABS_AI_BASE_URL   API base URL — required for litellm (e.g. http://localhost:4000)
+    PLABS_AI_MODEL      main model; required for openai / litellm (a LiteLLM model alias)
+    PLABS_AI_TOOL_MODEL optional fast model for chat's tool-selection turns
+                          (defaults to Haiku on anthropic, else PLABS_AI_MODEL)
 
 openai and litellm share the OpenAI-compatible adapter — a LiteLLM proxy speaks
 the OpenAI Chat Completions API and routes to whatever backend it's configured for.
@@ -25,9 +25,9 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-PROVIDER = os.environ.get("PHANERO_AI_PROVIDER", "anthropic").strip().lower() or "anthropic"
-BASE_URL = os.environ.get("PHANERO_AI_BASE_URL", "").strip()
-API_KEY = os.environ.get("PHANERO_AI_API_KEY", "").strip() or (
+PROVIDER = os.environ.get("PLABS_AI_PROVIDER", "anthropic").strip().lower() or "anthropic"
+BASE_URL = os.environ.get("PLABS_AI_BASE_URL", "").strip()
+API_KEY = os.environ.get("PLABS_AI_API_KEY", "").strip() or (
     os.environ.get("ANTHROPIC_API_KEY", "").strip() if PROVIDER == "anthropic" else ""
 )
 
@@ -35,21 +35,21 @@ _DEFAULT_MODELS = {
     "anthropic": ("claude-sonnet-4-6", "claude-haiku-4-5-20251001"),
 }
 _default_model, _default_tool_model = _DEFAULT_MODELS.get(PROVIDER, ("", ""))
-MODEL = os.environ.get("PHANERO_AI_MODEL", "").strip() or _default_model
-TOOL_MODEL = os.environ.get("PHANERO_AI_TOOL_MODEL", "").strip() or _default_tool_model or MODEL
+MODEL = os.environ.get("PLABS_AI_MODEL", "").strip() or _default_model
+TOOL_MODEL = os.environ.get("PLABS_AI_TOOL_MODEL", "").strip() or _default_tool_model or MODEL
 
 
 def config_error() -> str | None:
     """Human-readable reason the AI can't run, or None when configured."""
     if PROVIDER not in ("anthropic", "openai", "litellm"):
-        return f"Unknown PHANERO_AI_PROVIDER '{PROVIDER}' (expected anthropic, openai or litellm)."
+        return f"Unknown PLABS_AI_PROVIDER '{PROVIDER}' (expected anthropic, openai or litellm)."
     if PROVIDER == "litellm" and not BASE_URL:
-        return "PHANERO_AI_PROVIDER=litellm requires PHANERO_AI_BASE_URL (the LiteLLM proxy URL)."
+        return "PLABS_AI_PROVIDER=litellm requires PLABS_AI_BASE_URL (the LiteLLM proxy URL)."
     if PROVIDER in ("anthropic", "openai") and not API_KEY:
-        hint = "PHANERO_AI_API_KEY (or ANTHROPIC_API_KEY)" if PROVIDER == "anthropic" else "PHANERO_AI_API_KEY"
+        hint = "PLABS_AI_API_KEY (or ANTHROPIC_API_KEY)" if PROVIDER == "anthropic" else "PLABS_AI_API_KEY"
         return f"No API key configured for {PROVIDER}. Set {hint} on the backend and recreate it."
     if not MODEL:
-        return f"PHANERO_AI_MODEL must be set when PHANERO_AI_PROVIDER={PROVIDER}."
+        return f"PLABS_AI_MODEL must be set when PLABS_AI_PROVIDER={PROVIDER}."
     return None
 
 

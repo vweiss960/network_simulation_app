@@ -1,0 +1,206 @@
+"""Device kind registry — the single source of truth for every containerlab
+kind Phanero Labs can deploy.
+
+Each node on the canvas *is* a deployable device: it carries a containerlab
+`kind` and an image. Everything kind-specific (how data interfaces are named
+in the clab YAML vs. inside the device's own config, default credentials,
+how to open a CLI, how long it takes to boot, how much RAM/CPU it wants)
+lives here instead of being scattered across the lab modules.
+
+Interface naming
+----------------
+Every data-plane port has two names:
+  * ``kernel`` — the name containerlab uses in ``links: endpoints:`` (what the
+    veth inside the container is called, e.g. ``Gi0-0-0-0`` or ``eth1``);
+  * ``name``   — the name the device's own CLI/config uses
+    (``GigabitEthernet0/0/0/0``, ``GigabitEthernet2`` …).
+Nodes store both (``NodeInstance.interfaces``) so links, configs and the UI
+all speak the device's native names while the YAML generator uses kernel names.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+
+def _pattern(fmt: str) -> Callable[[int], str]:
+    """Interface formatter from a pattern. {n0}=0-based, {n1}=1-based,
+    {n2}=index+2 (IOS-XE VMs whose Gi1 is the management port)."""
+    return lambda i: fmt.format(n0=i, n1=i + 1, n2=i + 2)
+
+
+def _vios_name(i: int) -> str:
+    # vrnetlab vIOS: eth1 → Gi0/1 … Gi0/3, then Gi1/0 … in groups of four
+    # (Gi0/0 is management).
+    slot, port = divmod(i + 1, 4)
+    return f"GigabitEthernet{slot}/{port}"
+
+
+@dataclass(frozen=True)
+class DeviceKind:
+    kind: str                      # containerlab kind
+    label: str                     # human label
+    family: str                    # iosxr | iosxe | ios | linux | eos | srl | junos | bridge
+    kernel_iface: Callable[[int], str]
+    config_iface: Callable[[int], str]
+    mgmt_iface: str = "eth0"
+    default_user: str = ""
+    default_password: str = ""
+    # Command to run via `docker exec` for an interactive CLI (fallback when
+    # the device can't be reached over SSH, and the primary path for linux).
+    exec_cli: list[str] = field(default_factory=lambda: ["sh"])
+    ssh: bool = True               # device runs an SSH server on its mgmt IP
+    boot_seconds: int = 30         # "running" but not ready yet for this long
+    min_memory_mb: int = 512
+    min_cpu_cores: int = 1
+    requires_hugepages: bool = False
+    is_vm: bool = False            # vrnetlab-wrapped QEMU VM (needs /dev/kvm)
+    max_interfaces: int = 16
+    default_interfaces: int = 4
+    description: str = ""
+    # Ports reachable on the mgmt IP, for the UI / automation tooling.
+    services: dict[str, int] = field(default_factory=dict)
+
+    def interfaces(self, count: int) -> list[dict]:
+        count = max(0, min(count, self.max_interfaces))
+        return [
+            {"name": self.config_iface(i), "kernel": self.kernel_iface(i)}
+            for i in range(count)
+        ]
+
+
+_XR_SERVICES = {"ssh": 22, "netconf": 830, "gnmi": 57400}
+_XE_SERVICES = {"ssh": 22, "netconf": 830, "restconf": 443, "gnmi": 57400}
+
+KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
+    DeviceKind(
+        kind="cisco_xrd", label="Cisco XRd", family="iosxr",
+        kernel_iface=_pattern("Gi0-0-0-{n0}"),
+        config_iface=_pattern("GigabitEthernet0/0/0/{n0}"),
+        mgmt_iface="MgmtEth0/RP0/CPU0/0",
+        default_user="clab", default_password="clab@123",
+        exec_cli=["/pkg/bin/xr_cli"],
+        boot_seconds=120, min_memory_mb=2048, min_cpu_cores=2,
+        max_interfaces=16, default_interfaces=4,
+        description="IOS-XR as a container. Control Plane image is container-native; "
+                    "the vRouter image adds a forwarding plane but needs hugepages.",
+        services={"ssh": 22, "netconf": 830, "gnmi": 9339},
+    ),
+    DeviceKind(
+        kind="cisco_xrv9k", label="Cisco XRv 9000", family="iosxr",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_pattern("GigabitEthernet0/0/0/{n0}"),
+        mgmt_iface="MgmtEth0/RP0/CPU0/0",
+        default_user="clab", default_password="clab@123",
+        exec_cli=["telnet", "127.0.0.1", "5000"],
+        boot_seconds=600, min_memory_mb=16384, min_cpu_cores=4, is_vm=True,
+        max_interfaces=16, default_interfaces=4,
+        description="IOS-XR VM (vrnetlab). Full data plane: MPLS, SR, L2VPN, EVPN.",
+        services=_XR_SERVICES,
+    ),
+    DeviceKind(
+        kind="cisco_c8000v", label="Cisco Catalyst 8000v", family="iosxe",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_pattern("GigabitEthernet{n2}"),
+        mgmt_iface="GigabitEthernet1",
+        default_user="admin", default_password="admin",
+        exec_cli=["telnet", "127.0.0.1", "5000"],
+        boot_seconds=300, min_memory_mb=4096, min_cpu_cores=2, is_vm=True,
+        max_interfaces=8, default_interfaces=4,
+        description="IOS-XE VM (vrnetlab). NETCONF/RESTCONF/gNMI, MPLS, L3VPN.",
+        services=_XE_SERVICES,
+    ),
+    DeviceKind(
+        kind="cisco_csr1000v", label="Cisco CSR 1000v", family="iosxe",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_pattern("GigabitEthernet{n2}"),
+        mgmt_iface="GigabitEthernet1",
+        default_user="admin", default_password="admin",
+        exec_cli=["telnet", "127.0.0.1", "5000"],
+        boot_seconds=300, min_memory_mb=4096, min_cpu_cores=1, is_vm=True,
+        max_interfaces=8, default_interfaces=4,
+        description="IOS-XE VM (vrnetlab), predecessor of the Catalyst 8000v.",
+        services=_XE_SERVICES,
+    ),
+    DeviceKind(
+        kind="cisco_vios", label="Cisco vIOS", family="ios",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_vios_name,
+        mgmt_iface="GigabitEthernet0/0",
+        default_user="admin", default_password="admin",
+        exec_cli=["telnet", "127.0.0.1", "5000"],
+        boot_seconds=180, min_memory_mb=768, min_cpu_cores=1, is_vm=True,
+        max_interfaces=15, default_interfaces=4,
+        description="Classic IOS / IOS L2 switch VM (vrnetlab).",
+        services={"ssh": 22},
+    ),
+    DeviceKind(
+        kind="linux", label="Linux", family="linux",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_pattern("eth{n1}"),
+        exec_cli=["sh"], ssh=False,
+        boot_seconds=5, min_memory_mb=512, min_cpu_cores=1,
+        max_interfaces=32, default_interfaces=4,
+        description="Generic Linux container: FRR, hosts, the automation workstation.",
+    ),
+    DeviceKind(
+        kind="arista_ceos", label="Arista cEOS", family="eos",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_pattern("Ethernet{n1}"),
+        mgmt_iface="Management0",
+        default_user="admin", default_password="admin",
+        exec_cli=["Cli"],
+        boot_seconds=60, min_memory_mb=2048, min_cpu_cores=1,
+        description="Arista cEOS-lab.",
+        services={"ssh": 22, "gnmi": 6030},
+    ),
+    DeviceKind(
+        kind="nokia_srlinux", label="Nokia SR Linux", family="srl",
+        kernel_iface=_pattern("e1-{n1}"),
+        config_iface=_pattern("ethernet-1/{n1}"),
+        mgmt_iface="mgmt0",
+        default_user="admin", default_password="NokiaSrl1!",
+        exec_cli=["sr_cli"],
+        boot_seconds=30, min_memory_mb=2048, min_cpu_cores=1,
+        description="Nokia SR Linux.",
+        services={"ssh": 22, "gnmi": 57400},
+    ),
+    DeviceKind(
+        kind="juniper_crpd", label="Juniper cRPD", family="junos",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_pattern("eth{n1}"),
+        default_user="root", default_password="clab123",
+        exec_cli=["cli"],
+        boot_seconds=15, min_memory_mb=1024, min_cpu_cores=1,
+        description="Juniper cRPD (control plane only).",
+        services={"ssh": 22},
+    ),
+]}
+
+DEFAULT_KIND = "linux"
+
+
+def get_kind(kind: str | None) -> DeviceKind:
+    return KINDS.get(kind or "", KINDS[DEFAULT_KIND])
+
+
+def is_known_kind(kind: str | None) -> bool:
+    return bool(kind) and kind in KINDS
+
+
+def kind_catalog() -> list[dict]:
+    """Serializable registry for the frontend (template editor, palette)."""
+    return [
+        {
+            "kind": k.kind, "label": k.label, "family": k.family,
+            "mgmt_iface": k.mgmt_iface, "default_user": k.default_user,
+            "ssh": k.ssh, "boot_seconds": k.boot_seconds,
+            "min_memory_mb": k.min_memory_mb, "min_cpu_cores": k.min_cpu_cores,
+            "requires_hugepages": k.requires_hugepages, "is_vm": k.is_vm,
+            "max_interfaces": k.max_interfaces, "default_interfaces": k.default_interfaces,
+            "description": k.description, "services": dict(k.services),
+            "example_interfaces": k.interfaces(3),
+        }
+        for k in KINDS.values()
+    ]

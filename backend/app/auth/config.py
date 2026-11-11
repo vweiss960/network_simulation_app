@@ -2,7 +2,7 @@ import os
 import yaml
 
 # JWT settings from environment
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "phanero-dev-secret-change-me")
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "plabs-dev-secret-change-me")
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "480"))
 
@@ -11,7 +11,7 @@ ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 # LDAP config from YAML file
-LDAP_CONFIG_PATH = os.environ.get("LDAP_CONFIG_PATH", "/app/app/auth/ldap_config.yaml")
+LDAP_CONFIG_PATH = os.environ.get("LDAP_CONFIG_PATH", os.path.join(os.path.dirname(__file__), "ldap_config.yaml"))
 
 
 def load_ldap_config() -> dict:

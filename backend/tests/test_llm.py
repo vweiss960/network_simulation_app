@@ -147,11 +147,11 @@ def test_anthropic_tool_round_trip(monkeypatch):
 @pytest.mark.parametrize("provider,key,base,model,expect", [
     ("anthropic", "k", "", "m", None),
     ("anthropic", "", "", "m", "No API key"),
-    ("openai", "k", "", "", "PHANERO_AI_MODEL must be set"),
+    ("openai", "k", "", "", "PLABS_AI_MODEL must be set"),
     ("openai", "k", "", "gpt", None),
-    ("litellm", "", "", "alias", "requires PHANERO_AI_BASE_URL"),
+    ("litellm", "", "", "alias", "requires PLABS_AI_BASE_URL"),
     ("litellm", "", "http://localhost:4000", "alias", None),  # keyless proxy is fine
-    ("bogus", "k", "", "m", "Unknown PHANERO_AI_PROVIDER"),
+    ("bogus", "k", "", "m", "Unknown PLABS_AI_PROVIDER"),
 ])
 def test_config_error(monkeypatch, provider, key, base, model, expect):
     monkeypatch.setattr(llm, "PROVIDER", provider)

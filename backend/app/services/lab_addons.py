@@ -1,7 +1,6 @@
 """Lab telemetry add-on — backend-orchestrated sidecars.
 
-When the LAB telemetry add-on is enabled (PHANERO_LAB_ENABLED +
-PHANERO_LAB_TELEMETRY_ENABLED), Phanero runs a sidecar on the containerlab
+When the LAB telemetry add-on is enabled (PLABS_LAB_TELEMETRY_ENABLED), Phanero Labs runs a sidecar on the containerlab
 `clab` bridge for a deployed lab so it can reach node mgmt IPs directly:
 
   - gnmic collector (ghcr.io/openconfig/gnmic) — subscribes to each node's gNMI
@@ -9,7 +8,7 @@ PHANERO_LAB_TELEMETRY_ENABLED), Phanero runs a sidecar on the containerlab
 
 The same gnmic image also backs one-shot gNMI path tests (`test_gnmi_path`).
 Started on lab deploy, removed on lab destroy. Sidecars carry a
-`phanero-lab-addon=<lab_name>` label (NOT the `containerlab=` label) so they stay
+`plabs-lab-addon=<lab_name>` label (NOT the `containerlab=` label) so they stay
 out of clab's node inventory and are torn down explicitly here.
 """
 from __future__ import annotations
@@ -23,14 +22,14 @@ from app.services.gnmic_config_generator import build_gnmic_config, DEFAULT_GNMI
 
 logger = logging.getLogger("app.lab_addons")
 
-LAB_STATE_DIR = os.environ.get("LAB_STATE_DIR", "/app/lab_state")
-CLAB_NETWORK = "clab"
-ADDON_LABEL = "phanero-lab-addon"
+from app.config import LAB_STATE_DIR
+from app.services.clab_yaml import MGMT_NETWORK as CLAB_NETWORK  # shared lab mgmt network
+ADDON_LABEL = "plabs-lab-addon"
 
-GNMIC_IMAGE = os.environ.get("PHANERO_GNMIC_IMAGE", "ghcr.io/openconfig/gnmic:latest")
-GNMIC_PROM_HOST_PORT = int(os.environ.get("PHANERO_GNMIC_PROM_PORT", "9273"))
-LAB_GNMI_USER = os.environ.get("PHANERO_LAB_GNMI_USER", DEFAULT_USER)
-LAB_GNMI_PASS = os.environ.get("PHANERO_LAB_GNMI_PASS", DEFAULT_PASS)
+GNMIC_IMAGE = os.environ.get("PLABS_GNMIC_IMAGE", "ghcr.io/openconfig/gnmic:latest")
+GNMIC_PROM_HOST_PORT = int(os.environ.get("PLABS_GNMIC_PROM_PORT", "9274"))
+LAB_GNMI_USER = os.environ.get("PLABS_LAB_GNMI_USER", DEFAULT_USER)
+LAB_GNMI_PASS = os.environ.get("PLABS_LAB_GNMI_PASS", DEFAULT_PASS)
 
 # Kinds whose nodes speak gNMI (so we point the collector only at them).
 GNMI_KINDS = {"cisco_xrd", "cisco_xrv9k", "nokia_srlinux", "arista_ceos", "juniper_crpd"}
@@ -39,7 +38,7 @@ GNMI_KINDS = {"cisco_xrd", "cisco_xrv9k", "nokia_srlinux", "arista_ceos", "junip
 def addon_enabled() -> bool:
     def _on(name: str) -> bool:
         return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
-    return _on("PHANERO_LAB_ENABLED") and _on("PHANERO_LAB_TELEMETRY_ENABLED")
+    return _on("PLABS_LAB_TELEMETRY_ENABLED")
 
 
 def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str, str]:
@@ -53,7 +52,7 @@ def _run(cmd: list[str], timeout: int = 120) -> tuple[int, str, str]:
 
 
 def _addon_name(kind: str, lab_name: str) -> str:
-    return f"phanero-addon-{kind}-{lab_name}"
+    return f"plabs-addon-{kind}-{lab_name}"
 
 
 def _image_exists(image: str) -> bool:
@@ -194,7 +193,7 @@ def start_lab_addons(lab_name: str, nodes: list[dict],
 
 
 def stop_lab_addons(lab_name: str) -> dict:
-    """Remove all sidecars for a lab (by the phanero-lab-addon label)."""
+    """Remove all sidecars for a lab (by the plabs-lab-addon label)."""
     rc, out, _ = _run(["docker", "ps", "-a",
                        "--filter", f"label={ADDON_LABEL}={lab_name}",
                        "--format", "{{.Names}}"], timeout=30)

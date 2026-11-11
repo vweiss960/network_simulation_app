@@ -12,7 +12,7 @@ class LabGnmiSubscription(Base):
     __tablename__ = "lab_gnmi_subscriptions"
 
     id = Column(Integer, primary_key=True, index=True)
-    topology_id = Column(Integer, ForeignKey("topologies.id"), nullable=False, index=True)
+    topology_id = Column(Integer, ForeignKey("topologies.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String, nullable=False)          # gnmic subscription name (config key)
     path = Column(String, nullable=False)          # gNMI path (xpath / origin:/path)
     mode = Column(String, default="sample")        # "sample" | "on-change"

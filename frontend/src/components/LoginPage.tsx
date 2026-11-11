@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuthStore } from '../stores/useAuthStore';
 
-/** The Phanero fan-of-rays mark (same artwork as the app header). */
-function PhaneroLogo({ className = '' }: { className?: string }) {
+/** The fan-of-rays mark (same artwork as the app header). */
+export function PhaneroLogo({ className = '' }: { className?: string }) {
   return (
     <svg width="34" height="20" viewBox="0 0 24 14" fill="none" className={`text-primary-400 ${className}`}>
       <path d="M12 13 Q10.2 12.2, 2.2 11.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -22,7 +22,7 @@ function Wordmark() {
     <div className="flex items-center gap-3">
       <PhaneroLogo />
       <span className="text-sm font-semibold tracking-[0.2em] uppercase text-surface-100">
-        Phanero
+        Phanero <span className="text-emerald-400">Labs</span>
       </span>
     </div>
   );
@@ -442,7 +442,7 @@ export default function LoginPage() {
               <span aria-hidden className="text-xl leading-none">⟶</span>
             </button>
 
-            <p className="text-sm text-surface-400">Trouble signing in? Contact your Phanero administrator.</p>
+            <p className="text-sm text-surface-400">Trouble signing in? Contact your lab administrator.</p>
           </form>
         </div>
 

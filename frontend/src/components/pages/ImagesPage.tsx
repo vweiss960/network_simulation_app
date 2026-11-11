@@ -1,0 +1,89 @@
+import { useEffect, useRef, useState } from 'react';
+import toast from 'react-hot-toast';
+import { Upload } from 'lucide-react';
+import { api } from '../../utils/api';
+import QcowImageManager from '../panels/QcowImageManager';
+
+/** Device images: container tarballs (docker load) and qcow2 VMs (vrnetlab build). */
+export default function ImagesPage() {
+  const [files, setFiles] = useState<any[]>([]);
+  const [docker, setDocker] = useState<string[]>([]);
+  const [pct, setPct] = useState<number | null>(null);
+  const [loading, setLoading] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const refresh = () => {
+    api.listLabImages().then(r => setFiles(r.images)).catch(() => {});
+    api.listDockerImages().then(r => setDocker(r.images)).catch(() => {});
+  };
+  useEffect(refresh, []);
+
+  const upload = async (f?: File) => {
+    if (!f) return;
+    setPct(0);
+    try { await api.uploadLabImage(f, setPct); toast.success(`Uploaded ${f.name}`); refresh(); }
+    catch (e) { toast.error((e as Error).message); }
+    finally { setPct(null); if (fileRef.current) fileRef.current.value = ''; }
+  };
+
+  const load = async (filename: string) => {
+    setLoading(filename);
+    try {
+      const r = await api.loadLabImage(filename);
+      toast.success(`Loaded ${(r.loaded_refs || []).join(', ') || filename}`);
+      refresh();
+    } catch (e) { toast.error((e as Error).message, { duration: 8000 }); }
+    finally { setLoading(null); }
+  };
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="max-w-5xl mx-auto p-6 space-y-8">
+        <div>
+          <h1 className="text-2xl font-semibold">Images</h1>
+          <p className="text-sm text-surface-400">
+            Container images (e.g. the XRd tarballs) are loaded into Docker. VM images (qcow2 for Catalyst 8000v,
+            XRv 9000, CSR, vIOS) are wrapped into containers with vrnetlab; a successful build fills in the image on matching templates.
+          </p>
+        </div>
+
+        <section>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold">Container image files</h2>
+            <button onClick={() => fileRef.current?.click()} disabled={pct !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-surface-700 hover:bg-surface-600 disabled:opacity-50">
+              <Upload size={14} /> {pct !== null ? `Uploading ${pct}%` : 'Upload .tgz / .tar'}
+            </button>
+            <input ref={fileRef} type="file" className="hidden" accept=".tgz,.tar,.tar.gz,.gz" onChange={e => upload(e.target.files?.[0])} />
+          </div>
+          <div className="rounded border border-surface-700 divide-y divide-surface-700">
+            {files.length === 0 && <div className="p-3 text-sm text-surface-400">No image files in the images directory.</div>}
+            {files.map(f => (
+              <div key={f.filename} className="flex items-center gap-3 p-3 text-sm">
+                <span className="font-mono flex-1 truncate">{f.filename}</span>
+                <span className="text-surface-400 text-xs">{f.size_mb ? `${f.size_mb} MB` : ''}</span>
+                {f.loaded ? <span className="text-xs text-emerald-300">loaded</span> : null}
+                <button onClick={() => load(f.filename)} disabled={loading !== null}
+                  className="px-2 py-1 text-xs rounded bg-primary-600 hover:bg-primary-500 text-white disabled:opacity-50">
+                  {loading === f.filename ? 'Loading…' : 'docker load'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <h2 className="font-semibold mb-2">VM images (qcow2 → vrnetlab)</h2>
+          <div className="rounded border border-surface-700 p-3"><QcowImageManager /></div>
+        </section>
+
+        <section>
+          <h2 className="font-semibold mb-2">Images in Docker</h2>
+          <div className="rounded border border-surface-700 p-3 grid grid-cols-1 md:grid-cols-2 gap-1 text-xs font-mono text-surface-300 max-h-80 overflow-y-auto">
+            {docker.map(i => <div key={i} className="truncate select-all">{i}</div>)}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}

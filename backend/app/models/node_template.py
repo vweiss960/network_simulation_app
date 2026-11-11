@@ -1,35 +1,25 @@
-import json
-from sqlalchemy import Column, Integer, String, Float, Text
+from sqlalchemy import Column, Integer, String, Text
 from app.models.database import Base
 
 
 class NodeTemplate(Base):
+    """A palette entry: a containerlab kind + image + sizing defaults.
+    Dragging a template onto the canvas creates a NodeInstance that copies
+    these values (the instance can then override image / interface count)."""
     __tablename__ = "node_templates"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    vendor = Column(String, nullable=False)  # cisco, juniper
-    model = Column(String, nullable=False)
-    platform = Column(String, default="")  # iosxe, iosxr, junos
-    capacity_gbps = Column(Float, default=100.0)
-    default_mtbf_hours = Column(Float, default=50000.0)
-    default_mttr_hours = Column(Float, default=4.0)
-    default_interfaces_json = Column(Text, default="[]")
-    role = Column(String, default="router")  # router, customer
+    vendor = Column(String, default="")
+    model = Column(String, default="")
+    kind = Column(String, nullable=False, default="linux")   # containerlab kind (device_kinds.KINDS)
+    image_ref = Column(String, default="")                   # docker image; blank = not yet built/loaded
+    icon = Column(String, default="router")                  # router | switch | host | workstation | firewall
+    interface_count = Column(Integer, default=4)
+    min_memory_mb = Column(Integer, default=0)                # 0 = use the kind's default
+    min_cpu_cores = Column(Integer, default=0)
+    requires_hugepages = Column(Integer, default=0)
+    startup_config = Column(Text, default="")                 # default day-0 config body
+    env_json = Column(Text, default="{}")                     # extra clab node env vars
+    description = Column(Text, default="")
     created_by = Column(String, default="system")
-
-    # --- Containerlab integration (used when deploying a topology as a real lab) ---
-    clab_kind = Column(String, default="")  # containerlab "kind": e.g. cisco_xrd, linux, arista_ceos
-    image_ref = Column(String, default="")  # Container image reference: localhost/xrd-vrouter:25.4.2
-    min_memory_mb = Column(Integer, default=0)  # 0 = unspecified / minimal
-    min_cpu_cores = Column(Integer, default=0)  # 0 = unspecified
-    requires_hugepages = Column(Integer, default=0)  # 0/1 boolean
-    startup_config = Column(Text, default="")  # Optional default startup config text
-
-    @property
-    def default_interfaces(self):
-        return json.loads(self.default_interfaces_json) if self.default_interfaces_json else []
-
-    @default_interfaces.setter
-    def default_interfaces(self, value):
-        self.default_interfaces_json = json.dumps(value)

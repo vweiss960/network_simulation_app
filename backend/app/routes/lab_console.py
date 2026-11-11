@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/topologies/{topology_id}/lab", tags=["lab"])
 
 
 def _container_name_for_node(db: Session, topology_id: int, node_id: int) -> Optional[str]:
-    """Resolve the Phanero node id → clab container name via the lab view."""
+    """Resolve the node id → clab container name via the lab view."""
     try:
         view = compute_lab_view(db, topology_id)
     except Exception:
@@ -40,29 +40,21 @@ def _container_name_for_node(db: Session, topology_id: int, node_id: int) -> Opt
     return None
 
 
-def _cli_for_node(db: Session, topology_id: int, node_id: int) -> str:
-    """Pick the most natural CLI entrypoint for the node's kind."""
+def _cli_for_node(db: Session, topology_id: int, node_id: int) -> list[str]:
+    """CLI entrypoint for `docker exec`, from the device kind registry."""
+    from app.services.device_kinds import get_kind
     try:
         view = compute_lab_view(db, topology_id)
     except Exception:
-        return "sh"
+        return ["sh"]
     for n in view.get("nodes", []):
         if n.get("id") != node_id:
             continue
         kind = n.get("lab_kind") or ""
-        image = (n.get("lab_image") or "").lower()
-        if kind == "cisco_xrd":
-            # Control Plane variant ships xr_cli at /pkg/bin (vRouter had it
-            # under /pkg/sbin, but vRouter isn't supported in clab).
-            return "/pkg/bin/xr_cli"
-        if kind == "nokia_srlinux":
-            return "sr_cli"
-        if kind == "arista_ceos":
-            return "Cli"
-        if kind == "linux" and "frr" in image:
-            return "vtysh"
-        break
-    return "sh"
+        if kind == "linux" and "frr" in (n.get("lab_image") or "").lower():
+            return ["vtysh"]
+        return list(get_kind(kind).exec_cli)
+    return ["sh"]
 
 
 async def _authenticate(ws: WebSocket) -> Optional[dict]:
@@ -99,21 +91,21 @@ async def console_ws(
 
     cname = _container_name_for_node(db, topology_id, node_id)
     if not cname:
-        await ws.send_text(f"\x1b[31m[phanero] No container for node {node_id}\x1b[0m\r\n")
+        await ws.send_text(f"\x1b[31m[plabs] No container for node {node_id}\x1b[0m\r\n")
         await ws.close()
         return
 
-    entrypoint = cli or _cli_for_node(db, topology_id, node_id)
+    entrypoint = [cli] if cli else _cli_for_node(db, topology_id, node_id)
 
     client = docker.from_env()
     try:
         ctr = client.containers.get(cname)
     except Exception as e:
-        await ws.send_text(f"\x1b[31m[phanero] Container {cname} not found: {e}\x1b[0m\r\n")
+        await ws.send_text(f"\x1b[31m[plabs] Container {cname} not found: {e}\x1b[0m\r\n")
         await ws.close()
         return
     if ctr.status != "running":
-        await ws.send_text(f"\x1b[31m[phanero] Container {cname} is {ctr.status} — start it first.\x1b[0m\r\n")
+        await ws.send_text(f"\x1b[31m[plabs] Container {cname} is {ctr.status} — start it first.\x1b[0m\r\n")
         await ws.close()
         return
 
@@ -122,12 +114,12 @@ async def console_ws(
     # user gets a prompt and can type commands one at a time. For full
     # interactive XR CLI (config mode, tab completion, history), SSH to
     # the node — clab/clab@123 by default.
-    if entrypoint == "/pkg/bin/xr_cli":
+    if entrypoint == ["/pkg/bin/xr_cli"]:
         cmd_list = [
             "bash", "-c",
             (
-                "echo '[phanero] xr_cli wrapper. Each line runs xr_cli \"<cmd>\".';"
-                "echo '[phanero] For real config mode + tab completion, SSH to the device.';"
+                "echo '[plabs] xr_cli wrapper. Each line runs xr_cli \"<cmd>\".';"
+                "echo '[plabs] For real config mode + tab completion, SSH to the device.';"
                 "echo;"
                 "while IFS= read -r -e -p 'RP/0/RP0/CPU0:xrd# ' cmd; do "
                 "  case \"$cmd\" in exit|quit) exit 0;; \"\") continue;; esac;"
@@ -136,7 +128,7 @@ async def console_ws(
             ),
         ]
     else:
-        cmd_list = [entrypoint]
+        cmd_list = entrypoint
 
     # Create the exec, then open a socket for it
     api = client.api
@@ -146,7 +138,7 @@ async def console_ws(
             tty=True, stdin=True, stdout=True, stderr=True,
         )["Id"]
     except Exception as e:
-        await ws.send_text(f"\x1b[31m[phanero] exec_create failed: {e}\x1b[0m\r\n")
+        await ws.send_text(f"\x1b[31m[plabs] exec_create failed: {e}\x1b[0m\r\n")
         await ws.close()
         return
 
@@ -155,7 +147,7 @@ async def console_ws(
     raw_sock = sock._sock if hasattr(sock, "_sock") else sock
     raw_sock.setblocking(False)
 
-    await ws.send_text(f"\x1b[32m[phanero] Connected to {cname} ({entrypoint}). Press Enter if no prompt appears.\x1b[0m\r\n")
+    await ws.send_text(f"\x1b[32m[plabs] Connected to {cname} ({' '.join(entrypoint)}). Press Enter if no prompt appears.\x1b[0m\r\n")
 
     loop = asyncio.get_event_loop()
     stop_event = asyncio.Event()
@@ -274,7 +266,7 @@ async def logs_ws(
 
     cname = _container_name_for_node(db, topology_id, node_id)
     if not cname:
-        await ws.send_text(f"[phanero] No container for node {node_id}\n")
+        await ws.send_text(f"[plabs] No container for node {node_id}\n")
         await ws.close()
         return
 
@@ -282,11 +274,11 @@ async def logs_ws(
     try:
         ctr = client.containers.get(cname)
     except Exception as e:
-        await ws.send_text(f"[phanero] Container {cname} not found: {e}\n")
+        await ws.send_text(f"[plabs] Container {cname} not found: {e}\n")
         await ws.close()
         return
 
-    await ws.send_text(f"\x1b[32m[phanero] Tailing logs for {cname}\x1b[0m\n")
+    await ws.send_text(f"\x1b[32m[plabs] Tailing logs for {cname}\x1b[0m\n")
 
     loop = asyncio.get_event_loop()
     stop_event = asyncio.Event()
