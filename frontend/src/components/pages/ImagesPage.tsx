@@ -36,6 +36,11 @@ export default function ImagesPage() {
 
   const upload = async (f?: File) => {
     if (!f) return;
+    if (/\.(qcow2?|img|vmdk)$/i.test(f.name)) {
+      toast.error('That is a VM disk image — upload it under "VM images (qcow2 → vrnetlab)" below, or copy it to the server and Register it.', { duration: 9000 });
+      if (fileRef.current) fileRef.current.value = '';
+      return;
+    }
     setPct(0);
     try { await api.uploadLabImage(f, setPct); toast.success(`Uploaded ${f.name}`); refresh(); }
     catch (e) { toast.error((e as Error).message); }
