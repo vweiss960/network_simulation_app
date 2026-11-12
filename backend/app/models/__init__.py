@@ -9,3 +9,4 @@ from app.models.device_image import DeviceImage  # noqa: F401
 from app.models.lab_gnmi_subscription import LabGnmiSubscription  # noqa: F401
 from app.models.app_setting import AppSetting  # noqa: F401
 from app.models.mgmt_lease import MgmtLease  # noqa: F401
+from app.models.config_snapshot import ConfigSnapshot  # noqa: F401

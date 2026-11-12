@@ -975,6 +975,26 @@ def _assert_capacity(db: Session, topology_id: int, spec: dict) -> None:
         )
 
 
+def _startup_changed(old_yaml: str, new_yaml: str) -> list[str]:
+    """Nodes whose startup-config file changed between two applies.
+    containerlab's reconcile ignores startup-config, so those devices must be
+    removed first to come back up with the new config."""
+    import yaml as _yaml
+    try:
+        old = ((_yaml.safe_load(old_yaml or "") or {}).get("topology") or {}).get("nodes") or {}
+        new = ((_yaml.safe_load(new_yaml or "") or {}).get("topology") or {}).get("nodes") or {}
+    except _yaml.YAMLError:
+        return []
+    return [name for name, nd in new.items()
+            if name in old and (nd or {}).get("startup-config") != (old[name] or {}).get("startup-config")
+            and (nd or {}).get("kind") != "bridge"]
+
+
+def _remove_for_recreate(lab_name: str, names: list[str]) -> None:
+    for name in names:
+        _run(["docker", "rm", "-f", f"clab-{lab_name}-{name}"], timeout=120)
+
+
 def _clab_deploy(yaml_path: Path) -> tuple[int, str, str]:
     # No --reconfigure: plain deploy reconciles an existing lab in place.
     return _run(["containerlab", "deploy", "-t", str(yaml_path)], timeout=1800, cwd=str(yaml_path.parent))
@@ -996,7 +1016,11 @@ def deploy_lab(db: Session, topology_id: int) -> dict:
     """Deploy (or reconcile) the whole topology."""
     with _lock_for(topology_id):
         _sync_pending.discard(topology_id)
+        prev_yaml = _get_or_create_deployment(db, topology_id).last_yaml or ""
+        was_live = _get_or_create_deployment(db, topology_id).status in ("running", "syncing", "failed")
         yaml_path, lab_name, spec = _ensure_fresh_yaml(db, topology_id)
+        if was_live:
+            _remove_for_recreate(lab_name, _startup_changed(prev_yaml, spec["yaml"]))
         if not spec["included_nodes"]:
             raise LabError("Nothing to deploy — add devices with an image to the canvas first.")
         _assert_capacity(db, topology_id, spec)
@@ -1038,6 +1062,7 @@ def _sync_worker(topology_id: int) -> None:
                 dep.status = "syncing"
                 db.commit()
                 try:
+                    prev_yaml = dep.last_yaml or ""
                     yaml_path, _lab, spec = _ensure_fresh_yaml(db, topology_id)
                     if not spec["included_nodes"]:
                         # Last device removed → tear the lab down entirely.
@@ -1045,6 +1070,7 @@ def _sync_worker(topology_id: int) -> None:
                         _destroy_locked(db, topology_id)
                         return
                     _prepare_host_network(db, topology_id, spec)
+                    _remove_for_recreate(_lab, _startup_changed(prev_yaml, spec["yaml"]))
                     rc, out, err = _clab_deploy(yaml_path)
                 except LabError as e:
                     rc, out, err = 1, "", str(e)

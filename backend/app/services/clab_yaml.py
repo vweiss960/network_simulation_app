@@ -5,6 +5,7 @@ containerlab topology file. Devices are reached on their management IP — no
 host port publishing.
 """
 
+import hashlib
 import ipaddress
 import os
 import yaml
@@ -97,13 +98,20 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
         body = (n.get("startup_config") or "").strip("\n")
         if body:
             configs_dir.mkdir(parents=True, exist_ok=True)
-            cfg_path = configs_dir / f"{n['clab_name']}.cfg"
             text = body + "\n"
             if n["lab_kind"] == "cisco_xrd":
                 text = xrd_base_config(n["clab_name"], gw_v4, gw_v6) + text + "end\n"
+            # Content hash in the file name: a changed startup config changes
+            # the YAML, so a reconcile recreates exactly that device.
+            digest = hashlib.sha1(text.encode()).hexdigest()[:8]
+            cfg_name = f"{n['clab_name']}-{digest}.cfg"
+            cfg_path = configs_dir / cfg_name
+            for old in configs_dir.glob(f"{n['clab_name']}-*.cfg"):
+                if old.name != cfg_name:
+                    old.unlink(missing_ok=True)
             cfg_path.write_text(text)
             # Relative to the YAML so clab resolves it from the lab dir.
-            entry["startup-config"] = f"configs/{n['clab_name']}.cfg"
+            entry["startup-config"] = f"configs/{cfg_name}"
             rendered_config_paths.append(str(cfg_path))
         if mgmt.bridged and n.get("mgmt_ip"):
             entry["mgmt-ipv4"] = n["mgmt_ip"]

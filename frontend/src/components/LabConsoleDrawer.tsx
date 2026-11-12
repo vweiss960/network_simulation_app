@@ -38,7 +38,7 @@ export default function LabConsoleDrawer({ tabs, activeId, onSetActive, onClose 
           >
             <span className={`w-1.5 h-1.5 rounded-full ${t.type === 'console' ? 'bg-emerald-400' : 'bg-blue-400'}`} />
             <span>{t.nodeName}</span>
-            <span className="text-[9px] text-surface-500">{t.type === 'console' ? (t.cli || 'sh') : 'logs'}</span>
+            <span className="text-[9px] text-surface-500">{t.type === 'console' ? (t.cli || 'cli') : 'logs'}</span>
             <button
               className="ml-1 text-surface-500 hover:text-red-400"
               onClick={(e) => { e.stopPropagation(); onClose(t.id); }}

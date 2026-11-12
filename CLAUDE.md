@@ -11,7 +11,7 @@ with its own kind + image, and edits to a deployed topology apply live.
 Roadmap (see the plan in `~/.claude/plans/so-i-want-your-wobbly-lampson.md`):
 bridged-NIC management network + Network nodes mapping lab ports onto host
 NICs / trunk VLANs (Phase 2, done), device
-access layer + more Cisco kinds (3), CCNP SP / Automation curriculum with
+access layer + SSH console + snapshots + automation workstation (3, done), CCNP SP / Automation curriculum with
 graded labs (4), an AI lab agent (5).
 
 Backend: FastAPI + SQLAlchemy + SQLite. Frontend: React + Vite + TypeScript,
@@ -30,7 +30,9 @@ Two equivalent ways; don't run both (they share ports 8100 / 8880).
   (backend privileged + host network; nginx `web` on :8880).
   After backend changes: `docker compose restart backend`.
 
-Lab images: `./scripts/build-images.sh` builds `plabs/host` and `plabs/frr`.
+Lab images: `./scripts/build-images.sh` builds `plabs/host`, `plabs/frr` and
+`plabs/workstation` (automation toolbox: ncclient, netmiko, scrapli, pyATS,
+Ansible + Cisco collections, gnmic, pyang).
 Vendor images (XRd tarballs, qcow2) are loaded/built from the Images page;
 vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
 
@@ -104,6 +106,29 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   addressed NIC); trunk VLANs on it are fine.
 - Schema: `init_db()` → `add_missing_columns()` adds new model columns to an
   existing SQLite DB automatically (additive only).
+
+### Device access (`services/device_exec.py`, `routes/device.py`)
+- `target_for(db, topology, node)` resolves mgmt IP (lease or container IP),
+  credentials (`lab_view.node_credentials`) and family; every caller (REST,
+  snapshots, future grader / agent) goes through it.
+- Network OSes: interactive SSH (`CliSession`, asyncssh, prompt regex
+  `_PROMPT`, yes/no questions `_QUESTION`). `configure()` = IOS-XR candidate +
+  commit (abort on any `%` error), XE/EOS line by line; `replace=True` →
+  XR `commit replace` (auto-confirmed). Linux kinds: `docker exec`
+  (`vtysh` for FRR images). NETCONF (ncclient, RPC errors → readable
+  ExecError → HTTP 502), RESTCONF (requests), gNMI (pygnmi, insecure, kind's
+  gNMI port; set takes `[[path, value]]`).
+- Console WebSocket: SSH to the mgmt IP for network OSes (full CLI incl.
+  config mode); falls back to `docker exec` (XRd wrapper / vrnetlab serial)
+  when SSH isn't up; `?cli=` forces docker exec. Workstation images open
+  `su - student`.
+- Snapshots (`config_snapshots`): per device or whole lab (shared label).
+  Restore `live` (XR commit replace / FRR) or `reboot` (becomes startup config
+  → device recreated).
+- containerlab quirks: its reconcile ignores `startup-config` changes, so
+  startup files are content-hashed and `lab_service._startup_changed` removes
+  those containers before reconciling; adding a link to a kind without live
+  link support (XRd, vrnetlab VMs) recreates that device.
 
 ### Layout
 `backend/app/`: `config.py` (env + paths, defaults inside the repo),

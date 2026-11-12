@@ -65,3 +65,8 @@ export interface LabState {
   nodes: Record<string, NodeRuntime>;
   skipped_nodes: { id: number; name: string; reason: string }[];
 }
+
+export interface Snapshot {
+  id: number; node_id: number; node: string; label: string; family: string;
+  created_by: string; created_at: string | null; lines: number;
+}

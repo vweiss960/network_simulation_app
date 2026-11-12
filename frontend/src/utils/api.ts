@@ -1,4 +1,4 @@
-import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Topology } from '../types';
+import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology } from '../types';
 
 const BASE = '/api';
 
@@ -108,6 +108,23 @@ export const api = {
   loadLabImage: (filename: string) => request<any>('/lab/images/load', json('POST', { filename })),
   getHostCapacity: () =>
     request<{ memory_mb: number; memory_available_mb: number; cpu_cores: number; hugepages_count: number }>('/lab/host-capacity'),
+
+  // Device access + snapshots
+  runCli: (tid: number, nid: number, commands: string[]) =>
+    request<{ results: { command: string; output: string }[] }>(`/topologies/${tid}/nodes/${nid}/cli`, json('POST', { commands })),
+  configureDevice: (tid: number, nid: number, config: string) =>
+    request<{ ok: boolean; errors: string[]; output: string }>(`/topologies/${tid}/nodes/${nid}/configure`, json('POST', { config })),
+  runningConfig: (tid: number, nid: number) => request<{ config: string }>(`/topologies/${tid}/nodes/${nid}/running-config`),
+  listSnapshots: (tid: number, nid?: number) =>
+    request<Snapshot[]>(`/topologies/${tid}/snapshots${nid ? `?node_id=${nid}` : ''}`),
+  getSnapshot: (tid: number, sid: number) => request<Snapshot & { config: string }>(`/topologies/${tid}/snapshots/${sid}`),
+  snapshotNode: (tid: number, nid: number, label = '') =>
+    request<Snapshot>(`/topologies/${tid}/nodes/${nid}/snapshots`, json('POST', { label })),
+  snapshotLab: (tid: number, label = '') =>
+    request<{ label: string; taken: Snapshot[]; skipped: { node: string; reason: string }[] }>(`/topologies/${tid}/snapshots`, json('POST', { label })),
+  restoreSnapshot: (tid: number, sid: number, mode: 'live' | 'reboot') =>
+    request<any>(`/topologies/${tid}/snapshots/${sid}/restore`, json('POST', { mode })),
+  deleteSnapshot: (tid: number, sid: number) => request<any>(`/topologies/${tid}/snapshots/${sid}`, json('DELETE')),
 
   // Host networking
   getLabNetwork: () => request<LabNetworkInfo>('/lab-network/'),

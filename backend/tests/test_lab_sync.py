@@ -62,3 +62,10 @@ def test_sync_worker_records_failure(db, monkeypatch, tmp_path):
     db.expire_all()
     d = db.query(LabDeployment).filter_by(topology_id=t.id).one()
     assert d.status == "failed" and "boom" in d.last_error
+
+
+def test_startup_changed_detects_only_config_changes():
+    old = "topology:\n  nodes:\n    A: {kind: linux, startup-config: configs/A-1.cfg}\n    B: {kind: linux}\n    NET: {kind: bridge}\n"
+    new = "topology:\n  nodes:\n    A: {kind: linux, startup-config: configs/A-2.cfg}\n    B: {kind: linux}\n    C: {kind: linux, startup-config: configs/C-1.cfg}\n"
+    assert lab_service._startup_changed(old, new) == ["A"]
+    assert lab_service._startup_changed("", new) == []

@@ -1,0 +1,4 @@
+Phanero Labs automation workstation
+  python3 · ncclient · netmiko · scrapli · requests · pygnmi · pyATS/Genie
+  ansible (cisco.ios / cisco.iosxr / cisco.nxos) · gnmic · pyang · git
+Devices are reachable on their management IPs (see the lab canvas).

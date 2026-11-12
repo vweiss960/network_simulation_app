@@ -34,3 +34,13 @@ def test_every_kind_has_unique_kernel_names():
 
 def test_unknown_kind_falls_back_to_linux():
     assert get_kind("nope").kind == "linux"
+
+
+def test_cli_prompt_and_question_patterns():
+    from app.services.device_exec import _PROMPT, _QUESTION
+    for p in ["RP/0/RP0/CPU0:R1#", "RP/0/RP0/CPU0:R1(config)#", "RP/0/RP0/CPU0:R1(config-if)#", "R1#", "R1>",
+              "csr-1(config-router)#"]:
+        assert _PROMPT.search("output line\n" + p + " "), p
+    assert not _PROMPT.search("Do you wish to proceed? [no]: ")
+    assert _QUESTION.search("This commit will replace...\nDo you wish to proceed? [no]: ")
+    assert _QUESTION.search("Uncommitted changes found, commit them before exiting(yes/no/cancel)? ")

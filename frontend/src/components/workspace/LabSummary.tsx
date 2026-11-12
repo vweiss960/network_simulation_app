@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle2, FileCode2, X } from 'lucide-react';
+import { AlertTriangle, Camera, CheckCircle2, FileCode2, X } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useLabStore } from '../../stores/useLabStore';
 import { api } from '../../utils/api';
 
@@ -37,6 +38,21 @@ export default function LabSummary() {
           className="mt-3 flex items-center gap-1 text-xs text-primary-300 hover:text-primary-200">
           <FileCode2 size={13} /> View containerlab YAML
         </button>
+        {lab && lab.status !== 'idle' && (
+          <button className="mt-2 flex items-center gap-1 text-xs text-primary-300 hover:text-primary-200"
+            onClick={async () => {
+              if (!currentTopologyId) return;
+              const label = prompt('Label for this lab snapshot (optional)');
+              if (label === null) return;
+              const t = toast.loading('Saving configs…');
+              try {
+                const r = await api.snapshotLab(currentTopologyId, label);
+                toast.success(`Saved ${r.taken.length} device config(s)${r.skipped.length ? `, skipped ${r.skipped.length}` : ''}`, { id: t });
+              } catch (e) { toast.error((e as Error).message, { id: t }); }
+            }}>
+            <Camera size={13} /> Snapshot all device configs
+          </button>
+        )}
       </div>
 
       {lab?.last_error && (
@@ -70,7 +86,8 @@ export default function LabSummary() {
         <div className="font-semibold text-surface-300">Tips</div>
         <div>Drag devices in from the palette; drag from a device's blue dot to another device to cable them.</div>
         <div>Changes to a running lab apply live: new devices and cables are added, removed ones are torn down.</div>
-        <div>Double-click a running device to open its console.</div>
+        <div>Double-click a running device to open its console (SSH for network OSes, so config mode works).</div>
+        <div>Adding a cable to a running XRd or VM device recreates it: those platforms can't hot-plug interfaces.</div>
       </div>
 
       {yaml !== null && (

@@ -6,6 +6,7 @@ import type { Device, Link } from '../../types';
 import LinkNetemModal from '../LinkNetemModal';
 import LabSummary from './LabSummary';
 import NetworkInspector from './NetworkInspector';
+import DeviceTools from './DeviceTools';
 
 const field = 'w-full px-2 py-1.5 text-sm rounded bg-surface-900 border border-surface-700 focus:border-primary-500 outline-none';
 const label = 'block text-[11px] uppercase tracking-wider text-surface-500 mb-1';
@@ -33,7 +34,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function NodeInspector({ node }: { node: Device }) {
-  const { kinds, lab, links, nodes, updateNode, deleteNode, openConsole, nodeAction, select } = useLabStore();
+  const { kinds, lab, links, nodes, updateNode, deleteNode, openConsole, nodeAction, select, currentTopologyId } = useLabStore();
   const k = kinds[node.kind];
   const rt = lab?.nodes?.[String(node.id)];
   const deployed = !!lab && lab.status !== 'idle';
@@ -83,6 +84,10 @@ function NodeInspector({ node }: { node: Device }) {
           <Btn icon={<RotateCw size={13} />} onClick={() => nodeAction(node.id, 'restart')} disabled={!rt || rt.state === 'absent'}>Restart</Btn>
         </div>
       </div>
+
+      {deployed && currentTopologyId && (
+        <DeviceTools topologyId={currentTopologyId} node={node} running={running} family={k?.family ?? 'linux'} />
+      )}
 
       <Section title="Device">
         <label className={label}>Name</label>

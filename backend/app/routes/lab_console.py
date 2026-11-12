@@ -51,8 +51,11 @@ def _cli_for_node(db: Session, topology_id: int, node_id: int) -> list[str]:
         if n.get("id") != node_id:
             continue
         kind = n.get("lab_kind") or ""
-        if kind == "linux" and "frr" in (n.get("lab_image") or "").lower():
+        image = (n.get("lab_image") or "").lower()
+        if kind == "linux" and "frr" in image:
             return ["vtysh"]
+        if kind == "linux" and "workstation" in image:
+            return ["su", "-", "student"]
         return list(get_kind(kind).exec_cli)
     return ["sh"]
 
@@ -88,6 +91,18 @@ async def console_ws(
     await ws.accept()
     if not await _authenticate(ws):
         return
+
+    # Network OSes: a real SSH session to the device's management IP (full
+    # CLI incl. config mode). Falls back to docker exec if SSH isn't up yet.
+    if not cli:
+        from app.services import device_exec
+        try:
+            target = device_exec.target_for(db, topology_id, node_id)
+        except device_exec.ExecError:
+            target = None
+        if target and target.uses_ssh:
+            if await _ssh_console(ws, target):
+                return
 
     cname = _container_name_for_node(db, topology_id, node_id)
     if not cname:
@@ -318,3 +333,69 @@ async def logs_ws(
             task.cancel()
         except Exception:
             pass
+
+
+async def _ssh_console(ws: WebSocket, target) -> bool:
+    """Bridge the browser terminal to an SSH PTY on the device. Returns False
+    (without closing the socket) if SSH can't be established, so the caller
+    can fall back to docker exec."""
+    import asyncssh
+    from app.services.device_exec import SSH_OPTS
+    try:
+        conn = await asyncio.wait_for(
+            asyncssh.connect(target.host, username=target.username, password=target.password,
+                             connect_timeout=10, **SSH_OPTS), timeout=15)
+    except (OSError, asyncssh.Error, asyncio.TimeoutError) as e:
+        await ws.send_text(f"\x1b[33m[plabs] SSH to {target.host} not available yet ({e.__class__.__name__}); "
+                           f"falling back to the container console.\x1b[0m\r\n")
+        return False
+    cols, rows = 120, 32
+    proc = await conn.create_process(term_type="xterm-256color", term_size=(cols, rows), encoding=None)
+    await ws.send_text(f"\x1b[32m[plabs] SSH {target.username}@{target.host} ({target.name})\x1b[0m\r\n")
+    stop = asyncio.Event()
+
+    async def dev_to_ws():
+        try:
+            while not stop.is_set():
+                data = await proc.stdout.read(4096)
+                if not data:
+                    break
+                await ws.send_text(data.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+        stop.set()
+
+    async def ws_to_dev():
+        try:
+            while not stop.is_set():
+                msg = await ws.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                text, data = msg.get("text"), msg.get("bytes")
+                if text is not None and text.startswith("{") and '"resize"' in text:
+                    try:
+                        rs = json.loads(text).get("resize") or {}
+                        proc.change_terminal_size(int(rs.get("cols", cols)), int(rs.get("rows", rows)))
+                        continue
+                    except Exception:
+                        pass
+                payload = text.encode() if text is not None else data
+                if payload:
+                    proc.stdin.write(payload)
+        except Exception:
+            pass
+        stop.set()
+
+    try:
+        tasks = [asyncio.create_task(dev_to_ws()), asyncio.create_task(ws_to_dev())]
+        await stop.wait()
+        for t in tasks:
+            t.cancel()
+    finally:
+        conn.close()
+        try:
+            await ws.send_text("\r\n\x1b[33m[plabs] session closed\x1b[0m\r\n")
+            await ws.close()
+        except Exception:
+            pass
+    return True

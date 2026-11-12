@@ -43,7 +43,8 @@ def test_xrd_startup_config_keeps_clab_defaults(db, tmp_path, monkeypatch):
     t = make_topology(db)
     make_node(db, t, name="P1", kind="cisco_xrd", image="x", startup_config="interface Loopback0\n ipv4 address 1.1.1.1/32")
     spec = generate_clab_yaml(db, t.id)
-    assert yaml.safe_load(spec["yaml"])["topology"]["nodes"]["P1"]["startup-config"] == "configs/P1.cfg"
+    ref = yaml.safe_load(spec["yaml"])["topology"]["nodes"]["P1"]["startup-config"]
+    assert ref.startswith("configs/P1-") and ref.endswith(".cfg")
     body = open(spec["rendered_config_paths"][0]).read()
     assert "username clab" in body and "ssh server netconf" in body
     assert "ipv4 address 1.1.1.1/32" in body and body.rstrip().endswith("end")
@@ -55,3 +56,16 @@ def test_resource_estimate_uses_kind_defaults(db):
     make_node(db, t, kind="cisco_xrd", image="ios-xr/xrd-vrouter:25.4.2")
     est = generate_clab_yaml(db, t.id)["resource_estimate"]
     assert est["memory_mb"] == 4096 and est["requires_hugepages"] is True
+
+
+def test_changed_startup_config_changes_yaml(db, tmp_path, monkeypatch):
+    import app.services.clab_yaml as cy
+    monkeypatch.setattr(cy, "LAB_STATE_DIR", tmp_path)
+    t = make_topology(db)
+    n = make_node(db, t, name="A", startup_config="hostname a")
+    y1 = generate_clab_yaml(db, t.id)["yaml"]
+    n.startup_config = "hostname b"
+    db.flush()
+    y2 = generate_clab_yaml(db, t.id)["yaml"]
+    assert y1 != y2
+    assert len(list((tmp_path / f"plabs-{t.id}-T" / "configs").glob("A-*.cfg"))) == 1
