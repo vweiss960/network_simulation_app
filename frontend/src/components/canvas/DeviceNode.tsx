@@ -12,6 +12,7 @@ export interface DeviceNodeData {
   noImage: boolean;
   deployed: boolean;
   networkLabel?: string;   // Network nodes: "eno2 · VLAN 120" / "Lab switch"
+  pending?: boolean;       // changes saved for the next restart
 }
 
 const RING: Record<ReadyState, string> = {
@@ -49,6 +50,7 @@ function DeviceNode({ data, selected }: NodeProps<DeviceNodeData>) {
           {data.mgmtIp || STATE_LABEL[data.ready]}
         </div>
       )}
+      {data.pending && <div className="text-[10px] text-amber-300 leading-tight" title="Changes saved for the next restart">● restart pending</div>}
       {data.noImage && <div className="text-[10px] text-amber-400 leading-tight">{data.networkLabel !== undefined ? 'not connected' : 'no image'}</div>}
     </div>
   );

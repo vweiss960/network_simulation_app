@@ -65,8 +65,9 @@ export const api = {
   listNodes: (tid: number) => request<Device[]>(`/topologies/${tid}/nodes/`),
   createNode: (tid: number, data: { template_id?: number; kind?: string; image_ref?: string; name?: string; x: number; y: number }) =>
     request<Device>(`/topologies/${tid}/nodes/`, json('POST', data)),
-  updateNode: (tid: number, nid: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec }) =>
+  updateNode: (tid: number, nid: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec; defer?: boolean }) =>
     request<Device>(`/topologies/${tid}/nodes/${nid}`, json('PATCH', data)),
+  discardPending: (tid: number, nid: number) => request<Device>(`/topologies/${tid}/nodes/${nid}/pending`, json('DELETE')),
   saveNodePositions: (tid: number, positions: Record<number, [number, number]>) =>
     request<{ ok: boolean }>(`/topologies/${tid}/nodes/positions`, json('PUT', { positions })),
   deleteNode: (tid: number, nid: number) => request<{ ok: boolean }>(`/topologies/${tid}/nodes/${nid}`, json('DELETE')),

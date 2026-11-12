@@ -11,7 +11,8 @@ from app.schemas.schemas import NodeCreate, NodeUpdate, NodeOut, NodePositions
 from app.services import lab_service
 from app.services.device_kinds import is_bridge
 from app.services.host_net import Segment
-from app.services.topology_ops import TopologyError, create_node, set_interface_count, set_network
+from app.services.topology_ops import (RESTART_FIELDS, TopologyError, check_interface_count, create_node,
+                                       set_interface_count, set_network)
 
 router = APIRouter(prefix="/api/topologies/{topology_id}/nodes", tags=["nodes"])
 
@@ -31,6 +32,7 @@ def node_out(n: NodeInstance) -> dict:
         "color": n.color or "", "notes": n.notes or "",
         "network": n.network if is_bridge(n.kind) else None,
         "network_label": Segment.from_dict(n.network).describe() if is_bridge(n.kind) else "",
+        "pending": n.pending,
     }
 
 
@@ -87,6 +89,26 @@ def get_node(topology_id: int, node_id: int, db: Session = Depends(get_db)):
 def update_node(topology_id: int, node_id: int, data: NodeUpdate, db: Session = Depends(get_db)):
     n = _node(db, topology_id, node_id)
     patch = data.model_dump(exclude_unset=True)
+    defer = patch.pop("defer", False) and _lab_active(db, topology_id)
+    pending = n.pending
+    for k in RESTART_FIELDS:
+        if k not in patch:
+            continue
+        if not defer:
+            pending.pop(k, None)            # applied now: supersedes a saved change
+            continue
+        v = patch.pop(k)
+        current = len(n.interfaces) if k == "interface_count" else getattr(n, k) or ""
+        if k == "interface_count":
+            try:
+                check_interface_count(db, n, v)
+            except TopologyError as e:
+                raise HTTPException(400, str(e))
+        if v == current:
+            pending.pop(k, None)
+        else:
+            pending[k] = v
+    n.pending = pending
     if "name" in patch:
         name = (patch["name"] or "").strip()
         if not name:
@@ -135,6 +157,15 @@ def _lab_active(db: Session, topology_id: int) -> bool:
     from app.models.lab_deployment import LabDeployment
     d = db.query(LabDeployment).filter(LabDeployment.topology_id == topology_id).first()
     return bool(d and d.status not in ("idle",))
+
+
+@router.delete("/{node_id}/pending", response_model=NodeOut)
+def discard_pending(topology_id: int, node_id: int, db: Session = Depends(get_db)):
+    """Drop changes saved for the device's next restart."""
+    n = _node(db, topology_id, node_id)
+    n.pending = {}
+    db.commit()
+    return node_out(n)
 
 
 @router.delete("/{node_id}")

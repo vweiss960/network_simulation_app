@@ -85,7 +85,7 @@ def used_interfaces(db: Session, node_id: int, exclude_link_id: int | None = Non
     return used
 
 
-def set_interface_count(db: Session, node: NodeInstance, count: int) -> None:
+def check_interface_count(db: Session, node: NodeInstance, count: int) -> list[dict]:
     k = get_kind(node.kind)
     new = k.interfaces(count)
     keep = {i["name"] for i in new}
@@ -93,7 +93,38 @@ def set_interface_count(db: Session, node: NodeInstance, count: int) -> None:
     if orphaned:
         raise TopologyError(
             f"Can't drop to {count} interfaces: {', '.join(sorted(orphaned))} still cabled. Remove those links first.")
-    node.interfaces = new
+    return new
+
+
+def set_interface_count(db: Session, node: NodeInstance, count: int) -> None:
+    node.interfaces = check_interface_count(db, node, count)
+
+
+RESTART_FIELDS = ("image_ref", "interface_count", "startup_config")
+
+
+def apply_pending(db: Session, node: NodeInstance) -> list[str]:
+    """Apply changes saved for this device's next restart. Returns the fields
+    applied (a pending interface count that no longer fits its cables is
+    dropped with the reason)."""
+    applied = []
+    for k, v in node.pending.items():
+        if k == "interface_count":
+            try:
+                set_interface_count(db, node, int(v))
+            except TopologyError as e:
+                print(f"[lab] {node.name}: pending interface count dropped: {e}", flush=True)
+                continue
+        elif k == "image_ref":
+            node.image_ref = v
+        elif k == "startup_config":
+            node.startup_config = v
+            node.carry_config = ""
+        else:
+            continue
+        applied.append(k)
+    node.pending = {}
+    return applied
 
 
 def _pick_free(db: Session, node: NodeInstance, wanted: str | None, exclude_link_id: int | None = None) -> str:

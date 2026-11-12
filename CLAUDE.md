@@ -50,9 +50,10 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
 - Live: deploy a small lab of `plabs/host` / `plabs/frr` nodes via the UI or
   API and check `docker ps --filter label=containerlab=<lab_name>`.
 - Live editing end to end: `python3 scripts/live_edit_test.py <jwt>` builds a
-  throwaway XRd/FRR/c8000v lab, configures devices live, adds/removes nodes
-  and links, and checks configs + pings after each step (`--no-vm` skips the
-  8000v; ~20 min with it). Run after touching reconcile / YAML / host_net.
+  throwaway XRd/FRR/c8000v lab, configures devices live, hot-cables /
+  unplugs / replugs (incl. a Lab Switch), adds/removes devices, and checks
+  configs + pings + that nothing restarted (`--no-vm` skips the 8000v;
+  ~9 min with it). Run after touching reconcile / YAML / host_net.
 
 ## Architecture
 
@@ -99,8 +100,7 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   = `{mode: internal|access|trunk, nic, vlan}`) become clab `kind: bridge`
   nodes. Bridges are named deterministically (`pl-<nic>[-<vlan>]`, internal
   `pl-sw<topo>-<node>`), so labs using the same NIC/VLAN share one segment.
-  Ports grow as devices are cabled; host-side veth names are host-unique
-  (`host_net.bridge_port_name`).
+  Device port halves are enslaved into them by `apply_patches`.
 - `lab_service._prepare_host_network` creates bridges / VLAN sub-interfaces /
   the mgmt network before every deploy and reconcile; `gc_host_network`
   removes unused `pl-*` bridges after reconcile/destroy; `restore_host_network`
@@ -135,20 +135,30 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   (`clab-<lab>/<node>/`): containerlab copies the startup config there once
   (vrnetlab `/config`, XRd `first-boot.cfg` + `xr-storage`) and reuses the
   stale copy otherwise.
-- **Live edits must not break neighbours** (verified by an end-to-end harness:
-  add/remove nodes + links on a running XRd/FRR/c8000v lab, check configs +
-  pings). Facts that drive the design:
-  - Kinds without `live_links` (everything but `linux`) are recreated on any
-    link change. containerlab's *in-place* recreate is buggy: the node gets
-    only the changed links (XRd `XR_INTERFACES`, vrnetlab `CLAB_INTFS`), so
-    `_recreate_plan` predicts those nodes and `_apply_plan` removes them
-    first → containerlab creates them as new nodes with every interface.
-  - A running XRd / vrnetlab VM binds its interfaces at boot: a hot-added
-    or *replaced* veth (same name) is never picked up. So every cable that
-    touches such a kind is split into two host-side halves
-    (`host:pw<t>l<link>a|b`) joined by `tc mirred` (`host_net.join_wires`,
-    re-run after every deploy/reconcile/node start). Recreating a device then
-    replaces only its own half; neighbours are untouched.
+- **Hot linking: pre-provisioned ports + host patch panel** (verified by
+  `scripts/live_edit_test.py`). Every port of every device is a veth whose
+  other half is on the host (`host:pp<t>n<node>p<idx>`, `host_net.port_name`),
+  created with the device. Cables are *not* in the clab YAML:
+  `host_net.apply_patches` joins two halves with `tc mirred` (all frames,
+  LACP/LLDP/STP included) or enslaves a half into a Network node's Linux
+  bridge (Network nodes are host bridges, not clab nodes); unplugged halves
+  are down. It's incremental (correct ports untouched) and runs after every
+  deploy / reconcile / node start and at startup. A reconcile whose YAML is
+  unchanged (cabling only) skips containerlab entirely → cabling takes
+  effect in a second and never restarts anything. Why: XRd and vrnetlab VMs
+  only see interfaces present at boot and never pick up a replaced veth.
+  - Only adding/removing a device, changing its interface count / image /
+    startup config restarts that device. On a deployed lab those three can
+    be applied now or saved for the next restart (`NodeUpdate.defer` →
+    `NodeInstance.pending`; `topology_ops.apply_pending` runs on the device's
+    Restart / Start and on lab Deploy; `DELETE …/nodes/{id}/pending`
+    discards). containerlab's *in-place* recreate
+    gives a node only the changed links (XRd `XR_INTERFACES`, vrnetlab
+    `CLAB_INTFS`), so `_recreate_plan` / `_apply_plan` remove such nodes
+    first and containerlab creates them fresh.
+  - Link state: Linux/FRR see an unplugged port as down (NO-CARRIER); XRd CP
+    and IOS-XE (virtio, even with QEMU `set_link off`) keep showing up/up —
+    traffic stops, protocols notice via hellos/BFD. Same as CML.
   - XRd keeps its config in the lab dir (`xr-storage`) across recreation.
     VMs don't: `_carry_running_configs` saves their running config into
     `NodeInstance.carry_config`, which boots instead of `startup_config` until

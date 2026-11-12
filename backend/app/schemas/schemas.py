@@ -106,6 +106,9 @@ class NodeUpdate(BaseModel):
     min_cpu_cores: Optional[int] = None
     color: Optional[str] = None
     notes: Optional[str] = None
+    # On a deployed lab: save image / interface count / startup config for the
+    # device's next restart instead of restarting it now.
+    defer: bool = False
 
 
 class NodeOut(BaseModel):
@@ -128,6 +131,7 @@ class NodeOut(BaseModel):
     notes: str = ""
     network: Optional[NetworkSpec] = None
     network_label: str = ""
+    pending: dict = {}
 
 
 class NodePositions(BaseModel):

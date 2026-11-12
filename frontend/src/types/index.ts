@@ -24,7 +24,11 @@ export interface Device {
   username: string; startup_config: string; min_memory_mb: number; min_cpu_cores: number;
   color: string; notes: string;
   network: NetworkSpec | null; network_label: string;
+  /** Changes saved for the device's next restart (deployed labs). */
+  pending?: PendingChanges;
 }
+
+export interface PendingChanges { image_ref?: string; interface_count?: number; startup_config?: string }
 
 export interface NetworkSpec { mode: 'internal' | 'access' | 'trunk'; nic: string; vlan: number; mgmt?: boolean }
 

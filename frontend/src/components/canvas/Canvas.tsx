@@ -39,6 +39,7 @@ export default function Canvas() {
         name: n.name,
         icon: n.icon,
         kindLabel: kinds[n.kind]?.label ?? n.kind,
+        pending: !!n.pending && Object.keys(n.pending).length > 0,
         mgmtIp: rt?.mgmt_ip || n.mgmt_ipv4,
         ready: rt?.ready_state ?? 'absent',
         noImage: n.kind === 'bridge' ? (n.network?.mode !== 'internal' && !n.network?.nic) : !n.image_ref,

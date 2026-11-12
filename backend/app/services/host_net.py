@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 SYS_NET = "/sys/class/net"
 _IFNAME_MAX = 15
@@ -92,32 +93,71 @@ def bridge_port_name(topology_id: int, node_id: int, port_index: int) -> str:
     return f"pl{_b36(topology_id)}n{_b36(node_id)}p{_b36(port_index)}"
 
 
-def wire_name(topology_id: int, link_id: int, side: str) -> str:
-    """Host-side half of a patched cable (side 'a' or 'b'), host-unique."""
-    return f"pw{_b36(topology_id)}l{_b36(link_id)}{side}"
+def port_name(topology_id: int, node_id: int, index: int) -> str:
+    """Host-side half of a device port (every port is pre-provisioned at
+    boot; cabling happens here on the host). Host-unique, <= 15 chars."""
+    return f"pp{_b36(topology_id)}n{_b36(node_id)}p{_b36(index)}"
 
 
-def join_wires(pairs: list[tuple[str, str]]) -> list[str]:
-    """Join each pair of host-side veth halves into a transparent wire: a tc
-    mirred redirect in both directions (every frame, LACP/LLDP/STP included).
-    Idempotent; re-run after every deploy because a recreated device brings
-    a new half. Returns pairs that couldn't be joined (a half is missing)."""
-    missing = []
-    for a, b in pairs:
-        if not (link_exists(a) and link_exists(b)):
-            missing.append(f"{a}-{b}")
+_REDIRECT = re.compile(r"Redirect to device (\S+?)\)")
+
+
+def _redirect_target(dev: str) -> str:
+    rc, out, _ = _run(["tc", "filter", "show", "dev", dev, "ingress"])
+    m = _REDIRECT.search(out) if rc == 0 else None
+    return m.group(1) if m else ""
+
+
+def _master(dev: str) -> str:
+    p = Path("/sys/class/net") / dev / "master"
+    return p.resolve().name if p.exists() else ""
+
+
+def apply_patches(ports: list[str], patches: list[dict]) -> list[str]:
+    """Make the host patch panel match the canvas. `ports` are every device
+    port half of a lab; `patches` are {"a": half, "b": half} (device to
+    device: tc mirred both ways, every frame incl. LACP/LLDP/STP) or
+    {"a": half, "bridge": name} (device to a Network node's bridge). Every
+    other port is unplugged: no redirect, no bridge, link down. Idempotent
+    and incremental: correct ports are left alone, so traffic on other
+    cables never blips. Returns problems (missing halves / failed tc)."""
+    want: dict[str, tuple[str, str]] = {}
+    for p in patches:
+        if p.get("bridge"):
+            want[p["a"]] = ("bridge", p["bridge"])
+        else:
+            want[p["a"]] = ("peer", p["b"])
+            want[p["b"]] = ("peer", p["a"])
+    problems = []
+    for dev in ports:
+        if not link_exists(dev):
+            problems.append(f"{dev}: missing")
             continue
-        for d in (a, b):
-            _run(["tc", "qdisc", "replace", "dev", d, "clsact"])
-            _run(["tc", "filter", "del", "dev", d, "ingress"])
-        for src, dst in ((a, b), (b, a)):
-            rc, _o, e = _run(["tc", "filter", "add", "dev", src, "ingress", "pref", "1", "handle", "1",
-                              "matchall", "action", "mirred", "egress", "redirect", "dev", dst])
+        mode, target = want.get(dev, ("", ""))
+        peer, master = _redirect_target(dev), _master(dev)
+        if mode == "peer" and not link_exists(target):
+            problems.append(f"{dev}: peer {target} missing")
+            mode = ""
+        if mode != "peer" and peer:
+            _run(["tc", "filter", "del", "dev", dev, "ingress"])
+        if mode != "bridge" and master:
+            _run(["ip", "link", "set", dev, "nomaster"])
+        if mode == "":
+            _run(["ip", "link", "set", dev, "down"])
+            continue
+        if mode == "bridge" and master != target:
+            rc, _o, e = _run(["ip", "link", "set", dev, "master", target])
             if rc != 0:
-                missing.append(f"{src}->{dst}: {e.strip()[:120]}")
-        for d in (a, b):
-            _run(["ip", "link", "set", d, "up"])
-    return missing
+                problems.append(f"{dev} -> {target}: {e.strip()[:120]}")
+        if mode == "peer" and peer != target:
+            _run(["tc", "qdisc", "replace", "dev", dev, "clsact"])
+            _run(["tc", "filter", "del", "dev", dev, "ingress"])
+            rc, _o, e = _run(["tc", "filter", "add", "dev", dev, "ingress", "pref", "1", "handle", "1",
+                              "matchall", "action", "mirred", "egress", "redirect", "dev", target])
+            if rc != 0:
+                problems.append(f"{dev} -> {target}: {e.strip()[:120]}")
+        _run(["ip", "link", "set", dev, "up"])
+    return problems
 
 
 def vlan_ifname(nic: str, vlan: int) -> str:

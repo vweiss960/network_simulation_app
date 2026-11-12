@@ -16,9 +16,24 @@ def test_yaml_uses_node_kind_image_and_kernel_names(db):
     doc = _doc(db, t)
     assert doc["name"] == f"plabs-{t.id}-Core-Lab"
     assert doc["topology"]["nodes"]["P1"] == {"kind": "cisco_xrd", "image": "ios-xr/xrd-control-plane:25.4.2"}
-    # XRd / VM cables are split into host halves joined by tc (see clab_yaml)
-    assert doc["topology"]["links"] == [{"endpoints": ["P1:Gi0-0-0-0", f"host:pw{t.id}l1a"]},
-                                        {"endpoints": ["PE1:eth1", f"host:pw{t.id}l1b"]}]
+    # Every port is pre-provisioned as a host half; cables are host patches.
+    links = [l["endpoints"] for l in doc["topology"]["links"]]
+    assert links[0] == ["P1:Gi0-0-0-0", f"host:pp{t.id}n{p1.id}p0"]
+    assert len(links) == len(p1.interfaces) + len(pe.interfaces)
+    assert ["PE1:eth1", f"host:pp{t.id}n{pe.id}p0"] in links
+    spec = generate_clab_yaml(db, t.id)
+    assert spec["patches"] == [{"a": f"pp{t.id}n{p1.id}p0", "b": f"pp{t.id}n{pe.id}p0"}]
+    assert len(spec["ports"]) == len(links)
+
+
+def test_network_node_is_a_host_bridge_patch(db):
+    t = make_topology(db)
+    a = make_node(db, t, name="A", kind="linux", image="frr")
+    sw = make_node(db, t, name="SW", kind="bridge", icon="switch")
+    make_link(db, t, a, sw)
+    spec = generate_clab_yaml(db, t.id)
+    assert "SW" not in yaml.safe_load(spec["yaml"])["topology"]["nodes"]
+    assert spec["patches"] == [{"a": f"pp{t.id}n{a.id}p0", "bridge": f"pl-sw{t.id}-{sw.id}"}]
 
 
 def test_no_host_port_publishing(db):

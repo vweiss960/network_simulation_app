@@ -34,17 +34,24 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function NodeInspector({ node }: { node: Device }) {
-  const { kinds, lab, links, nodes, updateNode, deleteNode, openConsole, nodeAction, select, currentTopologyId } = useLabStore();
+  const { kinds, lab, links, nodes, updateNode, deleteNode, openConsole, nodeAction, select, currentTopologyId,
+          discardPending } = useLabStore();
   const k = kinds[node.kind];
   const rt = lab?.nodes?.[String(node.id)];
   const deployed = !!lab && lab.status !== 'idle';
   const running = rt?.state === 'running';
   const [name, setName] = useState(node.name);
-  const [image, setImage] = useState(node.image_ref);
-  const [ifCount, setIfCount] = useState(node.interfaces.length);
+  // Values shown are what the device will have after its next restart.
+  const pending = node.pending ?? {};
+  const hasPending = Object.keys(pending).length > 0;
+  const nextImage = pending.image_ref ?? node.image_ref;
+  const nextIfCount = pending.interface_count ?? node.interfaces.length;
+  const nextConfig = pending.startup_config ?? node.startup_config;
+  const [image, setImage] = useState(nextImage);
+  const [ifCount, setIfCount] = useState(nextIfCount);
   const [username, setUsername] = useState(node.username);
   const [password, setPassword] = useState('');
-  const [config, setConfig] = useState(node.startup_config);
+  const [config, setConfig] = useState(nextConfig);
   const [images, setImages] = useState<string[]>([]);
 
   useEffect(() => { api.listDockerImages().then(r => setImages(r.images)).catch(() => {}); }, []);
@@ -55,7 +62,12 @@ function NodeInspector({ node }: { node: Device }) {
     if (l.source_node_id === node.id) cabled.set(l.source_interface, { peer: peerName(l.target_node_id), peerIf: l.target_interface, linkId: l.id });
     if (l.target_node_id === node.id) cabled.set(l.target_interface, { peer: peerName(l.source_node_id), peerIf: l.source_interface, linkId: l.id });
   }
-  const recreateWarn = deployed ? ' Applying recreates this device in the running lab.' : '';
+  const restartNote = (extra = '') => deployed
+    ? <div className="text-[11px] text-surface-500 mt-1">
+        <b className="text-surface-400">Apply now</b> restarts {node.name} with it{extra}.{' '}
+        <b className="text-surface-400">Next restart</b> saves it until the device is restarted (its Restart button, or a lab Deploy).
+      </div>
+    : null;
   const mgmt = rt?.mgmt_ip || node.mgmt_ipv4;
 
   return (
@@ -85,6 +97,24 @@ function NodeInspector({ node }: { node: Device }) {
         </div>
       </div>
 
+      {hasPending && (
+        <div className="m-3 p-2 rounded border border-amber-700/60 bg-amber-900/20 text-xs">
+          <div className="font-semibold text-amber-300 mb-1">Saved for the next restart</div>
+          <ul className="text-amber-100/90 space-y-0.5 mb-2">
+            {pending.image_ref !== undefined && <li>Image → <span className="font-mono">{pending.image_ref}</span></li>}
+            {pending.interface_count !== undefined && <li>Data interfaces → {pending.interface_count}</li>}
+            {pending.startup_config !== undefined && <li>New startup config (replaces the live config)</li>}
+          </ul>
+          <div className="flex gap-1.5">
+            <Btn icon={<RotateCw size={13} />} onClick={() => nodeAction(node.id, 'restart')} disabled={!deployed}>Restart now</Btn>
+            <Btn icon={<Trash2 size={13} />} onClick={async () => {
+              await discardPending(node.id);
+              setImage(node.image_ref); setIfCount(node.interfaces.length); setConfig(node.startup_config);
+            }}>Discard</Btn>
+          </div>
+        </div>
+      )}
+
       {deployed && currentTopologyId && (
         <DeviceTools topologyId={currentTopologyId} node={node} running={running} family={k?.family ?? 'linux'} />
       )}
@@ -98,7 +128,7 @@ function NodeInspector({ node }: { node: Device }) {
         <label className={label}>Image</label>
         <div className="flex gap-1 mb-1">
           <input className={`${field} font-mono text-xs`} value={image} list="plabs-docker-images" onChange={e => setImage(e.target.value)} placeholder="registry/image:tag" />
-          {image !== node.image_ref && <Apply onClick={() => updateNode(node.id, { image_ref: image })} />}
+          {image !== nextImage && <ApplyChoice deployed={deployed} onApply={defer => updateNode(node.id, { image_ref: image, defer })} />}
         </div>
         <datalist id="plabs-docker-images">{images.map(i => <option key={i} value={i} />)}</datalist>
         {image && images.length > 0 && !images.includes(image) && !images.includes(`${image}:latest`) &&
@@ -107,9 +137,10 @@ function NodeInspector({ node }: { node: Device }) {
         <div className="flex gap-1">
           <input type="number" min={0} max={k?.max_interfaces ?? 32} className={field} value={ifCount}
             onChange={e => setIfCount(Number(e.target.value))} />
-          {ifCount !== node.interfaces.length && <Apply onClick={() => updateNode(node.id, { interface_count: ifCount })} />}
+          {ifCount !== nextIfCount && <ApplyChoice deployed={deployed} onApply={defer => updateNode(node.id, { interface_count: ifCount, defer })} />}
         </div>
-        {deployed && image !== node.image_ref && <div className="text-[11px] text-surface-500 mt-1">{recreateWarn.trim()}</div>}
+        {(image !== nextImage || ifCount !== nextIfCount) && restartNote(
+          image !== nextImage ? '; its live config is kept' : '; cables stay connected and its live config is kept')}
       </Section>
 
       {k?.default_user && (
@@ -152,11 +183,13 @@ function NodeInspector({ node }: { node: Device }) {
           placeholder={node.kind === 'cisco_xrd'
             ? '! Merged after the containerlab defaults (user clab/clab@123, SSH, NETCONF, gRPC)\ninterface Loopback0\n ipv4 address 10.0.0.1 255.255.255.255'
             : 'Day-0 configuration applied when the device boots'} />
-        {config !== node.startup_config && (
-          <div className="mt-1 flex items-center justify-between">
-            <span className="text-[11px] text-surface-500">{recreateWarn}</span>
-            <Apply onClick={() => updateNode(node.id, { startup_config: config })} />
-          </div>
+        {config !== nextConfig && (
+          <>
+            <div className="mt-1 flex justify-end">
+              <ApplyChoice deployed={deployed} onApply={defer => updateNode(node.id, { startup_config: config, defer })} />
+            </div>
+            {restartNote(', and its live config is replaced by this one (snapshot first to keep it)')}
+          </>
         )}
       </Section>
 
@@ -227,6 +260,19 @@ function Btn({ icon, children, onClick, disabled }: { icon: React.ReactNode; chi
       className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-surface-700 hover:bg-surface-600 text-surface-100 disabled:opacity-40 disabled:cursor-not-allowed">
       {icon}{children}
     </button>
+  );
+}
+
+/** Apply a change that restarts the device: now, or saved for its next restart. */
+function ApplyChoice({ deployed, onApply }: { deployed: boolean; onApply: (defer: boolean) => void }) {
+  if (!deployed) return <Apply onClick={() => onApply(false)} />;
+  return (
+    <div className="flex gap-1 shrink-0">
+      <button onClick={() => onApply(false)} title="Restart the device now with this change"
+        className="px-2 py-1 text-xs rounded bg-primary-600 hover:bg-primary-500 text-white">Apply now</button>
+      <button onClick={() => onApply(true)} title="Keep the device running; apply when it is next restarted"
+        className="px-2 py-1 text-xs rounded bg-surface-700 hover:bg-surface-600 text-surface-100">Next restart</button>
+    </div>
   );
 }
 

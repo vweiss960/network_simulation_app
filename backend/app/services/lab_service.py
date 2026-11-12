@@ -949,7 +949,7 @@ def restore_host_network(db: Session) -> None:
                 yaml_path.write_text(applied)
             db.commit()
             _prepare_host_network(db, d.topology_id, spec)
-            _join_wires(spec)
+            _apply_patches(spec)
         except Exception as e:
             print(f"[startup] host network for {d.lab_name}: {e}", flush=True)
 
@@ -1103,11 +1103,13 @@ def _apply_plan(db: Session, topology_id: int, prev_yaml: str) -> tuple[Path, st
     return yaml_path, lab_name, spec, lost
 
 
-def _join_wires(spec: dict) -> None:
+def _apply_patches(spec: dict) -> list[str]:
+    """Cable the lab on the host patch panel (see host_net.apply_patches)."""
     from app.services import host_net
-    bad = host_net.join_wires([tuple(w) for w in spec.get("wires") or []])
+    bad = host_net.apply_patches(spec.get("ports") or [], spec.get("patches") or [])
     if bad:
-        print(f"[lab] {spec.get('lab_name')}: cables not joined: {bad}", flush=True)
+        print(f"[lab] {spec.get('lab_name')}: patch problems: {bad}", flush=True)
+    return bad
 
 
 def _remove_for_recreate(lab_name: str, names: list[str], wipe: set[str] = frozenset()) -> None:
@@ -1139,8 +1141,25 @@ def _start_addons(db: Session, topology_id: int, lab_name: str) -> None:
         pass
 
 
+def _apply_pending_changes(db: Session, topology_id: int, node_id: Optional[int] = None) -> list[str]:
+    """Apply changes saved for the next restart (one device, or all on a
+    deploy). Returns the names of devices that had any."""
+    from app.services.topology_ops import apply_pending
+    q = db.query(NodeInstance).filter(NodeInstance.topology_id == topology_id)
+    if node_id is not None:
+        q = q.filter(NodeInstance.id == node_id)
+    changed = []
+    for n in q.all():
+        if n.pending:
+            apply_pending(db, n)
+            changed.append(n.name)
+    db.commit()
+    return changed
+
+
 def deploy_lab(db: Session, topology_id: int) -> dict:
     """Deploy (or reconcile) the whole topology."""
+    _apply_pending_changes(db, topology_id)
     with _lock_for(topology_id):
         _sync_pending.discard(topology_id)
         prev_yaml = _get_or_create_deployment(db, topology_id).last_yaml or ""
@@ -1166,7 +1185,7 @@ def deploy_lab(db: Session, topology_id: int) -> dict:
             raise LabError(f"containerlab deploy failed: {dep.last_error}")
         dep.status = "running"
         db.commit()
-        _join_wires(spec)
+        _apply_patches(spec)
     _start_addons(db, topology_id, lab_name)
     return {
         "ok": True, "lab_name": lab_name,
@@ -1188,6 +1207,7 @@ def _sync_worker(topology_id: int) -> None:
                 dep = _get_or_create_deployment(db, topology_id)
                 if dep.status not in ("running", "syncing", "failed") or not dep.lab_name:
                     return
+                was_running = dep.status == "running"
                 dep.status = "syncing"
                 db.commit()
                 try:
@@ -1199,9 +1219,14 @@ def _sync_worker(topology_id: int) -> None:
                         return
                     yaml_path, _lab, spec, lost = _apply_plan(db, topology_id, prev_yaml)
                     _prepare_host_network(db, topology_id, spec)
-                    rc, out, err = _clab_deploy(yaml_path)
+                    if was_running and spec["yaml"] == prev_yaml:
+                        # Only cables changed: they live on the host patch
+                        # panel, so there's nothing for containerlab to do.
+                        rc, out, err = 0, "", ""
+                    else:
+                        rc, out, err = _clab_deploy(yaml_path)
                     if rc == 0:
-                        _join_wires(spec)
+                        _apply_patches(spec)
                     if rc == 0 and lost:
                         print(f"[lab] {_lab}: recreated without their live config: {lost}", flush=True)
                 except LabError as e:
@@ -1265,13 +1290,27 @@ def _node_action(db: Session, topology_id: int, node_id: int, action: str, timeo
     if rc != 0:
         raise LabError(f"containerlab {action} --node {short} failed: {err or out}")
     if action in ("start", "restart"):
-        _join_wires(generate_clab_yaml(db, topology_id))    # the device brought new cable halves
+        _apply_patches(generate_clab_yaml(db, topology_id))    # the device brought new cable halves
     return {"ok": True, "node_id": node_id, "action": action}
+
+
+def _restart_with_pending(db: Session, topology_id: int, node_id: int) -> Optional[dict]:
+    """A device with changes saved for its next restart comes back through a
+    reconcile, which recreates it with them."""
+    if _get_or_create_deployment(db, topology_id).status not in ("running", "syncing"):
+        return None                     # not deployed: deploy_lab applies them
+    if not _apply_pending_changes(db, topology_id, node_id):
+        return None
+    _schedule_sync(topology_id)
+    return {"ok": True, "node_id": node_id, "action": "recreate", "note": "Applying saved changes"}
 
 
 def start_node(db: Session, topology_id: int, node_id: int) -> dict:
     """Start a stopped node. A node that was never created (added while the
     lab was down, or a failed reconcile) is brought up by a reconcile."""
+    res = _restart_with_pending(db, topology_id, node_id)
+    if res:
+        return res
     from app.services.lab_view import compute_lab_view
     cname = next((n["lab_container_name"] for n in compute_lab_view(db, topology_id)["nodes"]
                   if n["id"] == node_id), None)
@@ -1294,7 +1333,7 @@ def stop_node(db: Session, topology_id: int, node_id: int) -> dict:
 
 
 def restart_node(db: Session, topology_id: int, node_id: int) -> dict:
-    return _node_action(db, topology_id, node_id, "restart", 600)
+    return _restart_with_pending(db, topology_id, node_id) or _node_action(db, topology_id, node_id, "restart", 600)
 
 
 def _destroy_locked(db: Session, topology_id: int) -> dict:

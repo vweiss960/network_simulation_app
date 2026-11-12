@@ -44,9 +44,9 @@ def test_image_change_recreates_any_kind():
     assert _recreate_plan(old, new) == ["F1"]
 
 
-def test_patched_links_isolate_neighbours(db):
-    """A cable touching XRd / VMs becomes two host halves, so a device whose
-    own cables change is the only one containerlab recreates."""
+def test_cabling_never_changes_the_yaml(db):
+    """Ports are pre-provisioned, so adding / removing cables only changes the
+    patch list: no device is recreated."""
     from app.models.topology import Topology
     from app.services import topology_ops
     from app.services.clab_yaml import generate_clab_yaml
@@ -54,21 +54,26 @@ def test_patched_links_isolate_neighbours(db):
     r1 = topology_ops.create_node(db, t.id, kind="cisco_xrd", image_ref="xrd:1")
     r2 = topology_ops.create_node(db, t.id, kind="cisco_xrd", image_ref="xrd:1")
     f1 = topology_ops.create_node(db, t.id, kind="linux", image_ref="frr:1")
-    f2 = topology_ops.create_node(db, t.id, kind="linux", image_ref="frr:1")
-    l12 = topology_ops.create_link(db, t.id, r1.id, r2.id)
-    topology_ops.create_link(db, t.id, f1.id, f2.id)
     db.commit()
-    old = generate_clab_yaml(db, t.id)
-    assert len(old["wires"]) == 1 and old["wires"][0][0].endswith("a")
-    links = yaml.safe_load(old["yaml"])["topology"]["links"]
-    assert [l["endpoints"][1].startswith("host:") for l in links] == [True, True, False]
+    before = generate_clab_yaml(db, t.id)
+    l1 = topology_ops.create_link(db, t.id, r1.id, r2.id)
+    topology_ops.create_link(db, t.id, f1.id, r1.id)
+    db.commit()
+    after = generate_clab_yaml(db, t.id)
+    assert after["yaml"] == before["yaml"]
+    assert _recreate_plan(before["yaml"], after["yaml"]) == []
+    assert len(after["patches"]) == 2 and before["patches"] == []
 
+    # adding a device recreates nobody else
     r3 = topology_ops.create_node(db, t.id, kind="cisco_xrd", image_ref="xrd:1")
     topology_ops.create_link(db, t.id, r3.id, r1.id)
     db.commit()
-    new = generate_clab_yaml(db, t.id)
-    assert _recreate_plan(old["yaml"], new["yaml"]) == [r1.name]   # not R2
-    assert len(new["wires"]) == 2
+    assert _recreate_plan(after["yaml"], generate_clab_yaml(db, t.id)["yaml"]) == []
+
+    # more ports on a device: only that device changes
+    topology_ops.set_interface_count(db, r2, 6)
+    db.commit()
+    assert _recreate_plan(after["yaml"], generate_clab_yaml(db, t.id)["yaml"]) == [r2.name]
 
 
 def test_day0_config_strips_unsafe_xe_lines():
@@ -119,3 +124,45 @@ def test_remove_for_recreate_wipes_only_new_startup(tmp_path, monkeypatch):
     lab_service._remove_for_recreate("lab", ["C1", "R1"], wipe={"C1"})
     assert not (tmp_path / "lab" / "clab-lab" / "C1").exists()
     assert (tmp_path / "lab" / "clab-lab" / "R1" / "config").exists()   # XRd keeps xr-storage on link changes
+
+
+def test_defer_saves_changes_for_next_restart(client, db, monkeypatch):
+    from app.models.lab_deployment import LabDeployment
+    from app.services import lab_service
+    tid = client.post("/api/topologies/", json={"name": "d"}).json()["id"]
+    nid = client.post(f"/api/topologies/{tid}/nodes/", json={"kind": "cisco_xrd", "image_ref": "xrd:1"}).json()["id"]
+    db.add(LabDeployment(topology_id=tid, status="running", lab_name="plabs-x")); db.commit()
+
+    r = client.patch(f"/api/topologies/{tid}/nodes/{nid}",
+                     json={"image_ref": "xrd:2", "interface_count": 6, "startup_config": "hostname X", "defer": True})
+    n = r.json()
+    assert n["image_ref"] == "xrd:1" and len(n["interfaces"]) == 4 and n["startup_config"] == ""
+    assert n["pending"] == {"image_ref": "xrd:2", "interface_count": 6, "startup_config": "hostname X"}
+    # setting a field back to its current value drops it from pending
+    n = client.patch(f"/api/topologies/{tid}/nodes/{nid}", json={"image_ref": "xrd:1", "defer": True}).json()
+    assert "image_ref" not in n["pending"]
+    # an impossible deferred interface count is refused up front
+    nid2 = client.post(f"/api/topologies/{tid}/nodes/", json={"kind": "linux", "image_ref": "frr"}).json()["id"]
+    client.post(f"/api/topologies/{tid}/links/", json={"source_node_id": nid, "target_node_id": nid2,
+                                                         "source_interface": "GigabitEthernet0/0/0/3"})
+    assert client.patch(f"/api/topologies/{tid}/nodes/{nid}", json={"interface_count": 2, "defer": True}).status_code == 400
+
+    # restart applies them through a reconcile
+    scheduled = []
+    monkeypatch.setattr(lab_service, "_schedule_sync", lambda t: scheduled.append(t))
+    res = lab_service.restart_node(db, tid, nid)
+    assert res["action"] == "recreate" and scheduled == [tid]
+    n = client.get(f"/api/topologies/{tid}/nodes/{nid}").json()
+    assert len(n["interfaces"]) == 6 and n["startup_config"] == "hostname X" and n["pending"] == {}
+
+
+def test_discard_pending_and_apply_now_clears(client, db):
+    from app.models.lab_deployment import LabDeployment
+    tid = client.post("/api/topologies/", json={"name": "d2"}).json()["id"]
+    nid = client.post(f"/api/topologies/{tid}/nodes/", json={"kind": "linux", "image_ref": "frr:1"}).json()["id"]
+    db.add(LabDeployment(topology_id=tid, status="running", lab_name="plabs-y")); db.commit()
+    client.patch(f"/api/topologies/{tid}/nodes/{nid}", json={"image_ref": "frr:2", "defer": True})
+    assert client.delete(f"/api/topologies/{tid}/nodes/{nid}/pending").json()["pending"] == {}
+    client.patch(f"/api/topologies/{tid}/nodes/{nid}", json={"image_ref": "frr:2", "defer": True})
+    n = client.patch(f"/api/topologies/{tid}/nodes/{nid}", json={"image_ref": "frr:3"}).json()
+    assert n["image_ref"] == "frr:3" and n["pending"] == {}

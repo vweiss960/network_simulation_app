@@ -38,6 +38,9 @@ class NodeInstance(Base):
     notes = Column(Text, default="")
     # Network nodes (kind=bridge): {"mode": internal|access|trunk, "nic": .., "vlan": ..}
     network_json = Column(Text, default="{}")
+    # Changes saved "for the next restart" on a deployed lab:
+    # {"image_ref": .., "interface_count": .., "startup_config": ..}
+    pending_json = Column(Text, default="{}")
 
     topology = relationship("Topology", back_populates="nodes")
 
@@ -73,6 +76,17 @@ class NodeInstance(Base):
     @network.setter
     def network(self, value):
         self.network_json = json.dumps(dict(value or {}))
+
+    @property
+    def pending(self) -> dict:
+        try:
+            return dict(json.loads(self.pending_json or "{}"))
+        except Exception:
+            return {}
+
+    @pending.setter
+    def pending(self, value):
+        self.pending_json = json.dumps(dict(value or {}))
 
     def kernel_iface(self, config_name: str) -> str:
         for i in self.interfaces:

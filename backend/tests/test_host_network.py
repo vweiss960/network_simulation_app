@@ -105,7 +105,7 @@ def test_mgmt_network_node_drives_yaml_and_leases(db, fake_dhcp):
     nodes = doc["topology"]["nodes"]
     ips = {nodes["R1"]["mgmt-ipv4"], nodes["R2"]["mgmt-ipv4"]}
     assert len(ips) == 2 and all(ip.startswith("10.24.110.") for ip in ips)
-    assert nodes["pl-eno2"] == {"kind": "bridge"}
+    assert "pl-eno2" not in nodes      # Network nodes are host bridges, not clab nodes
     # the XRd mgmt default route points at the learned gateway
     # sticky: a second generation keeps the same addresses
     again = yaml.safe_load(generate_clab_yaml(db, t.id, assign_ips=True)["yaml"])["topology"]["nodes"]

@@ -114,15 +114,19 @@ def ping_ok(name, ip):
     return rc == 0
 
 
-def check(step, before):
+NO_PINGS = []   # (node, ip) that must FAIL (unplugged cables)
+
+
+def check(step, before, allow_recreate=()):
     after = cids()
     recreated = sorted(k for k in after if k in before and before[k] != after[k])
     added = sorted(k for k in after if k not in before)
     log(f"--- {step}: recreated={recreated} added={added}")
+    unexpected = [r for r in recreated if r not in allow_recreate]
     for name in recreated + added:
         if name in N:
             wait_cli(name)
-    fails = []
+    fails = [f"{r} restarted" for r in unexpected]
     for name, subs in EXPECT.items():
         if name not in N:
             continue
@@ -143,6 +147,9 @@ def check(step, before):
             time.sleep(5)
         if not ok:
             fails.append(f"{name} -> {ip}: ping failed")
+    for name, ip in NO_PINGS:
+        if ping_ok(name, ip):
+            fails.append(f"{name} -> {ip}: still reachable after unplug")
     log("    PASS" if not fails else "    FAIL: " + "; ".join(fails))
     RESULTS.append((step, recreated, added, fails))
     return after
@@ -166,54 +173,81 @@ try:
     PINGS.extend([("R1", "10.0.12.2"), ("F1", "10.0.34.2")])
     c = check("baseline", cids())
 
-    # 1. new XRd linked to a running XRd
+    # 1. new XRd cabled to a running XRd: only the new device boots
     node("R3", XRD, 100)
     link("R3", "GigabitEthernet0/0/0/0", "R1", "GigabitEthernet0/0/0/1")
-    wait_synced(); c = check("add R3 + link R3-R1", c)
+    wait_synced(); c = check("add R3 + cable R3-R1", c)
     configure("R1", "interface GigabitEthernet0/0/0/1\n ipv4 address 10.0.13.1 255.255.255.0\n no shutdown\n")
     configure("R3", "interface GigabitEthernet0/0/0/0\n ipv4 address 10.0.13.3 255.255.255.0\n no shutdown\n")
     EXPECT["R1"].append("10.0.13.1"); EXPECT["R3"] = ["10.0.13.3"]; PINGS.append(("R3", "10.0.13.1"))
+    c = check("R3-R1 configured", c)
 
-    # 2. new FRR linked to a running FRR
+    # 2. new FRR cabled to a running FRR
     node("F3", FRR, 500)
     l_f3 = link("F3", "eth1", "F1", "eth2")
-    wait_synced(); c = check("add F3 + link F3-F1", c)
+    wait_synced(); c = check("add F3 + cable F3-F1", c)
     configure("F1", "interface eth2\n ip address 10.0.35.1/24\n")
     configure("F3", "interface eth1\n ip address 10.0.35.3/24\n")
     EXPECT["F1"].append("10.0.35.1"); EXPECT["F3"] = ["10.0.35.3"]; PINGS.append(("F3", "10.0.35.1"))
+    c = check("F3-F1 configured", c)
 
-    # 3. link between two existing devices of different kinds (XRd <-> FRR)
+    # 3. cable between two running devices of different kinds (XRd <-> FRR)
     link("R2", "GigabitEthernet0/0/0/1", "F2", "eth2")
-    wait_synced(); c = check("link R2-F2 (existing nodes)", c)
+    wait_synced()
+    configure("R2", "interface GigabitEthernet0/0/0/1\n ipv4 address 10.0.26.2 255.255.255.0\n no shutdown\n")
+    configure("F2", "interface eth2\n ip address 10.0.26.6/24\n")
+    EXPECT["R2"].append("10.0.26.2"); PINGS.append(("R2", "10.0.26.6"))
+    c = check("hot cable R2-F2", c)
 
-    # 4. remove a link
+    # 4. unplug, then replug a cable
     call("DELETE", f"/topologies/{tid}/links/{l_f3}")
-    PINGS.remove(("F3", "10.0.35.1"))
-    wait_synced(); c = check("remove link F3-F1", c)
+    PINGS.remove(("F3", "10.0.35.1")); NO_PINGS.append(("F3", "10.0.35.1"))
+    wait_synced(); c = check("unplug F3-F1", c)
+    l_f3 = link("F3", "eth1", "F1", "eth2")
+    NO_PINGS.remove(("F3", "10.0.35.1")); PINGS.append(("F3", "10.0.35.1"))
+    wait_synced(); c = check("replug F3-F1", c)
 
-    # 5. remove a node
+    # 5. remove a device
     call("DELETE", f"/topologies/{tid}/nodes/{N['R3']}")
     del N["R3"]; EXPECT.pop("R3"); PINGS.remove(("R3", "10.0.13.1"))
     wait_synced(); c = check("remove node R3", c)
 
+    # 6. a Lab Switch (internal L2 segment) between an XRd and an FRR
+    sw = call("POST", f"/topologies/{tid}/nodes/", json={"template_id": TPL["Lab Switch"], "x": 500, "y": 300})
+    N["SW"] = sw["id"]
+    link("R2", "GigabitEthernet0/0/0/3", "SW", None); link("F2", "eth4", "SW", None)
+    wait_synced()
+    configure("R2", "interface GigabitEthernet0/0/0/3\n ipv4 address 10.0.40.2 255.255.255.0\n no shutdown\n")
+    configure("F2", "interface eth4\n ip address 10.0.40.6/24\n")
+    PINGS.append(("R2", "10.0.40.6"))
+    c = check("Lab Switch R2-SW-F2", c)
+
     if WITH_VM:
-        # 6. a VM (Catalyst 8000v) linked to a running XRd
+        # 7. a VM (Catalyst 8000v) cabled to a running XRd
         node("C1", C8K, 300)
-        link("C1", "GigabitEthernet2", "R2", "GigabitEthernet0/0/0/2")
-        wait_synced(); c = check("add C1 (c8000v) + link C1-R2", c)
+        l_c1 = link("C1", "GigabitEthernet2", "R2", "GigabitEthernet0/0/0/2")
+        wait_synced(); c = check("add C1 (c8000v) + cable C1-R2", c, allow_recreate=("C1",))
         configure("C1", "interface GigabitEthernet2\n ip address 10.0.25.5 255.255.255.0\n no shutdown\n"
                         "interface Loopback0\n ip address 5.5.5.5 255.255.255.255\n")
         configure("R2", "interface GigabitEthernet0/0/0/2\n ipv4 address 10.0.25.2 255.255.255.0\n no shutdown\n")
         EXPECT["C1"] = ["10.0.25.5", "5.5.5.5"]; EXPECT["R2"].append("10.0.25.2"); PINGS.append(("C1", "10.0.25.2"))
         c = check("C1 configured live", c)
 
-        # 7. new cable on the running VM → it is recreated; live config must survive
+        # 8. new cable on the running VM: no restart at all now
         link("C1", "GigabitEthernet3", "F2", "eth3")
-        wait_synced(); c = check("link C1-F2 (VM gets a new cable)", c)
-        configure("C1", "interface GigabitEthernet3\n ip address 10.0.26.5 255.255.255.0\n no shutdown\n")
-        configure("F2", "interface eth3\n ip address 10.0.26.2/24\n")
-        PINGS.append(("C1", "10.0.26.2"))
-        c = check("C1-F2 configured", c)
+        wait_synced()
+        configure("C1", "interface GigabitEthernet3\n ip address 10.0.27.5 255.255.255.0\n no shutdown\n")
+        configure("F2", "interface eth3\n ip address 10.0.27.6/24\n")
+        PINGS.append(("C1", "10.0.27.6"))
+        c = check("hot cable C1-F2 (VM)", c)
+
+        # 9. unplug / replug the VM's cable
+        call("DELETE", f"/topologies/{tid}/links/{l_c1}")
+        PINGS.remove(("C1", "10.0.25.2")); NO_PINGS.append(("C1", "10.0.25.2"))
+        wait_synced(); c = check("unplug C1-R2", c)
+        link("C1", "GigabitEthernet2", "R2", "GigabitEthernet0/0/0/2")
+        NO_PINGS.remove(("C1", "10.0.25.2")); PINGS.append(("C1", "10.0.25.2"))
+        wait_synced(); c = check("replug C1-R2", c)
 finally:
     print("\n==== SUMMARY")
     for step, rec, add, fails in RESULTS:

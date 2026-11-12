@@ -38,7 +38,8 @@ interface LabStore {
   select: (s: Selection) => void;
 
   addNode: (templateId: number, x: number, y: number) => Promise<void>;
-  updateNode: (id: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec }) => Promise<boolean>;
+  updateNode: (id: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec; defer?: boolean }) => Promise<boolean>;
+  discardPending: (id: number) => Promise<void>;
   moveNodes: (positions: Record<number, [number, number]>) => void;
   deleteNode: (id: number) => Promise<void>;
   connect: (a: number, b: number, aIf?: string, bIf?: string) => Promise<void>;
@@ -134,6 +135,14 @@ export const useLabStore = create<LabStore>((set, get) => ({
     } catch (e) { toast.error(errMsg(e)); return false; }
   },
 
+  discardPending: async (id) => {
+    const tid = get().currentTopologyId!;
+    try {
+      const n = await api.discardPending(tid, id);
+      set({ nodes: get().nodes.map(x => (x.id === id ? n : x)) });
+    } catch (e) { toast.error(errMsg(e)); }
+  },
+
   moveNodes: (positions) => {
     const tid = get().currentTopologyId!;
     set({ nodes: get().nodes.map(n => (positions[n.id] ? { ...n, x: positions[n.id][0], y: positions[n.id][1] } : n)) });
@@ -198,6 +207,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
       clearInterval(poll);
       set({ busy: null });
       get().pollLab();
+      get().refreshTopology();     // saved "next restart" changes were applied
     }
   },
 
@@ -217,10 +227,11 @@ export const useLabStore = create<LabStore>((set, get) => ({
     const name = get().nodes.find(n => n.id === id)?.name ?? 'device';
     const t = toast.loading(`${action[0].toUpperCase()}${action.slice(1)}ing ${name}…`);
     try {
-      await api[`${action}Node` as 'startNode'](tid, id);
-      toast.success(`${name}: ${action} done`, { id: t });
+      const r = await api[`${action}Node` as 'startNode'](tid, id);
+      if (r?.action === 'recreate') toast.success(`${name}: restarting with its saved changes`, { id: t });
+      else toast.success(`${name}: ${action} done`, { id: t });
     } catch (e) { toast.error(errMsg(e), { id: t }); }
-    finally { get().pollLab(); }
+    finally { get().pollLab(); get().refreshTopology(); }
   },
 
   openConsole: (nodeId, type = 'console', cli) => {

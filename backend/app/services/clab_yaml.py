@@ -137,8 +137,7 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
     rendered_config_paths: list[str] = []
     for n in view["nodes"]:
         if n["is_bridge"]:
-            clab_nodes[n["clab_name"]] = {"kind": "bridge"}
-            continue
+            continue    # a host Linux bridge (lab_service prepares it); ports join it in apply_patches
         entry: dict = {"kind": n["lab_kind"], "image": n["lab_image"]}
         from app.services.device_kinds import get_kind as _gk
         body = day0_config(_gk(n["lab_kind"]).family, n.get("startup_config") or "").strip("\n")
@@ -168,31 +167,40 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
             "requires_hugepages": n["requires_hugepages"],
         })
 
-    names = {n["id"]: n["clab_name"] for n in view["nodes"]}
-    from app.services.device_kinds import get_kind
-    from app.services.host_net import wire_name
-    # A cable touching a device that can't take link changes live is split
-    # into two host-side veth halves joined by tc (lab_service joins them
-    # after each deploy). Recreating one device then replaces only its own
-    # half: its neighbour keeps its interface, which IOS-XR / vrnetlab VMs
-    # would otherwise lose for good (they bind to it at boot).
-    patched = {n["id"] for n in view["nodes"] if not n["is_bridge"] and not get_kind(n["lab_kind"]).live_links}
-    bridges = {n["id"] for n in view["nodes"] if n["is_bridge"]}
-    included_links, skipped_links, wires = [], [], []
+    # Pre-provisioned ports: every port of every device is a veth whose
+    # other half sits on the host (host_net.port_name), created when the
+    # device is. Cables are not in this file at all — lab_service patches
+    # the host halves together (or into a Network node's bridge) with
+    # host_net.apply_patches. Drawing or deleting a cable therefore never
+    # changes a device's definition, so nothing restarts; XRd and vrnetlab
+    # VMs, which only see the interfaces present at boot, get all of them.
+    from app.services.host_net import port_name
+    port_of: dict[tuple[int, str], str] = {}
+    yaml_links, ports = [], []
+    for n in view["nodes"]:
+        if n["is_bridge"]:
+            continue
+        for idx, iface in enumerate(n["interfaces"] or []):
+            half = port_name(topology_id, n["id"], idx)
+            port_of[(n["id"], iface["kernel"])] = half
+            ports.append(half)
+            yaml_links.append({"endpoints": [f"{n['clab_name']}:{iface['kernel']}", f"host:{half}"]})
+    bridge_of = {n["id"]: n["bridge"] for n in view["nodes"] if n["is_bridge"]}
+
+    included_links, skipped_links, patches = [], [], []
     for l in view["links"]:
-        a, b = names.get(l["source_node_id"]), names.get(l["target_node_id"])
-        if not a or not b or not l["source_interface"] or not l["target_interface"]:
+        ends = []
+        for nid, iface in ((l["source_node_id"], l["source_interface"]), (l["target_node_id"], l["target_interface"])):
+            ends.append(("bridge", bridge_of[nid]) if nid in bridge_of else ("port", port_of.get((nid, iface))))
+        if any(v is None for _k, v in ends):
             skipped_links.append({"id": l["id"], "reason": "Endpoint not deployable or interface missing"})
             continue
-        ends = [f"{a}:{l['source_interface']}", f"{b}:{l['target_interface']}"]
-        s_id, t_id = l["source_node_id"], l["target_node_id"]
-        if (s_id in patched or t_id in patched) and not ({s_id, t_id} & bridges):
-            wa, wb = wire_name(topology_id, l["id"], "a"), wire_name(topology_id, l["id"], "b")
-            wires.append((wa, wb))
-            included_links.append({"id": l["id"], "endpoints": ends, "wire": [wa, wb],
-                                   "yaml": [[ends[0], f"host:{wa}"], [ends[1], f"host:{wb}"]]})
-        else:
-            included_links.append({"id": l["id"], "endpoints": ends, "yaml": [ends]})
+        (ka, va), (kb, vb) = ends
+        if ka == "bridge":
+            (ka, va), (kb, vb) = (kb, vb), (ka, va)
+        patch = {"a": va, "bridge": vb} if kb == "bridge" else {"a": va, "b": vb}
+        patches.append(patch)
+        included_links.append({"id": l["id"], **patch})
 
     m = {"network": mgmt.docker_network}
     if mgmt.subnet:
@@ -202,7 +210,7 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
     doc: dict = {"name": lab_name, "mgmt": m}
     doc["topology"] = {
         "nodes": clab_nodes,
-        "links": [{"endpoints": e} for l in included_links for e in l["yaml"]],
+        "links": yaml_links,
     }
 
     return {
@@ -213,7 +221,8 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
         "included_links": included_links,
         "skipped_links": skipped_links,
         "rendered_config_paths": rendered_config_paths,
-        "wires": wires,
+        "ports": ports,
+        "patches": patches,
         "resource_estimate": {
             "memory_mb": sum(n["min_memory_mb"] for n in included_nodes),
             "mgmt": {"bridged": mgmt.bridged, "bridge": mgmt.bridge, "network": mgmt.docker_network,
