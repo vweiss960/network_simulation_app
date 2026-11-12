@@ -101,14 +101,62 @@ def vlan_ifname(nic: str, vlan: int) -> str:
 
 # --- discovery ---------------------------------------------------------------
 
-def _default_route_ifaces() -> set[str]:
+def _primary_uplink() -> str | None:
+    """The interface holding the lowest-metric IPv4 default route — the
+    server's own connection, which a lab must never take over untagged."""
     rc, out, _ = _run(["ip", "-j", "route", "show", "default"])
     if rc != 0:
-        return set()
+        return None
     try:
-        return {r.get("dev") for r in json.loads(out or "[]") if r.get("dev")}
+        routes = [r for r in json.loads(out or "[]") if r.get("dev")]
     except json.JSONDecodeError:
-        return set()
+        return None
+    if not routes:
+        return None
+    return min(routes, key=lambda r: r.get("metric", 0))["dev"]
+
+
+NM_DROPIN = "/etc/NetworkManager/conf.d/90-plabs-unmanaged.conf"
+
+
+def _nm_states() -> dict[str, str]:
+    """NetworkManager device states (empty when NM isn't installed/reachable)."""
+    rc, out, _ = _run(["nmcli", "-t", "-f", "DEVICE,STATE", "dev"])
+    if rc != 0:
+        return {}
+    return dict(line.split(":", 1) for line in out.splitlines() if ":" in line)
+
+
+def release_from_host(nic: str) -> None:
+    """Stop the host's own network stack using a NIC we're about to bridge:
+    mark it unmanaged in NetworkManager (runtime + persistent drop-in) and
+    drop any address/route the host had on it (e.g. an auto-DHCP lease)."""
+    if nic == _primary_uplink():
+        raise HostNetError(f"{nic} is this server's primary uplink — refusing to take it over")
+    states = _nm_states()
+    if states.get(nic) and states[nic] != "unmanaged":
+        names = set()
+        try:
+            for line in open(NM_DROPIN):
+                if line.startswith("unmanaged-devices="):
+                    names |= {x.split(":", 1)[1] for x in line.split("=", 1)[1].strip().split(";") if ":" in x}
+        except OSError:
+            pass
+        names.add(nic)
+        try:
+            os.makedirs(os.path.dirname(NM_DROPIN), exist_ok=True)
+            with open(NM_DROPIN, "w") as f:
+                f.write("# Written by Phanero Labs: NICs used for lab networks.\n[keyfile]\n"
+                        "unmanaged-devices=" + ";".join(f"interface-name:{n}" for n in sorted(names)) + "\n")
+            _run(["nmcli", "general", "reload", "conf"])
+        except OSError:
+            pass  # read-only /etc (container) — the runtime switch below still applies
+        rc, _, err = _run(["nmcli", "dev", "set", nic, "managed", "no"])
+        if rc != 0:
+            raise HostNetError(f"Couldn't release {nic} from NetworkManager: {err.strip()} "
+                               f"(run: sudo nmcli dev set {nic} managed no)")
+    if _addrs().get(nic):
+        _run(["ip", "addr", "flush", "dev", nic])
 
 
 def _addrs() -> dict[str, list[str]]:
@@ -131,8 +179,9 @@ def list_nics() -> list[dict]:
     """Physical NICs with link state and what they're attached to."""
     if not os.path.isdir(SYS_NET):
         return []
-    default = _default_route_ifaces()
+    uplink = _primary_uplink()
     addrs = _addrs()
+    nm = _nm_states()
     out = []
     for nic in sorted(os.listdir(SYS_NET)):
         if not is_physical(nic):
@@ -147,8 +196,12 @@ def list_nics() -> list[dict]:
             "speed_mbps": int(speed) if speed.lstrip("-").isdigit() and int(speed) > 0 else None,
             "addresses": addrs.get(nic, []),
             "master": master,
-            # The server's own uplink: access mode would take its IP away.
-            "protected": nic in default or bool(addrs.get(nic)) and not master.startswith("pl-"),
+            # The server's own primary uplink: never usable untagged.
+            "protected": nic == uplink,
+            # Host currently configures it (e.g. NetworkManager auto-DHCP);
+            # claiming it for a lab releases it and removes those addresses.
+            "host_managed": bool(addrs.get(nic)) or nm.get(nic, "unmanaged") not in ("unmanaged", "unavailable", ""),
+            "nm_state": nm.get(nic, ""),
         })
     return out
 
@@ -232,6 +285,8 @@ def ensure_bridge(name: str, seg: Segment, mtu: int | None = None) -> None:
     if not link_exists(name):
         _must(["ip", "link", "add", name, "type", "bridge", "stp_state", "0"])
     uplink = None
+    if seg.nic and seg.mode == "access":
+        release_from_host(seg.nic)
     if seg.mode == "access" and seg.nic:
         uplink = seg.nic
     elif seg.mode == "trunk" and seg.nic:

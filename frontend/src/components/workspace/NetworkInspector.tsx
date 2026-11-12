@@ -72,6 +72,12 @@ export default function NetworkInspector({ node }: { node: Device }) {
               ))}
             </select>
             {nic && !nic.carrier && <div className="text-[11px] text-amber-400 mt-1">{nic.name} has no link — check the cable / switch port.</div>}
+            {nic && spec.mode === 'access' && nic.host_managed && !nic.master.startsWith('pl-') && (
+              <div className="text-[11px] text-amber-400 mt-1">
+                This server is using {nic.name}{nic.addresses.length ? ` (${nic.addresses.join(', ')})` : ''}. Applying hands the port to
+                the lab: the host stops managing it and that address is removed.
+              </div>
+            )}
             {spec.mode === 'access' && <div className="text-[11px] text-surface-500 mt-1">The server's own uplink can only be used in trunk mode.</div>}
             {spec.mode === 'trunk' && (
               <>

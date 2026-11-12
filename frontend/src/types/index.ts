@@ -30,7 +30,7 @@ export interface NetworkSpec { mode: 'internal' | 'access' | 'trunk'; nic: strin
 
 export interface HostNic {
   name: string; mac: string; operstate: string; carrier: boolean; speed_mbps: number | null;
-  addresses: string[]; master: string; protected: boolean;
+  addresses: string[]; master: string; protected: boolean; host_managed: boolean; nm_state: string;
 }
 
 export interface MgmtSettings {

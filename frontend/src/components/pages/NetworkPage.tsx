@@ -120,7 +120,8 @@ export default function NetworkPage() {
                   const used = info.usage.filter(u => u.nic === n.name);
                   return (
                     <tr key={n.name}>
-                      <td className="p-2 font-mono">{n.name}{n.protected && <span className="ml-2 text-[10px] text-amber-300">server uplink</span>}</td>
+                      <td className="p-2 font-mono">{n.name}{n.protected && <span className="ml-2 text-[10px] text-amber-300">server uplink</span>}
+                        {!n.protected && n.host_managed && !n.master && <span className="ml-2 text-[10px] text-sky-300">used by host</span>}</td>
                       <td className="p-2">{n.carrier ? <span className="text-emerald-300">up{n.speed_mbps ? ` · ${n.speed_mbps / 1000}G` : ''}</span> : <span className="text-surface-500">no link</span>}</td>
                       <td className="p-2 font-mono text-xs">{n.addresses.join(', ') || '—'}</td>
                       <td className="p-2 font-mono text-xs">{n.master || '—'}</td>
