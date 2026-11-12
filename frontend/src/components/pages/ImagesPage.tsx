@@ -3,12 +3,13 @@ import toast from 'react-hot-toast';
 import { Upload } from 'lucide-react';
 import { api } from '../../utils/api';
 import QcowImageManager from '../panels/QcowImageManager';
+import UploadsPanel from './UploadsPanel';
+import { useUploadStore } from '../../stores/useUploadStore';
 
 /** Device images: container tarballs (docker load) and qcow2 VMs (vrnetlab build). */
 export default function ImagesPage() {
   const [files, setFiles] = useState<any[]>([]);
   const [docker, setDocker] = useState<string[]>([]);
-  const [pct, setPct] = useState<number | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
   const [found, setFound] = useState<{ filename: string; size_mb: number; platform: string }[]>([]);
   const [folder, setFolder] = useState('');
@@ -41,10 +42,8 @@ export default function ImagesPage() {
       if (fileRef.current) fileRef.current.value = '';
       return;
     }
-    setPct(0);
-    try { await api.uploadLabImage(f, setPct); toast.success(`Uploaded ${f.name}`); refresh(); }
-    catch (e) { toast.error((e as Error).message); }
-    finally { setPct(null); if (fileRef.current) fileRef.current.value = ''; }
+    if (fileRef.current) fileRef.current.value = '';
+    useUploadStore.getState().start(f, 'tarball', '', () => refresh());
   };
 
   const load = async (filename: string) => {
@@ -68,12 +67,14 @@ export default function ImagesPage() {
           </p>
         </div>
 
+        <UploadsPanel />
+
         <section>
           <div className="flex items-center justify-between mb-2">
             <h2 className="font-semibold">Container image files</h2>
-            <button onClick={() => fileRef.current?.click()} disabled={pct !== null}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-surface-700 hover:bg-surface-600 disabled:opacity-50">
-              <Upload size={14} /> {pct !== null ? `Uploading ${pct}%` : 'Upload .tgz / .tar'}
+            <button onClick={() => fileRef.current?.click()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-surface-700 hover:bg-surface-600">
+              <Upload size={14} /> Upload .tgz / .tar
             </button>
             <input ref={fileRef} type="file" className="hidden" accept=".tgz,.tar,.tar.gz,.gz" onChange={e => upload(e.target.files?.[0])} />
           </div>

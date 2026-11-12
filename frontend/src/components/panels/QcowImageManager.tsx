@@ -16,6 +16,7 @@ import {
   Upload, RefreshCw, Hammer, Trash2, Copy, CheckCircle, XCircle, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { api } from '../../utils/api';
+import { useUploadStore } from '../../stores/useUploadStore';
 
 type QcowImage = {
   id: number;
@@ -35,7 +36,7 @@ type QcowImage = {
 type Platform = { key: string; vendor: string; label: string; clab_kind: string; qcow_hint: string };
 
 export default function QcowImageManager() {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [images, setImages] = useState<QcowImage[]>([]);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [activeBuildId, setActiveBuildId] = useState<number | null>(null);
@@ -107,16 +108,10 @@ export default function QcowImageManager() {
 
   const upload = async (file: File) => {
     if (!uploadPlatform) { toast.error('Pick a platform first.'); return; }
-    setUploadPct(0);
-    try {
-      const r = await api.uploadQcowImage(file, uploadPlatform, p => setUploadPct(p));
-      toast.success(`Uploaded ${r.filename} (${r.size_mb} MB). Click Build to wrap into a Docker image.`);
-      refresh();
-    } catch (e: any) {
-      toast.error(`Upload failed: ${e?.message || e}`, { duration: 10000 });
-    }
-    setUploadPct(null);
     if (fileRef.current) fileRef.current.value = '';
+    // Resumable, chunked: survives dropped connections / sleep; progress shows
+    // in the Uploads panel. Registers the image when it completes.
+    useUploadStore.getState().start(file, 'qcow', uploadPlatform, () => refresh());
   };
 
   const startBuild = async (img: QcowImage) => {
