@@ -17,13 +17,13 @@ const MODES: { value: NetworkSpec['mode']; title: string; help: string }[] = [
 export default function NetworkInspector({ node }: { node: Device }) {
   const { lab, links, nodes, updateNode, deleteNode, select } = useLabStore();
   const [nics, setNics] = useState<HostNic[]>([]);
-  const [spec, setSpec] = useState<NetworkSpec>(node.network ?? { mode: 'internal', nic: '', vlan: 0 });
+  const [spec, setSpec] = useState<NetworkSpec>({ mgmt: false, ...(node.network ?? { mode: 'internal', nic: '', vlan: 0 }) });
   const rt = lab?.nodes?.[String(node.id)];
   const deployed = !!lab && lab.status !== 'idle';
 
   useEffect(() => { api.getLabNetwork().then(r => setNics(r.nics)).catch(() => {}); }, []);
 
-  const dirty = JSON.stringify(spec) !== JSON.stringify(node.network);
+  const dirty = JSON.stringify({ mgmt: false, ...spec }) !== JSON.stringify({ mgmt: false, ...node.network });
   const nic = nics.find(n => n.name === spec.nic);
   const attached = links.flatMap(l => {
     const name = (id: number) => nodes.find(n => n.id === id)?.name ?? '?';
@@ -36,7 +36,10 @@ export default function NetworkInspector({ node }: { node: Device }) {
     <div className="h-full overflow-y-auto text-sm">
       <div className="p-3 border-b border-surface-700">
         <div className="text-base font-semibold text-surface-100">{node.name}</div>
-        <div className="text-xs text-surface-400">{node.network_label}</div>
+        <div className="text-xs text-surface-400">{node.network_label}{node.network?.mgmt ? ' · management network' : ''}</div>
+        {node.network?.mgmt && lab?.mgmt?.bridged && lab.mgmt.subnet && (
+          <div className="text-[11px] text-surface-400 mt-1">DHCP: {lab.mgmt.subnet} via {lab.mgmt.gateway}</div>
+        )}
         {deployed && rt && (
           <div className="mt-2 grid grid-cols-2 gap-y-1 text-xs">
             <span className="text-surface-500">Bridge</span><span className="font-mono">{rt.bridge ?? '—'}</span>
@@ -88,6 +91,18 @@ export default function NetworkInspector({ node }: { node: Device }) {
               </>
             )}
           </>
+        )}
+        {spec.mode !== 'internal' && (
+          <label className="mt-3 flex gap-2 p-2 rounded border border-surface-700 cursor-pointer">
+            <input type="checkbox" checked={!!spec.mgmt} onChange={e => setSpec({ ...spec, mgmt: e.target.checked })} className="mt-0.5" />
+            <span>
+              <span className="text-surface-100">Management network for this lab</span><br />
+              <span className="text-[11px] text-surface-400">
+                Every device's management interface joins this network and gets its own address from its DHCP server.
+                {deployed ? ' Changing this needs the lab destroyed first.' : ''}
+              </span>
+            </span>
+          </label>
         )}
         {dirty && (
           <div className="mt-3 flex items-center justify-between gap-2">

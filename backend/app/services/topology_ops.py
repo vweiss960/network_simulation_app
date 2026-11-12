@@ -160,10 +160,18 @@ def set_network(db: Session, node: NodeInstance, network: dict) -> None:
         validate_segment(seg)
     except HostNetError as e:
         raise TopologyError(str(e))
+    mgmt = bool(network.get("mgmt"))
+    if mgmt and seg.mode == "internal":
+        raise TopologyError("The management network must be a physical NIC or a VLAN on one")
+    others = db.query(NodeInstance).filter(NodeInstance.topology_id == node.topology_id,
+                                           NodeInstance.id != node.id, NodeInstance.kind == node.kind).all()
     if seg.mode != "internal" and seg.nic:
-        for other in db.query(NodeInstance).filter(NodeInstance.topology_id == node.topology_id,
-                                                   NodeInstance.id != node.id, NodeInstance.kind == node.kind):
+        for other in others:
             o = Segment.from_dict(other.network)
             if o.mode == seg.mode and o.nic == seg.nic and o.vlan == seg.vlan:
                 raise TopologyError(f"{other.name} already connects this lab to {seg.describe()} — cable devices to it instead")
-    node.network = seg.to_dict()
+    if mgmt:
+        for other in others:
+            if other.network.get("mgmt"):
+                raise TopologyError(f"{other.name} is already this lab's management network (a lab has one)")
+    node.network = {**seg.to_dict(), "mgmt": mgmt}

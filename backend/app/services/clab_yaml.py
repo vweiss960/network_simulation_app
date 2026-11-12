@@ -15,11 +15,6 @@ from app.models.topology import Topology
 from app.services.lab_view import compute_lab_view
 
 
-def _mgmt_settings(db: Session):
-    from app.services.lab_network import get_settings
-    return get_settings(db)
-
-
 def _first_host(subnet: str, default: str) -> str:
     if subnet:
         try:
@@ -69,7 +64,9 @@ def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str) -> str:
     )
 
 
-def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = True) -> dict:
+def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) -> dict:
+    """assign_ips=True (deploy / reconcile only) sets up a bridged mgmt network
+    and takes DHCP leases for devices; previews leave the host untouched."""
     topology = db.query(Topology).filter(Topology.id == topology_id).first()
     if not topology:
         raise ValueError(f"Topology {topology_id} not found")
@@ -78,14 +75,15 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = True) -
     lab_name = view["lab_name"]
     lab_dir = LAB_STATE_DIR / lab_name
     configs_dir = lab_dir / "configs"
-    mgmt = _mgmt_settings(db)
+    from app.services import lab_network
+    mgmt = lab_network.lab_mgmt(db, topology_id)
     if mgmt.bridged and assign_ips:
-        from app.services.lab_network import assign_ips as _assign
-        ips = _assign(db, mgmt, [n["id"] for n in view["nodes"] if not n["is_bridge"]])
+        lab_network.ensure_mgmt(db, mgmt, lab_network.get_settings(db).mtu or None)
+        ips = lab_network.assign_ips(db, mgmt, [n["id"] for n in view["nodes"] if not n["is_bridge"]])
         for n in view["nodes"]:
             if n["id"] in ips:
                 n["mgmt_ip"] = ips[n["id"]]
-    gw_v4 = mgmt.effective_gateway()
+    gw_v4 = mgmt.gateway or "172.30.0.1"
     gw_v6 = "2001:172:20:20::1"
 
     clab_nodes: dict = {}
@@ -128,9 +126,11 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = True) -
             "endpoints": [f"{a}:{l['source_interface']}", f"{b}:{l['target_interface']}"],
         })
 
-    m = {"network": mgmt.docker_network, "ipv4-subnet": mgmt.subnet}
-    if mgmt.bridged:
-        m["ipv4-gw"] = gw_v4
+    m = {"network": mgmt.docker_network}
+    if mgmt.subnet:
+        m["ipv4-subnet"] = mgmt.subnet
+    if mgmt.bridged and mgmt.gateway:
+        m["ipv4-gw"] = mgmt.gateway
     doc: dict = {"name": lab_name, "mgmt": m}
     doc["topology"] = {
         "nodes": clab_nodes,
@@ -147,6 +147,8 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = True) -
         "rendered_config_paths": rendered_config_paths,
         "resource_estimate": {
             "memory_mb": sum(n["min_memory_mb"] for n in included_nodes),
+            "mgmt": {"bridged": mgmt.bridged, "bridge": mgmt.bridge, "network": mgmt.docker_network,
+                     "subnet": mgmt.subnet, "gateway": mgmt.gateway, "node_id": mgmt.node_id},
             "bridges": [{"node_id": n["id"], "bridge": n["bridge"], "segment": n["segment"]}
                         for n in view["nodes"] if n["is_bridge"]],
             "cpu_cores": sum(n["min_cpu_cores"] for n in included_nodes),

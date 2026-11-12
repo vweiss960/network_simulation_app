@@ -112,7 +112,7 @@ export const api = {
   // Host networking
   getLabNetwork: () => request<LabNetworkInfo>('/lab-network/'),
   putLabNetwork: (data: MgmtSettings) =>
-    request<{ settings: MgmtSettings; status: LabNetworkInfo['status'] }>('/lab-network/', json('PUT', data)),
+    request<{ settings: MgmtSettings }>('/lab-network/', json('PUT', data)),
 
   // Users
   listUsers: () => request<any[]>('/auth/users'),

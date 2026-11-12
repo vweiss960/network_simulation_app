@@ -66,6 +66,8 @@ function NodeInspector({ node }: { node: Device }) {
           <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
             <span className="text-surface-500">State</span><span className="text-surface-200">{rt?.ready_state ?? 'absent'}</span>
             <span className="text-surface-500">Mgmt IP</span><span className="font-mono text-surface-200">{mgmt || '—'}</span>
+            <span className="text-surface-500">Mgmt network</span>
+            <span className="text-surface-200">{lab?.mgmt?.bridged ? (nodes.find(x => x.id === lab.mgmt.node_id)?.name ?? 'bridged') + ' (DHCP)' : 'internal'}</span>
             {k?.default_user && <><span className="text-surface-500">User</span>
               <span className="font-mono text-surface-200">{node.username || k.default_user}</span></>}
             {mgmt && k?.ssh && <><span className="text-surface-500">SSH</span>

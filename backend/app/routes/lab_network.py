@@ -17,15 +17,8 @@ from app.services.host_net import HostNetError, Segment
 router = APIRouter(prefix="/api/lab-network", tags=["lab-network"])
 
 
-class MgmtIn(BaseModel):
-    mode: str = "internal"
-    nic: str = ""
-    vlan: int = 0
+class SettingsIn(BaseModel):
     subnet: str = lab_network.DEFAULT_INTERNAL_SUBNET
-    gateway: str = ""
-    host_ip: str = ""
-    pool_start: str = ""
-    pool_end: str = ""
     mtu: int = 0
 
 
@@ -38,6 +31,7 @@ def _usage(db: Session) -> list[dict]:
             continue
         t = db.get(Topology, n.topology_id)
         out.append({"topology_id": n.topology_id, "topology": t.name if t else "?", "node": n.name,
+                    "mgmt": bool(n.network.get("mgmt")),
                     "nic": seg.nic, "vlan": seg.vlan if seg.mode == "trunk" else 0,
                     "bridge": seg.bridge(n.topology_id, n.id)})
     return out
@@ -45,10 +39,9 @@ def _usage(db: Session) -> list[dict]:
 
 @router.get("/")
 def get_lab_network(db: Session = Depends(get_db)):
-    s = lab_network.get_settings(db)
     return {
-        "settings": asdict(s),
-        "status": lab_network.status(s),
+        "settings": asdict(lab_network.get_settings(db)),
+        "status": lab_network.status(db),
         "nics": host_net.list_nics(),
         "bridges": host_net.list_plabs_bridges(),
         "usage": _usage(db),
@@ -61,28 +54,15 @@ def nics():
 
 
 @router.put("/", dependencies=[Depends(require_admin)])
-def put_lab_network(data: MgmtIn, db: Session = Depends(get_db)):
+def put_lab_network(data: SettingsIn, db: Session = Depends(get_db)):
     new = lab_network.MgmtSettings(**data.model_dump())
     try:
         lab_network.validate(new)
     except HostNetError as e:
         raise HTTPException(400, str(e))
     old = lab_network.get_settings(db)
-    changed = asdict(old) != asdict(new)
-    if changed:
-        active = db.query(LabDeployment).filter(
-            LabDeployment.status.in_(("deploying", "running", "syncing", "destroying"))).count()
-        if active:
-            raise HTTPException(409, "Destroy all running labs before changing the management network — "
-                                     "every device's management interface is attached to it.")
-        if old.bridged:
-            lab_network.teardown_mgmt(old)
-        if old.pool_start != new.pool_start or old.pool_end != new.pool_end or old.subnet != new.subnet:
-            # Addresses from the old pool are no longer valid; reassign on next deploy.
-            db.query(NodeInstance).update({NodeInstance.mgmt_ipv4: ""})
+    if old.subnet != new.subnet and db.query(LabDeployment).filter(
+            LabDeployment.status.in_(("deploying", "running", "syncing", "destroying"))).count():
+        raise HTTPException(409, "Destroy all running labs before changing the internal management subnet.")
     lab_network.save_settings(db, new)
-    try:
-        lab_network.ensure_mgmt(new)
-    except HostNetError as e:
-        raise HTTPException(400, f"Saved, but the network couldn't be created: {e}")
-    return {"settings": asdict(new), "status": lab_network.status(new)}
+    return {"settings": asdict(new)}

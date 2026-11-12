@@ -88,6 +88,7 @@ class NetworkSpec(BaseModel):
     mode: str = "internal"     # internal | access | trunk
     nic: str = ""
     vlan: int = 0
+    mgmt: bool = False         # this lab's management network
 
 
 class NodeUpdate(BaseModel):

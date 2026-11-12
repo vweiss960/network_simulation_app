@@ -121,6 +121,8 @@ def startup():
         db.commit()
         from app.services.lab_service import restore_host_network
         restore_host_network(db)
+        from app.services.lab_network import start_renewer
+        start_renewer()
     finally:
         db.close()
 

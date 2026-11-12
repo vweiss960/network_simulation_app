@@ -48,14 +48,28 @@ export default function Canvas() {
     };
   }), [nodes, lab, kinds, selection, deployed]);
 
-  const rfEdges: Edge<CableEdgeData>[] = useMemo(() => links.map(l => ({
-    id: String(l.id),
-    type: 'cable',
-    source: String(l.source_node_id),
-    target: String(l.target_node_id),
-    selected: selection?.type === 'link' && selection.id === l.id,
-    data: { sourceIf: l.source_interface, targetIf: l.target_interface },
-  })), [links, selection]);
+  const mgmtNode = nodes.find(n => n.kind === 'bridge' && n.network?.mgmt);
+  const rfEdges: Edge<CableEdgeData>[] = useMemo(() => {
+    const cables: Edge<CableEdgeData>[] = links.map(l => ({
+      id: String(l.id),
+      type: 'cable',
+      source: String(l.source_node_id),
+      target: String(l.target_node_id),
+      selected: selection?.type === 'link' && selection.id === l.id,
+      data: { sourceIf: l.source_interface, targetIf: l.target_interface },
+    }));
+    // Management attachments: every device's mgmt interface is on the lab's
+    // management Network node (drawn dashed; not a cable you can edit).
+    const mgmt: Edge<CableEdgeData>[] = mgmtNode ? nodes.filter(n => n.kind !== 'bridge').map(n => ({
+      id: `mgmt-${n.id}`,
+      type: 'cable',
+      source: String(n.id),
+      target: String(mgmtNode.id),
+      selectable: false, focusable: false, deletable: false,
+      data: { sourceIf: kinds[n.kind]?.mgmt_iface ?? 'mgmt', targetIf: 'mgmt', mgmt: true },
+    })) : [];
+    return [...mgmt, ...cables];
+  }, [links, selection, nodes, mgmtNode, kinds]);
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes(TEMPLATE_DND)) {
@@ -117,6 +131,7 @@ export default function Canvas() {
 
   const onEdgeContextMenu = useCallback((e: React.MouseEvent, edge: Edge) => {
     e.preventDefault();
+    if (edge.id.startsWith('mgmt-')) return;
     const id = Number(edge.id);
     select({ type: 'link', id });
     setMenu({
@@ -173,7 +188,7 @@ export default function Canvas() {
         connectionMode={ConnectionMode.Loose}
         connectionRadius={60}
         onNodeClick={onNodeClick}
-        onEdgeClick={(_e, ed) => select({ type: 'link', id: Number(ed.id) })}
+        onEdgeClick={(_e, ed) => { if (!ed.id.startsWith('mgmt-')) select({ type: 'link', id: Number(ed.id) }); }}
         onPaneClick={() => select(null)}
         onNodeContextMenu={onNodeContextMenu}
         onEdgeContextMenu={onEdgeContextMenu}

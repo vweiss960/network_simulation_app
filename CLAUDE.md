@@ -71,14 +71,24 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
 - Multiple labs can run at once; `_assert_capacity` checks RAM instead.
 
 ### Host networking (`services/host_net.py`, `lab_network.py`)
-- **Management network** (Network page, `/api/lab-network`, stored in
-  `app_settings`): *internal* = Docker network `plabs-mgmt`
-  (172.30.0.0/22, server-only reach); *bridged* = Linux bridge on a physical
-  NIC (untagged or one VLAN) + Docker network `plabs-mgmt-bridged` created with
-  `inhibit_ipv4` (Docker must not put the upstream gateway IP on the host
-  bridge). Devices get static IPs from a pool (IPAM in `lab_network.assign_ips`,
-  unique across all labs, sticky per device). Changing it requires all labs
-  destroyed.
+- **Management network is per lab, chosen on the canvas.** A Network node
+  (access or trunk) with `network.mgmt = true` makes that NIC/VLAN the lab's
+  mgmt network (one per lab; changing it needs the lab destroyed). Addressing
+  comes from that network's own DHCP server (`services/dhcp.py`: raw
+  AF_PACKET client on the host bridge, per-device client-id + locally
+  administered MAC): the server leases an address for itself on the bridge
+  (to reach devices; it also yields subnet/gateway/DNS) and one per device,
+  held in `mgmt_leases`, renewed past T1 by a background thread while the lab
+  is deployed, requested again on redeploy (sticky), released on teardown /
+  device delete. Docker network `plabs-m-<bridge>` is created with
+  `inhibit_ipv4` (never put the upstream gateway IP on the host bridge); every
+  device gets an explicit `mgmt-ipv4`. Labs without a mgmt Network node use
+  the internal `plabs-mgmt` network (subnet on the Network page, server-only
+  reach). DHCP / bridge setup only happens on deploy/reconcile
+  (`generate_clab_yaml(assign_ips=True)`), never on previews.
+- Claiming a NIC untagged releases it from the host (NetworkManager unmanaged
+  + conf.d drop-in, addresses flushed); only the primary default-route NIC is
+  refused.
 - **Network nodes** (`kind: bridge` in the registry; `NodeInstance.network`
   = `{mode: internal|access|trunk, nic, vlan}`) become clab `kind: bridge`
   nodes. Bridges are named deterministically (`pl-<nic>[-<vlan>]`, internal

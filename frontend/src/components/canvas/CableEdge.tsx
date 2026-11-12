@@ -5,6 +5,7 @@ export interface CableEdgeData {
   sourceIf: string;
   targetIf: string;
   impaired?: boolean;
+  mgmt?: boolean;          // management attachment (dashed, not editable)
 }
 
 const ICON_CENTER_Y = 28; // half of the 56px device icon
@@ -30,15 +31,15 @@ function CableEdge({ id, source, target, data, selected }: EdgeProps<CableEdgeDa
   const off = Math.min(52, len / 3);
   const lx1 = x1 + ((x2 - x1) / len) * off, ly1 = y1 + ((y2 - y1) / len) * off;
   const lx2 = x2 - ((x2 - x1) / len) * off, ly2 = y2 - ((y2 - y1) / len) * off;
-  const stroke = selected ? '#60a5fa' : data?.impaired ? '#f59e0b' : '#94a3b8';
+  const stroke = data?.mgmt ? '#475569' : selected ? '#60a5fa' : data?.impaired ? '#f59e0b' : '#94a3b8';
   return (
     <>
       <path id={id} d={`M${x1},${y1} L${x2},${y2}`} stroke="transparent" strokeWidth={14} fill="none"
         className="react-flow__edge-interaction" />
-      <path d={`M${x1},${y1} L${x2},${y2}`} stroke={stroke} strokeWidth={selected ? 3 : 2} fill="none"
-        strokeDasharray={data?.impaired ? '6 4' : undefined} />
+      <path d={`M${x1},${y1} L${x2},${y2}`} stroke={stroke} strokeWidth={data?.mgmt ? 1.25 : selected ? 3 : 2} fill="none"
+        strokeDasharray={data?.mgmt ? '3 5' : data?.impaired ? '6 4' : undefined} />
       <EdgeLabelRenderer>
-        {[[lx1, ly1, data?.sourceIf], [lx2, ly2, data?.targetIf]].map(([x, y, label], i) => (
+        {(data?.mgmt ? [[lx1, ly1, data?.sourceIf]] : [[lx1, ly1, data?.sourceIf], [lx2, ly2, data?.targetIf]]).map(([x, y, label], i) => (
           <div key={i}
             style={{ transform: `translate(-50%, -50%) translate(${x}px, ${y}px)` }}
             className="absolute pointer-events-none px-1 rounded bg-surface-900/90 text-[9px] font-mono text-surface-300 border border-surface-700">

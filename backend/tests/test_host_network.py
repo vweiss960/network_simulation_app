@@ -40,68 +40,82 @@ def test_access_on_servers_uplink_is_refused_but_trunk_ok():
         host_net.validate_segment(Segment("access", "wlan9"), NICS)
 
 
-def _bridged(**kw):
-    base = dict(mode="bridged", nic="eno2", vlan=0, subnet="10.50.0.0/24", gateway="10.50.0.1",
-                host_ip="10.50.0.10", pool_start="10.50.0.100", pool_end="10.50.0.102")
-    base.update(kw)
-    return lab_network.MgmtSettings(**base)
+@pytest.fixture
+def fake_dhcp(monkeypatch):
+    """DHCP server on 10.24.110.0/23 handing out sequential addresses."""
+    from app.services import dhcp
+    state = {"next": 50, "by_client": {}}
+
+    def acquire(iface, client_id, hostname="", requested_ip="", **kw):
+        if client_id not in state["by_client"]:
+            state["by_client"][client_id] = f"10.24.110.{state['next']}"
+            state["next"] += 1
+        return dhcp.Lease(ip=state["by_client"][client_id], prefix=23, router="10.24.110.1",
+                          dns=["10.24.110.1"], server_id="10.24.110.1", lease_time=86400, obtained_at=1e12)
+
+    monkeypatch.setattr(dhcp, "acquire", acquire)
+    monkeypatch.setattr(dhcp, "release", lambda *a, **k: None)
+    monkeypatch.setattr(host_net, "ensure_bridge", lambda *a, **k: None)
+    monkeypatch.setattr(host_net, "ensure_host_address", lambda *a, **k: None)
+    monkeypatch.setattr(lab_network, "_docker_network_subnet", lambda name: "10.24.110.0/23")
+    return state
 
 
-def test_mgmt_validation():
-    s = lab_network.validate(_bridged())
-    assert s.host_ip == "10.50.0.10/24" and s.bridge == "pl-eno2"
-    with pytest.raises(HostNetError, match="inside the device pool"):
-        lab_network.validate(_bridged(gateway="10.50.0.101"))
-    with pytest.raises(HostNetError, match="not a usable address"):
-        lab_network.validate(_bridged(pool_end="10.60.0.5"))
-    with pytest.raises(HostNetError, match="Choose the NIC"):
-        lab_network.validate(_bridged(nic=""))
-    assert lab_network.validate(lab_network.MgmtSettings()).mode == "internal"
+def test_dhcp_message_round_trip():
+    from app.services import dhcp
+    req = dhcp.build_message(dhcp.DISCOVER, 0xABCD, "02:00:00:00:00:01", "plabs:h:node:1", "R1", "10.0.0.5")
+    assert len(req) >= 300 and req[236:240] == dhcp.MAGIC
+    # Turn the request into an ACK-shaped reply and parse it.
+    import socket, struct
+    reply = bytearray(req)
+    reply[0] = 2
+    reply[16:20] = socket.inet_aton("10.24.110.77")
+    opts = (dhcp.MAGIC + bytes([53, 1, dhcp.ACK, 1, 4]) + socket.inet_aton("255.255.254.0")
+            + bytes([3, 4]) + socket.inet_aton("10.24.110.1") + bytes([51, 4]) + struct.pack("!I", 7200)
+            + bytes([54, 4]) + socket.inet_aton("10.24.110.1") + b"\xff")
+    msg = dhcp.parse_message(bytes(reply[:236]) + opts)
+    lease = dhcp.lease_from(msg)
+    assert (msg["xid"], msg["type"]) == (0xABCD, dhcp.ACK)
+    assert (lease.ip, lease.prefix, lease.router, lease.lease_time) == ("10.24.110.77", 23, "10.24.110.1", 7200)
+    assert lease.subnet == "10.24.110.0/23"
 
 
-def test_ipam_unique_sticky_and_exhaustion(db):
-    s = lab_network.save_settings(db, lab_network.validate(_bridged()))
-    t1, t2 = make_topology(db, "A"), make_topology(db, "B")
-    a, b = make_node(db, t1), make_node(db, t1)
-    c = make_node(db, t2)
-    ips = lab_network.assign_ips(db, s, [a.id, b.id])
-    assert sorted(ips.values()) == ["10.50.0.100", "10.50.0.101"]
-    assert lab_network.assign_ips(db, s, [a.id]) == {a.id: ips[a.id]}       # sticky
-    assert lab_network.assign_ips(db, s, [c.id]) == {c.id: "10.50.0.102"}  # unique across labs
-    d = make_node(db, t2)
-    with pytest.raises(HostNetError, match="exhausted"):
-        lab_network.assign_ips(db, s, [d.id])
+def test_per_device_mac_is_stable_and_local():
+    from app.services import dhcp
+    a, b = dhcp.mac_for("x:1"), dhcp.mac_for("x:2")
+    assert a == dhcp.mac_for("x:1") and a != b
+    assert int(a.split(":")[0], 16) & 0x03 == 0x02     # locally administered, unicast
 
 
-def test_yaml_bridged_mgmt_and_network_nodes(db):
-    lab_network.save_settings(db, lab_network.validate(_bridged()))
+def _mgmt_lab(db):
     t = make_topology(db)
     r1 = make_node(db, t, name="R1", kind="cisco_xrd", image="xrd")
     r2 = make_node(db, t, name="R2", kind="cisco_xrd", image="xrd")
-    wan = make_node(db, t, name="WAN", kind="bridge", icon="cloud")
-    set_network(db, wan, {"mode": "trunk", "nic": "eno2", "vlan": 120})
-    sw = make_node(db, t, name="LAN", kind="bridge", icon="switch")
-    make_link(db, t, r1, wan)
-    make_link(db, t, r2, wan)
-    make_link(db, t, r1, sw)
-    db.refresh(wan)
-    assert [i["name"] for i in wan.interfaces] == ["port1", "port2"]   # ports grow on demand
+    lan = make_node(db, t, name="LAB-LAN", kind="bridge", icon="cloud")
+    set_network(db, lan, {"mode": "access", "nic": "eno2", "mgmt": True})
+    return t, r1, r2, lan
 
-    spec = generate_clab_yaml(db, t.id)
+
+def test_mgmt_network_node_drives_yaml_and_leases(db, fake_dhcp):
+    t, r1, r2, lan = _mgmt_lab(db)
+    make_link(db, t, r1, lan)                       # a data port onto the same network, too
+    spec = generate_clab_yaml(db, t.id, assign_ips=True)
     doc = yaml.safe_load(spec["yaml"])
-    assert doc["mgmt"] == {"network": "plabs-mgmt-bridged", "ipv4-subnet": "10.50.0.0/24", "ipv4-gw": "10.50.0.1"}
+    assert doc["mgmt"] == {"network": "plabs-m-pl-eno2", "ipv4-subnet": "10.24.110.0/23", "ipv4-gw": "10.24.110.1"}
     nodes = doc["topology"]["nodes"]
-    assert nodes["pl-eno2-120"] == {"kind": "bridge"}
-    sw_bridge = host_net.internal_bridge_name(t.id, sw.id)
-    assert nodes[sw_bridge] == {"kind": "bridge"}
-    assert nodes["R1"]["mgmt-ipv4"] == "10.50.0.100" and nodes["R2"]["mgmt-ipv4"] == "10.50.0.101"
-    eps = [l["endpoints"] for l in doc["topology"]["links"]]
-    p1 = host_net.bridge_port_name(t.id, wan.id, 1)
-    assert ["R1:Gi0-0-0-0", f"pl-eno2-120:{p1}"] in eps
-    assert {b["bridge"] for b in spec["resource_estimate"]["bridges"]} == {"pl-eno2-120", sw_bridge}
+    ips = {nodes["R1"]["mgmt-ipv4"], nodes["R2"]["mgmt-ipv4"]}
+    assert len(ips) == 2 and all(ip.startswith("10.24.110.") for ip in ips)
+    assert nodes["pl-eno2"] == {"kind": "bridge"}
+    # the XRd mgmt default route points at the learned gateway
+    # sticky: a second generation keeps the same addresses
+    again = yaml.safe_load(generate_clab_yaml(db, t.id, assign_ips=True)["yaml"])["topology"]["nodes"]
+    assert {again["R1"]["mgmt-ipv4"], again["R2"]["mgmt-ipv4"]} == ips
+    # previews never touch DHCP
+    fake_dhcp["next"] = 999
+    generate_clab_yaml(db, t.id)
 
 
-def test_internal_mode_has_no_static_ips(db):
+def test_lab_without_mgmt_node_uses_internal(db):
     t = make_topology(db)
     make_node(db, t, name="A")
     doc = yaml.safe_load(generate_clab_yaml(db, t.id)["yaml"])
@@ -114,6 +128,19 @@ def test_unconfigured_network_node_is_skipped(db):
     make_node(db, t, name="NET1", kind="bridge", icon="cloud")
     spec = generate_clab_yaml(db, t.id)
     assert spec["skipped_nodes"][0]["name"] == "NET1"
+
+
+def test_mgmt_flag_rules(db):
+    t = make_topology(db)
+    a = make_node(db, t, kind="bridge", icon="cloud")
+    b = make_node(db, t, kind="bridge", icon="cloud")
+    sw = make_node(db, t, kind="bridge", icon="switch")
+    set_network(db, a, {"mode": "access", "nic": "eno2", "mgmt": True})
+    with pytest.raises(TopologyError, match="already this lab's management"):
+        set_network(db, b, {"mode": "trunk", "nic": "eno2", "vlan": 5, "mgmt": True})
+    with pytest.raises(TopologyError, match="physical NIC"):
+        set_network(db, sw, {"mode": "internal", "mgmt": True})
+    assert lab_network.lab_mgmt(db, t.id).bridge == "pl-eno2"
 
 
 def test_network_rules(db):
@@ -143,12 +170,10 @@ def test_network_api_patch(client, db):
 
 
 def test_lab_network_api(client, db, monkeypatch):
-    monkeypatch.setattr(lab_network, "ensure_mgmt", lambda s: None)
     monkeypatch.setattr(host_net, "list_plabs_bridges", lambda: [])
-    body = dict(mode="bridged", nic="eno2", vlan=0, subnet="10.50.0.0/24", gateway="10.50.0.1",
-                host_ip="", pool_start="10.50.0.100", pool_end="10.50.0.199", mtu=0)
-    r = client.put("/api/lab-network/", json=body)
+    monkeypatch.setattr(lab_network, "mgmt_docker_networks", lambda: {})
+    r = client.put("/api/lab-network/", json={"subnet": "10.77.0.0/22", "mtu": 0})
     assert r.status_code == 200, r.text
     got = client.get("/api/lab-network/").json()
-    assert got["settings"]["nic"] == "eno2" and got["settings"]["mode"] == "bridged"
-    assert client.put("/api/lab-network/", json={**body, "gateway": "10.50.0.150"}).status_code == 400
+    assert got["settings"]["subnet"] == "10.77.0.0/22"
+    assert client.put("/api/lab-network/", json={"subnet": "nope", "mtu": 0}).status_code == 400

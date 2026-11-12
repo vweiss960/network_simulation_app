@@ -26,24 +26,23 @@ export interface Device {
   network: NetworkSpec | null; network_label: string;
 }
 
-export interface NetworkSpec { mode: 'internal' | 'access' | 'trunk'; nic: string; vlan: number }
+export interface NetworkSpec { mode: 'internal' | 'access' | 'trunk'; nic: string; vlan: number; mgmt?: boolean }
 
 export interface HostNic {
   name: string; mac: string; operstate: string; carrier: boolean; speed_mbps: number | null;
   addresses: string[]; master: string; protected: boolean; host_managed: boolean; nm_state: string;
 }
 
-export interface MgmtSettings {
-  mode: 'internal' | 'bridged'; nic: string; vlan: number; subnet: string; gateway: string;
-  host_ip: string; pool_start: string; pool_end: string; mtu: number;
-}
+export interface MgmtSettings { subnet: string; mtu: number }
+
+export interface Learned { subnet: string; gateway: string; dns: string[]; server_ip: string }
 
 export interface LabNetworkInfo {
   settings: MgmtSettings;
-  status: { ok: boolean; detail: string; bridge?: string; bridge_exists?: boolean; nic_carrier?: boolean };
+  status: { internal_subnet: string; bridged: { docker_network: string; bridge: string; learned: Learned | null; leases: number }[] };
   nics: HostNic[];
   bridges: string[];
-  usage: { topology_id: number; topology: string; node: string; nic: string; vlan: number; bridge: string }[];
+  usage: { topology_id: number; topology: string; node: string; nic: string; vlan: number; bridge: string; mgmt: boolean }[];
 }
 
 export interface Link {
@@ -60,6 +59,7 @@ export interface NodeRuntime {
 }
 
 export interface LabState {
+  mgmt: { bridged: boolean; network: string; subnet: string; gateway: string; node_id: number | null };
   status: LabStatus; lab_name: string; last_error: string; pending_sync: boolean;
   started_at: string | null; finished_at: string | null;
   nodes: Record<string, NodeRuntime>;

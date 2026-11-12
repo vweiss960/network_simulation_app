@@ -862,7 +862,11 @@ def get_deployment_state(db: Session, topology_id: int) -> dict:
             "uptime_sec": (c or {}).get("uptime_sec"),
             "mgmt_ip": (c or {}).get("mgmt_ip") or n["mgmt_ip"],
         }
+    from app.services import lab_network
+    m = lab_network.lab_mgmt(db, topology_id)
     return {
+        "mgmt": {"bridged": m.bridged, "network": m.docker_network, "subnet": m.subnet,
+                 "gateway": m.gateway, "node_id": m.node_id},
         "status": dep.status,
         "lab_name": lab_name,
         "lab_dir": dep.lab_dir,
@@ -878,7 +882,13 @@ def get_deployment_state(db: Session, topology_id: int) -> dict:
 
 def _ensure_fresh_yaml(db: Session, topology_id: int) -> tuple[Path, str, dict]:
     """Regenerate + write the topology YAML; record it on the deployment row."""
-    spec = generate_clab_yaml(db, topology_id)
+    try:
+        spec = generate_clab_yaml(db, topology_id, assign_ips=True)
+    except Exception as e:
+        from app.services.host_net import HostNetError
+        if isinstance(e, HostNetError):
+            raise LabError(str(e))
+        raise
     lab_name = spec["lab_name"]
     yaml_path = _yaml_path_for(lab_name)
     yaml_path.write_text(spec["yaml"])
@@ -903,53 +913,38 @@ def _active_specs(db: Session, exclude: Optional[int] = None) -> list[dict]:
 
 
 def _prepare_host_network(db: Session, topology_id: int, spec: dict) -> None:
-    """Create everything the lab's YAML expects to already exist on the host:
-    the bridged mgmt network and one bridge per Network node."""
+    """Create the data-plane bridges the lab's YAML expects to already exist.
+    (A bridged mgmt network is set up while generating the YAML, since device
+    addresses come from DHCP leases taken on it.)"""
     from app.services import host_net, lab_network
     from app.services.host_net import HostNetError, Segment
-    settings = lab_network.get_settings(db)
-    segs = [Segment.from_dict(b["segment"]) for b in spec["resource_estimate"]["bridges"]]
-    # Untagged (access) and tagged (trunk) use of the same NIC coexist: the
-    # kernel hands tagged frames to the VLAN sub-interface before the bridge.
+    mtu = lab_network.get_settings(db).mtu or None
     try:
         nics = host_net.list_nics()
-        for b, seg in zip(spec["resource_estimate"]["bridges"], segs):
-            if settings.bridged and b["bridge"] == settings.bridge:
-                raise HostNetError("A Network node can't use the management network's NIC/VLAN")
-            # A NIC we already enslaved shows up as "protected" only if it has
-            # an IP — validate against the live NIC list each time anyway.
+        for b in spec["resource_estimate"]["bridges"]:
+            seg = Segment.from_dict(b["segment"])
             host_net.validate_segment(seg, nics)
-        lab_network.ensure_mgmt(settings)
-        for b, seg in zip(spec["resource_estimate"]["bridges"], segs):
-            host_net.ensure_bridge(b["bridge"], seg, settings.mtu or None)
+            host_net.ensure_bridge(b["bridge"], seg, mtu)
     except HostNetError as e:
         raise LabError(str(e))
 
 
 def gc_host_network(db: Session) -> list[str]:
-    """Remove pl-* bridges no deployed lab (or the mgmt network) uses."""
+    """Release leases / Docker networks / pl-* bridges no deployed lab uses."""
     from app.services import host_net, lab_network
     keep = {b["bridge"] for sp in _active_specs(db) for b in sp["resource_estimate"]["bridges"]}
-    settings = lab_network.get_settings(db)
-    if settings.bridged and settings.nic:
-        keep.add(settings.bridge)
+    lab_network.teardown_unused(db, keep)
     return host_net.gc_bridges(keep)
 
 
 def restore_host_network(db: Session) -> None:
     """After a host reboot bridges are gone; recreate them for running labs."""
-    from app.services import lab_network
-    try:
-        lab_network.ensure_mgmt(lab_network.get_settings(db))
-    except Exception as e:
-        print(f"[startup] mgmt network: {e}", flush=True)
-    for sp in _active_specs(db):
-        dep = db.query(LabDeployment).filter(LabDeployment.lab_name == sp["lab_name"]).first()
+    for d in db.query(LabDeployment).filter(LabDeployment.status.in_(_ACTIVE_STATES)).all():
         try:
-            if dep:
-                _prepare_host_network(db, dep.topology_id, sp)
+            _, _, spec = _ensure_fresh_yaml(db, d.topology_id)
+            _prepare_host_network(db, d.topology_id, spec)
         except Exception as e:
-            print(f"[startup] host network for {sp['lab_name']}: {e}", flush=True)
+            print(f"[startup] host network for {d.lab_name}: {e}", flush=True)
 
 
 def _assert_capacity(db: Session, topology_id: int, spec: dict) -> None:

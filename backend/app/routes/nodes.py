@@ -97,6 +97,11 @@ def update_node(topology_id: int, node_id: int, data: NodeUpdate, db: Session = 
             raise HTTPException(400, f"A device named '{name}' already exists")
         n.name = name
     if patch.get("network") is not None:
+        was_mgmt = bool(n.network.get("mgmt"))
+        if (was_mgmt or patch["network"].get("mgmt")) and _lab_active(db, topology_id) and \
+                {**n.network, "mgmt": was_mgmt} != {**patch["network"], "mgmt": bool(patch["network"].get("mgmt"))}:
+            raise HTTPException(409, "Destroy the lab before changing its management network — "
+                                     "every device's management interface is attached to it.")
         try:
             set_network(db, n, patch["network"])
         except TopologyError as e:
@@ -124,9 +129,19 @@ def update_node(topology_id: int, node_id: int, data: NodeUpdate, db: Session = 
     return node_out(n)
 
 
+def _lab_active(db: Session, topology_id: int) -> bool:
+    from app.models.lab_deployment import LabDeployment
+    d = db.query(LabDeployment).filter(LabDeployment.topology_id == topology_id).first()
+    return bool(d and d.status not in ("idle",))
+
+
 @router.delete("/{node_id}")
 def delete_node(topology_id: int, node_id: int, db: Session = Depends(get_db)):
     n = _node(db, topology_id, node_id)
+    if n.network.get("mgmt") and _lab_active(db, topology_id):
+        raise HTTPException(409, "Destroy the lab before removing its management network.")
+    from app.services.lab_network import release_node
+    release_node(db, n.id)
     db.query(Link).filter((Link.source_node_id == n.id) | (Link.target_node_id == n.id)).delete(
         synchronize_session=False)
     db.delete(n)

@@ -1,126 +1,98 @@
 """Lab management network.
 
-Two modes:
   * internal (default) — a Docker bridge network private to the host
     (`plabs-mgmt`, 172.30.0.0/22). Devices are reachable from the server only.
   * bridged — the mgmt network is a Linux bridge uplinked to a physical NIC
-    (or one VLAN on a trunk NIC). Every device gets a static IP from a pool on
-    that real network, so it's reachable from anywhere that network routes.
+    (or one VLAN on a trunk NIC). Addressing comes from that network's own
+    DHCP server: the server leases an address for itself (so it can reach
+    devices), which also tells us the subnet / gateway / DNS, and every device
+    gets its own lease, held and renewed by the backend and handed to
+    containerlab as the device's static mgmt IP. Nothing is configured but the
+    NIC and VLAN, so the same rule works on any network that runs DHCP.
 
-In bridged mode we create the bridge and a Docker network bound to it with
-`inhibit_ipv4` (Docker must not put the gateway address on the host bridge —
-the gateway is the real upstream router). containerlab then reuses that
-network by name.
+Docker attaches to the bridge with `inhibit_ipv4` (it must not put the
+gateway address on the host bridge). Every lab device gets an explicit,
+DHCP-leased `mgmt-ipv4`; nothing else may join these Docker networks without
+one, or Docker's own IPAM could pick an address the DHCP server owns.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import os
+import threading
+import time
 from dataclasses import asdict, dataclass
 
 from sqlalchemy.orm import Session
 
 from app.models.app_setting import AppSetting
-from app.services import host_net
+from app.models.mgmt_lease import MgmtLease
+from app.services import dhcp, host_net
 from app.services.host_net import HostNetError, Segment
+
+log = logging.getLogger(__name__)
 
 KEY = "lab_network"
 INTERNAL_NETWORK = os.environ.get("PLABS_LAB_MGMT_NETWORK", "plabs-mgmt").strip() or "plabs-mgmt"
-BRIDGED_NETWORK = "plabs-mgmt-bridged"
 DEFAULT_INTERNAL_SUBNET = os.environ.get("PLABS_LAB_MGMT_SUBNET", "").strip() or "172.30.0.0/22"
+SERVER_HOSTNAME = "plabs-server"
+
+_lock = threading.RLock()   # serializes DHCP + host plumbing for mgmt networks
 
 
 @dataclass
 class MgmtSettings:
-    mode: str = "internal"         # internal | bridged
-    nic: str = ""
-    vlan: int = 0                  # 0 = untagged (access)
+    """Host-wide defaults. A lab without a management Network node uses the
+    internal Docker network with this subnet."""
     subnet: str = DEFAULT_INTERNAL_SUBNET
-    gateway: str = ""              # upstream router on the mgmt segment
-    host_ip: str = ""              # optional address for the server on the bridge (CIDR host)
-    pool_start: str = ""
-    pool_end: str = ""
     mtu: int = 0
 
-    @property
-    def bridged(self) -> bool:
-        return self.mode == "bridged"
 
-    @property
-    def segment(self) -> Segment:
-        return Segment(mode="trunk" if self.vlan else "access", nic=self.nic, vlan=self.vlan)
+@dataclass
+class Learned:
+    subnet: str
+    gateway: str
+    dns: list[str]
+    server_ip: str
 
-    @property
-    def bridge(self) -> str:
-        return host_net.segment_bridge_name(self.nic, self.vlan or None)
 
-    @property
-    def docker_network(self) -> str:
-        return BRIDGED_NETWORK if self.bridged else INTERNAL_NETWORK
+@dataclass
+class LabMgmt:
+    """Resolved management network for one lab."""
+    bridged: bool
+    docker_network: str
+    subnet: str
+    gateway: str
+    segment: Segment | None = None
+    bridge: str = ""
+    node_id: int | None = None
 
-    def effective_gateway(self) -> str:
-        if self.gateway:
-            return self.gateway
-        return str(next(ipaddress.ip_network(self.subnet, strict=False).hosts()))
+
+def docker_network_for(bridge: str) -> str:
+    return f"plabs-m-{bridge}"
 
 
 def get_settings(db: Session) -> MgmtSettings:
     row = db.get(AppSetting, KEY)
-    if not row:
-        return MgmtSettings()
     try:
-        data = json.loads(row.value_json or "{}")
+        data = json.loads(row.value_json) if row else {}
     except json.JSONDecodeError:
         data = {}
     fields = MgmtSettings.__dataclass_fields__
     return MgmtSettings(**{k: v for k, v in data.items() if k in fields})
 
 
-def validate(s: MgmtSettings, nics: list[dict] | None = None) -> MgmtSettings:
-    if s.mode not in ("internal", "bridged"):
-        raise HostNetError("mode must be 'internal' or 'bridged'")
+def validate(s: MgmtSettings) -> MgmtSettings:
     try:
         net = ipaddress.ip_network(s.subnet, strict=False)
     except ValueError:
         raise HostNetError(f"Invalid subnet '{s.subnet}'")
     if net.version != 4 or net.prefixlen > 29:
-        raise HostNetError("Management subnet must be IPv4, /29 or larger")
+        raise HostNetError("Subnet must be IPv4, /29 or larger")
     s.subnet = str(net)
-    if not s.bridged:
-        return s
-    if not s.nic:
-        raise HostNetError("Choose the NIC the management network uses")
-    seg = s.segment
-    if seg.mode == "trunk" and not 1 <= s.vlan <= 4094:
-        raise HostNetError("VLAN ID must be between 1 and 4094")
-    host_net.validate_segment(seg, nics)
-
-    def addr(label: str, v: str, required: bool) -> ipaddress.IPv4Address | None:
-        if not v:
-            if required:
-                raise HostNetError(f"{label} is required")
-            return None
-        try:
-            a = ipaddress.ip_address(v.split("/")[0])
-        except ValueError:
-            raise HostNetError(f"{label} '{v}' is not an IP address")
-        if a not in net or a in (net.network_address, net.broadcast_address):
-            raise HostNetError(f"{label} {a} is not a usable address in {net}")
-        return a
-
-    gw = addr("Gateway", s.gateway, True)
-    host = addr("Server address", s.host_ip, False)
-    start = addr("Pool start", s.pool_start, True)
-    end = addr("Pool end", s.pool_end, True)
-    if int(end) < int(start):
-        raise HostNetError("Pool end is before pool start")
-    for label, a in (("Gateway", gw), ("Server address", host)):
-        if a and int(start) <= int(a) <= int(end):
-            raise HostNetError(f"{label} {a} is inside the device pool — move it out of the pool")
-    if s.host_ip:
-        s.host_ip = f"{host}/{net.prefixlen}"
     return s
 
 
@@ -132,94 +104,256 @@ def save_settings(db: Session, s: MgmtSettings) -> MgmtSettings:
     return s
 
 
-# --- IPAM --------------------------------------------------------------------
+def mgmt_node(db: Session, topology_id: int):
+    """The lab's management Network node (network.mgmt = true), if any."""
+    from app.models.node_instance import NodeInstance
+    from app.services.device_kinds import BRIDGE_KIND
+    for n in db.query(NodeInstance).filter(NodeInstance.topology_id == topology_id,
+                                           NodeInstance.kind == BRIDGE_KIND).order_by(NodeInstance.id):
+        net = n.network
+        if net.get("mgmt") and net.get("mode") in ("access", "trunk") and net.get("nic"):
+            return n
+    return None
 
-def pool(s: MgmtSettings) -> list[str]:
-    a, b = int(ipaddress.ip_address(s.pool_start)), int(ipaddress.ip_address(s.pool_end))
-    return [str(ipaddress.ip_address(i)) for i in range(a, b + 1)]
+
+def lab_mgmt(db: Session, topology_id: int) -> LabMgmt:
+    n = mgmt_node(db, topology_id)
+    if n is None:
+        s = get_settings(db)
+        net = ipaddress.ip_network(s.subnet, strict=False)
+        return LabMgmt(bridged=False, docker_network=INTERNAL_NETWORK, subnet=str(net),
+                       gateway=str(next(net.hosts())))
+    seg = Segment.from_dict(n.network)
+    bridge = seg.bridge(topology_id, n.id)
+    lr = learned(db, bridge)
+    return LabMgmt(bridged=True, docker_network=docker_network_for(bridge),
+                   subnet=lr.subnet if lr else "", gateway=lr.gateway if lr else "",
+                   segment=seg, bridge=bridge, node_id=n.id)
 
 
-def assign_ips(db: Session, s: MgmtSettings, node_ids: list[int]) -> dict[int, str]:
-    """Give each listed device a static mgmt IP from the pool (bridged mode).
-    Addresses are unique across every topology and sticky: a device keeps its
-    IP across deploys / destroys until it's deleted or the pool changes."""
+# --- leases ------------------------------------------------------------------
+
+def _to_lease(row: MgmtLease) -> dhcp.Lease:
+    return dhcp.Lease(ip=row.ip, prefix=row.prefix, router=row.router, dns=json.loads(row.dns_json or "[]"),
+                      server_id=row.server_id, lease_time=row.lease_time, obtained_at=row.obtained_at)
+
+
+def _store(db: Session, row: MgmtLease | None, *, node_id: int | None, client_id: str, bridge: str,
+           lease: dhcp.Lease) -> MgmtLease:
+    row = row or MgmtLease(node_id=node_id, client_id=client_id)
+    row.bridge, row.ip, row.prefix, row.router = bridge, lease.ip, lease.prefix, lease.router
+    row.dns_json, row.server_id = json.dumps(lease.dns), lease.server_id
+    row.lease_time, row.obtained_at = lease.lease_time, lease.obtained_at
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _hold(db: Session, bridge: str, label: str, *, node_id: int | None, hostname: str,
+          prefer_ip: str = "") -> MgmtLease:
+    """Return a valid lease for this owner on this bridge, renewing or
+    acquiring as needed. The server holds one lease per mgmt bridge; a device
+    holds one lease (on its lab's mgmt bridge)."""
+    client_id = dhcp.client_id_for("node", str(node_id)) if node_id is not None \
+        else dhcp.client_id_for("server", bridge)
+    row = (db.query(MgmtLease).filter(MgmtLease.client_id == client_id).first())
+    now = time.time()
+    if row and row.bridge == bridge and now < row.obtained_at + row.lease_time / 2:
+        return row
+    try:
+        if row and row.bridge == bridge and now < row.obtained_at + row.lease_time:
+            fresh = dhcp.renew(bridge, client_id, _to_lease(row), hostname)
+            if fresh:
+                return _store(db, row, node_id=node_id, client_id=client_id, bridge=bridge, lease=fresh)
+        want = prefer_ip or (row.ip if row and row.bridge == bridge else "")
+        lease = dhcp.acquire(bridge, client_id, hostname, requested_ip=want)
+    except (dhcp.DhcpError, OSError) as e:
+        raise HostNetError(f"DHCP on {label} failed: {e}")
+    return _store(db, row, node_id=node_id, client_id=client_id, bridge=bridge, lease=lease)
+
+
+def learned(db: Session, bridge: str) -> Learned | None:
+    """Subnet / gateway / DNS of a mgmt bridge, from the server's own lease."""
+    row = db.query(MgmtLease).filter(MgmtLease.node_id.is_(None), MgmtLease.bridge == bridge).first()
+    if not row:
+        return None
+    l = _to_lease(row)
+    return Learned(subnet=l.subnet, gateway=l.router, dns=l.dns, server_ip=f"{l.ip}/{l.prefix}")
+
+
+def assign_ips(db: Session, m: LabMgmt, node_ids: list[int]) -> dict[int, str]:
+    """Hold a DHCP lease for every listed device on the lab's mgmt bridge.
+    Devices ask for their previous address, so IPs are stable across redeploys."""
     from app.models.node_instance import NodeInstance
     from app.services.device_kinds import is_bridge
-    if not s.bridged:
+    if not m.bridged:
         return {}
-    candidates = pool(s)
-    allowed = set(candidates)
-    all_nodes = db.query(NodeInstance).filter(NodeInstance.mgmt_ipv4 != "").all()
-    taken = {n.mgmt_ipv4: n.id for n in all_nodes}
     out: dict[int, str] = {}
-    for nid in node_ids:
-        n = db.get(NodeInstance, nid)
-        if not n or is_bridge(n.kind):
-            continue
-        if n.mgmt_ipv4 in allowed and taken.get(n.mgmt_ipv4) == n.id:
-            out[n.id] = n.mgmt_ipv4
-            continue
-        free = next((ip for ip in candidates if ip not in taken), None)
-        if not free:
-            raise HostNetError(f"The management IP pool ({s.pool_start}–{s.pool_end}) is exhausted")
-        if n.mgmt_ipv4 in taken and taken[n.mgmt_ipv4] == n.id:
-            del taken[n.mgmt_ipv4]
-        n.mgmt_ipv4 = free
-        taken[free] = n.id
-        out[n.id] = free
-    db.flush()
+    with _lock:
+        for nid in node_ids:
+            n = db.get(NodeInstance, nid)
+            if not n or is_bridge(n.kind):
+                continue
+            row = _hold(db, m.bridge, m.segment.describe(), node_id=n.id, hostname=_hostname(n.name),
+                        prefer_ip=n.mgmt_ipv4)
+            n.mgmt_ipv4 = row.ip
+            out[n.id] = row.ip
+        db.flush()
     return out
+
+
+def _hostname(name: str) -> str:
+    return "".join(c if c.isalnum() or c == "-" else "-" for c in name)[:63] or "device"
+
+
+def release_node(db: Session, node_id: int) -> None:
+    row = db.query(MgmtLease).filter(MgmtLease.node_id == node_id).first()
+    if not row:
+        return
+    try:
+        if host_net.link_exists(row.bridge):
+            dhcp.release(row.bridge, row.client_id, _to_lease(row))
+    except OSError:
+        pass
+    db.delete(row)
+
+
+def release_bridge(db: Session, bridge: str) -> None:
+    """Give back every lease held on a mgmt bridge we're tearing down."""
+    from app.models.node_instance import NodeInstance
+    for row in db.query(MgmtLease).filter(MgmtLease.bridge == bridge).all():
+        try:
+            if host_net.link_exists(bridge):
+                dhcp.release(bridge, row.client_id, _to_lease(row))
+        except OSError:
+            pass
+        if row.node_id is not None:
+            n = db.get(NodeInstance, row.node_id)
+            if n and n.mgmt_ipv4 == row.ip:
+                n.mgmt_ipv4 = ""
+        db.delete(row)
+    db.commit()
 
 
 # --- host plumbing -----------------------------------------------------------
 
 def _docker_network_subnet(name: str) -> str | None:
+    """None = network doesn't exist."""
     rc, out, _ = host_net._run(["docker", "network", "inspect", name, "--format",
                                 "{{range .IPAM.Config}}{{.Subnet}} {{end}}"])
-    return out.split()[0] if rc == 0 and out.strip() else (None if rc != 0 else "")
+    if rc != 0:
+        return None
+    return out.split()[0] if out.strip() else ""
 
 
-def ensure_mgmt(s: MgmtSettings) -> None:
-    """Create the bridged mgmt network on the host (no-op in internal mode —
-    containerlab creates its own Docker network there)."""
-    if not s.bridged:
-        return
-    host_net.ensure_bridge(s.bridge, s.segment, s.mtu or None)
-    if s.host_ip:
-        host_net.ensure_host_address(s.bridge, s.host_ip)
-    existing = _docker_network_subnet(BRIDGED_NETWORK)
-    if existing is not None and existing != s.subnet:
-        raise HostNetError(
-            f"Docker network {BRIDGED_NETWORK} exists with subnet {existing}; destroy all labs, then save the settings again")
-    if existing is None:
-        host_net._must([
-            "docker", "network", "create", "-d", "bridge",
-            "--subnet", s.subnet, "--gateway", s.effective_gateway(),
-            "-o", f"com.docker.network.bridge.name={s.bridge}",
-            "-o", "com.docker.network.bridge.inhibit_ipv4=true",
-            "-o", "com.docker.network.bridge.enable_ip_masquerade=false",
-            "--label", "plabs=mgmt",
-            BRIDGED_NETWORK,
-        ])
+def ensure_mgmt(db: Session, m: LabMgmt, mtu: int | None = None) -> Learned | None:
+    """For a bridged lab mgmt network: the bridge, the server's own lease on it
+    (so the server can reach devices; also teaches us subnet/gateway/DNS) and
+    the Docker network containerlab attaches devices to."""
+    if not m.bridged:
+        return None
+    with _lock:
+        host_net.ensure_bridge(m.bridge, m.segment, mtu)
+        row = _hold(db, m.bridge, m.segment.describe(), node_id=None, hostname=SERVER_HOSTNAME)
+        db.commit()
+        host_net.ensure_host_address(m.bridge, f"{row.ip}/{row.prefix}")
+        lr = learned(db, m.bridge)
+        name = docker_network_for(m.bridge)
+        existing = _docker_network_subnet(name)
+        if existing is not None and existing != lr.subnet:
+            host_net._run(["docker", "network", "rm", name])
+            if _docker_network_subnet(name) is not None:
+                raise HostNetError(f"Docker network {name} is in use with subnet {existing}; "
+                                   "destroy the labs using it and try again")
+            existing = None
+        if existing is None:
+            if not lr.gateway:
+                raise HostNetError("The DHCP server didn't provide a gateway (router option)")
+            host_net._must([
+                "docker", "network", "create", "-d", "bridge",
+                "--subnet", lr.subnet, "--gateway", lr.gateway,
+                "-o", f"com.docker.network.bridge.name={m.bridge}",
+                "-o", "com.docker.network.bridge.inhibit_ipv4=true",
+                "-o", "com.docker.network.bridge.enable_ip_masquerade=false",
+                "--label", "plabs=mgmt", "--label", f"plabs.bridge={m.bridge}",
+                name,
+            ])
+        m.subnet, m.gateway = lr.subnet, lr.gateway
+        return lr
 
 
-def teardown_mgmt(s: MgmtSettings) -> None:
-    """Remove the bridged mgmt network (used when settings change)."""
-    host_net._run(["docker", "network", "rm", BRIDGED_NETWORK])
-    if s.bridged and s.nic:
-        host_net.delete_bridge(s.bridge, s.segment)
+def mgmt_docker_networks() -> dict[str, str]:
+    """{docker network name: bridge} for every bridged mgmt network we created."""
+    rc, out, _ = host_net._run(["docker", "network", "ls", "--filter", "label=plabs=mgmt",
+                                "--format", '{{.Name}}\t{{.Label "plabs.bridge"}}'])
+    if rc != 0:
+        return {}
+    return dict(line.split("\t", 1) for line in out.splitlines() if "\t" in line)
 
 
-def status(s: MgmtSettings) -> dict:
-    if not s.bridged:
-        return {"ok": True, "detail": "Internal Docker network — devices are reachable from this server only."}
-    exists = host_net.link_exists(s.bridge)
-    up = exists and host_net.carrier(s.nic)
-    return {
-        "ok": exists and up,
-        "bridge": s.bridge, "bridge_exists": exists, "nic_carrier": host_net.carrier(s.nic),
-        "docker_network": _docker_network_subnet(BRIDGED_NETWORK) is not None,
-        "detail": ("Bridge up" if up else
-                   f"{s.nic} has no link — check the cable / switch port" if exists else
-                   "Bridge not created yet (it's created on the next deploy or when you save)"),
-    }
+def teardown_unused(db: Session, keep_bridges: set[str]) -> None:
+    """Release leases and remove the Docker network of mgmt bridges no
+    deployed lab uses (the bridge itself is removed by host_net.gc_bridges)."""
+    for name, bridge in mgmt_docker_networks().items():
+        if bridge in keep_bridges:
+            continue
+        release_bridge(db, bridge)
+        host_net._run(["docker", "network", "rm", name])
+    for row in db.query(MgmtLease).filter(MgmtLease.bridge.notin_(keep_bridges)).all():
+        db.delete(row)   # leftovers from a bridge already gone
+    db.commit()
+
+
+def status(db: Session) -> dict:
+    s = get_settings(db)
+    nets = []
+    for name, bridge in mgmt_docker_networks().items():
+        lr = learned(db, bridge)
+        nets.append({"docker_network": name, "bridge": bridge, "learned": asdict(lr) if lr else None,
+                     "leases": db.query(MgmtLease).filter(MgmtLease.bridge == bridge, MgmtLease.node_id.isnot(None)).count()})
+    return {"internal_subnet": s.subnet, "bridged": nets}
+
+
+# --- renewal -----------------------------------------------------------------
+
+def renew_due(db: Session) -> None:
+    """Renew server leases and the leases of devices in deployed labs once
+    they pass T1. Leases of devices that aren't deployed are left to expire;
+    the device asks for its old address again on its next deploy."""
+    from app.models.lab_deployment import LabDeployment
+    from app.models.node_instance import NodeInstance
+    deployed = {d.topology_id for d in db.query(LabDeployment).filter(
+        LabDeployment.status.in_(("deploying", "running", "syncing", "failed")))}
+    now = time.time()
+    with _lock:
+        for row in db.query(MgmtLease).all():
+            if now < row.obtained_at + row.lease_time / 2 or not host_net.link_exists(row.bridge):
+                continue
+            if row.node_id is not None:
+                n = db.get(NodeInstance, row.node_id)
+                if not n or n.topology_id not in deployed:
+                    continue
+            try:
+                fresh = dhcp.renew(row.bridge, row.client_id, _to_lease(row))
+                if fresh and fresh.ip == row.ip:
+                    _store(db, row, node_id=row.node_id, client_id=row.client_id, bridge=row.bridge, lease=fresh)
+                else:
+                    log.warning("DHCP server refused renewing %s (client %s)", row.ip, row.client_id)
+            except (dhcp.DhcpError, OSError) as e:
+                log.warning("lease renewal for %s failed: %s", row.ip, e)
+        db.commit()
+
+
+def start_renewer() -> None:
+    def loop():
+        from app.models.database import SessionLocal
+        while True:
+            time.sleep(30)
+            db = SessionLocal()
+            try:
+                renew_due(db)
+            except Exception as e:  # never let the thread die
+                log.warning("lease renewer: %s", e)
+            finally:
+                db.close()
+    threading.Thread(target=loop, name="plabs-dhcp-renew", daemon=True).start()
