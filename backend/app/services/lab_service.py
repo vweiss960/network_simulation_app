@@ -21,6 +21,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models.lab_deployment import LabDeployment
+from app.models.node_instance import NodeInstance
 from app.services.clab_yaml import generate_clab_yaml
 
 
@@ -941,8 +942,14 @@ def restore_host_network(db: Session) -> None:
     """After a host reboot bridges are gone; recreate them for running labs."""
     for d in db.query(LabDeployment).filter(LabDeployment.status.in_(_ACTIVE_STATES)).all():
         try:
-            _, _, spec = _ensure_fresh_yaml(db, d.topology_id)
+            applied = d.last_yaml           # what's deployed; this isn't a deploy
+            yaml_path, _, spec = _ensure_fresh_yaml(db, d.topology_id)
+            d.last_yaml = applied
+            if applied:
+                yaml_path.write_text(applied)
+            db.commit()
             _prepare_host_network(db, d.topology_id, spec)
+            _join_wires(spec)
         except Exception as e:
             print(f"[startup] host network for {d.lab_name}: {e}", flush=True)
 
@@ -990,9 +997,129 @@ def _startup_changed(old_yaml: str, new_yaml: str) -> list[str]:
             and (nd or {}).get("kind") != "bridge"]
 
 
-def _remove_for_recreate(lab_name: str, names: list[str]) -> None:
+def _yaml_doc(text: str) -> tuple[dict, dict]:
+    import yaml as _yaml
+    try:
+        doc = _yaml.safe_load(text or "") or {}
+    except _yaml.YAMLError:
+        return {}, {}
+    topo = doc.get("topology") or {}
+    nodes = topo.get("nodes") or {}
+    links: dict[str, set] = {name: set() for name in nodes}
+    for l in topo.get("links") or []:
+        eps = l.get("endpoints") or []
+        if len(eps) != 2:
+            continue
+        (a, ai), (b, bi) = (e.split(":", 1) for e in eps)
+        links.setdefault(a, set()).add((ai, b, bi))
+        links.setdefault(b, set()).add((bi, a, ai))
+    return nodes, links
+
+
+def _recreate_plan(old_yaml: str, new_yaml: str) -> list[str]:
+    """Running devices containerlab would recreate *in place* on this apply:
+    a kind without live link support whose links changed, or any device whose
+    definition changed (startup config aside — see _startup_changed).
+
+    We remove those ourselves before deploying so containerlab creates them
+    as new nodes. Its in-place recreation builds the device from the changed
+    links only: an XRd comes back with XR_INTERFACES listing just the new
+    link (the others exist in Linux but IOS-XR never sees them) and a
+    vrnetlab VM gets a short CLAB_INTFS, so it boots with missing NICs."""
+    from app.services.device_kinds import get_kind
+    old_nodes, old_links = _yaml_doc(old_yaml)
+    new_nodes, new_links = _yaml_doc(new_yaml)
+    out = []
+    for name, nd in new_nodes.items():
+        nd = nd or {}
+        if name not in old_nodes or nd.get("kind") == "bridge":
+            continue
+        od = old_nodes[name] or {}
+        strip = lambda d: {k: v for k, v in d.items() if k != "startup-config"}
+        changed_def = strip(nd) != strip(od)
+        changed_links = new_links.get(name, set()) != old_links.get(name, set())
+        if changed_def or (changed_links and not get_kind(nd.get("kind")).live_links):
+            out.append(name)
+    return out
+
+
+def _carry_running_configs(db: Session, topology_id: int, names: list[str]) -> list[str]:
+    """Save the running config of VMs about to be recreated (their config
+    lives inside the container) so they boot back with it. XRd keeps its
+    config in the lab directory and Linux kinds aren't recreated for links.
+    Returns devices whose config couldn't be read (they come back with their
+    startup config)."""
+    import asyncio
+    from app.services import device_exec
+    from app.services.device_kinds import get_kind
+    from app.services.lab_view import compute_lab_view
+    by_name = {n["clab_name"]: n for n in compute_lab_view(db, topology_id)["nodes"]}
+    lost = []
+    for name in names:
+        v = by_name.get(name)
+        if not v or not get_kind(v["lab_kind"]).is_vm:
+            continue
+        cfg, err = "", None
+        # IOS-XE sometimes resets new SSH logins for a minute after a burst
+        # of sessions; keep trying for ~2 minutes before giving up.
+        deadline = time.time() + 120
+        while True:
+            try:
+                t = device_exec.target_for(db, topology_id, v["id"])
+                cfg = asyncio.run(device_exec.running_config(t, timeout=90))
+                err = None
+                break
+            except Exception as e:
+                err = e
+                if time.time() > deadline:
+                    break
+                time.sleep(10)
+        if err is not None:
+            print(f"[lab] {name}: running config not saved before recreate: {err}", flush=True)
+            lost.append(name)
+            continue
+        if cfg.strip():
+            n = db.get(NodeInstance, v["id"])
+            n.carry_config = cfg
+    db.commit()
+    return lost
+
+
+def _apply_plan(db: Session, topology_id: int, prev_yaml: str) -> tuple[Path, str, dict, list[str]]:
+    """Regenerate the YAML for a running lab and remove the containers that
+    must be recreated (after saving VM configs). Returns the YAML path, lab
+    name, spec, and devices whose live config couldn't be preserved."""
+    yaml_path, lab_name, spec = _ensure_fresh_yaml(db, topology_id)
+    planned = _recreate_plan(prev_yaml, spec["yaml"])
+    lost = []
+    if planned:
+        before = {n.id: n.carry_config for n in db.query(NodeInstance).filter(NodeInstance.topology_id == topology_id)}
+        lost = _carry_running_configs(db, topology_id, planned)
+        if any(n.carry_config != before.get(n.id) for n in
+               db.query(NodeInstance).filter(NodeInstance.topology_id == topology_id)):
+            yaml_path, lab_name, spec = _ensure_fresh_yaml(db, topology_id)   # carried configs → startup files
+    new_startup = set(_startup_changed(prev_yaml, spec["yaml"]))
+    _remove_for_recreate(lab_name, sorted(set(planned) | new_startup), wipe=new_startup)
+    return yaml_path, lab_name, spec, lost
+
+
+def _join_wires(spec: dict) -> None:
+    from app.services import host_net
+    bad = host_net.join_wires([tuple(w) for w in spec.get("wires") or []])
+    if bad:
+        print(f"[lab] {spec.get('lab_name')}: cables not joined: {bad}", flush=True)
+
+
+def _remove_for_recreate(lab_name: str, names: list[str], wipe: set[str] = frozenset()) -> None:
+    """Remove containers so containerlab recreates them. For `wipe` (a new
+    startup config) also drop the node's lab directory: containerlab copies
+    the startup config there once and reuses that copy (vrnetlab /config,
+    XRd first-boot.cfg + xr-storage), so the new file would be ignored."""
+    import shutil
     for name in names:
         _run(["docker", "rm", "-f", f"clab-{lab_name}-{name}"], timeout=120)
+        if name in wipe:
+            shutil.rmtree(_lab_dir_for(lab_name) / f"clab-{lab_name}" / name, ignore_errors=True)
 
 
 def _clab_deploy(yaml_path: Path) -> tuple[int, str, str]:
@@ -1018,9 +1145,10 @@ def deploy_lab(db: Session, topology_id: int) -> dict:
         _sync_pending.discard(topology_id)
         prev_yaml = _get_or_create_deployment(db, topology_id).last_yaml or ""
         was_live = _get_or_create_deployment(db, topology_id).status in ("running", "syncing", "failed")
-        yaml_path, lab_name, spec = _ensure_fresh_yaml(db, topology_id)
-        if was_live:
-            _remove_for_recreate(lab_name, _startup_changed(prev_yaml, spec["yaml"]))
+        if was_live and prev_yaml:
+            yaml_path, lab_name, spec, _lost = _apply_plan(db, topology_id, prev_yaml)
+        else:
+            yaml_path, lab_name, spec = _ensure_fresh_yaml(db, topology_id)
         if not spec["included_nodes"]:
             raise LabError("Nothing to deploy — add devices with an image to the canvas first.")
         _assert_capacity(db, topology_id, spec)
@@ -1038,6 +1166,7 @@ def deploy_lab(db: Session, topology_id: int) -> dict:
             raise LabError(f"containerlab deploy failed: {dep.last_error}")
         dep.status = "running"
         db.commit()
+        _join_wires(spec)
     _start_addons(db, topology_id, lab_name)
     return {
         "ok": True, "lab_name": lab_name,
@@ -1063,15 +1192,18 @@ def _sync_worker(topology_id: int) -> None:
                 db.commit()
                 try:
                     prev_yaml = dep.last_yaml or ""
-                    yaml_path, _lab, spec = _ensure_fresh_yaml(db, topology_id)
-                    if not spec["included_nodes"]:
+                    if not generate_clab_yaml(db, topology_id)["included_nodes"]:
                         # Last device removed → tear the lab down entirely.
                         db.commit()
                         _destroy_locked(db, topology_id)
                         return
+                    yaml_path, _lab, spec, lost = _apply_plan(db, topology_id, prev_yaml)
                     _prepare_host_network(db, topology_id, spec)
-                    _remove_for_recreate(_lab, _startup_changed(prev_yaml, spec["yaml"]))
                     rc, out, err = _clab_deploy(yaml_path)
+                    if rc == 0:
+                        _join_wires(spec)
+                    if rc == 0 and lost:
+                        print(f"[lab] {_lab}: recreated without their live config: {lost}", flush=True)
                 except LabError as e:
                     rc, out, err = 1, "", str(e)
                 dep = _get_or_create_deployment(db, topology_id)
@@ -1132,6 +1264,8 @@ def _node_action(db: Session, topology_id: int, node_id: int, action: str, timeo
                             timeout=timeout, cwd=str(yaml_path.parent))
     if rc != 0:
         raise LabError(f"containerlab {action} --node {short} failed: {err or out}")
+    if action in ("start", "restart"):
+        _join_wires(generate_clab_yaml(db, topology_id))    # the device brought new cable halves
     return {"ok": True, "node_id": node_id, "action": action}
 
 
@@ -1201,6 +1335,9 @@ def _destroy_locked(db: Session, topology_id: int) -> dict:
         db.commit()
         raise LabError(dep.last_error)
     dep.status, dep.last_error = "idle", ""
+    # A destroyed lab boots from the users' startup configs next time.
+    db.query(NodeInstance).filter(NodeInstance.topology_id == topology_id) \
+        .update({NodeInstance.carry_config: ""}, synchronize_session=False)
     db.commit()
     try:
         gc_host_network(db)

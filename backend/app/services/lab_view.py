@@ -114,7 +114,7 @@ def compute_lab_view(db: Session, topology_id: int) -> dict:
             "lab_ssh_user": user if k.ssh else None,
             "mgmt_ip": n.mgmt_ipv4 or "",
             "interfaces": n.interfaces,
-            "startup_config": n.startup_config or "",
+            "startup_config": n.carry_config or n.startup_config or "",
             "min_memory_mb": n.min_memory_mb or k.min_memory_mb,
             "min_cpu_cores": n.min_cpu_cores or k.min_cpu_cores,
             "requires_hugepages": k.requires_hugepages or ("vrouter" in (n.image_ref or "")),

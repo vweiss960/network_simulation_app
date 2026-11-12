@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.service import decode_token
 from app.models.database import get_db
+from app.services.device_kinds import get_kind
 from app.services.lab_view import compute_lab_view
 
 
@@ -101,8 +102,18 @@ async def console_ws(
         except device_exec.ExecError:
             target = None
         if target and target.uses_ssh:
-            if await _ssh_console(ws, target):
+            if await _ssh_console(ws, target, quiet=True):
                 return
+            cname = _container_name_for_node(db, topology_id, node_id)
+            if cname and _vm_booting(db, topology_id, node_id, cname):
+                # vrnetlab owns the serial console while it boots the VM, so
+                # the telnet fallback would sit silent: show the boot log and
+                # open the CLI as soon as SSH answers.
+                if await _vm_boot_console(ws, target, cname) and await _ssh_console(ws, target):
+                    return
+                return
+            await ws.send_text("\x1b[33m[plabs] SSH to the device isn't available; "
+                               "falling back to the container console.\x1b[0m\r\n")
 
     cname = _container_name_for_node(db, topology_id, node_id)
     if not cname:
@@ -335,7 +346,78 @@ async def logs_ws(
             pass
 
 
-async def _ssh_console(ws: WebSocket, target) -> bool:
+def _vm_booting(db: Session, topology_id: int, node_id: int, cname: str) -> bool:
+    """A vrnetlab VM that hasn't logged 'Startup complete' yet."""
+    import subprocess
+    from app.models.node_instance import NodeInstance
+    n = db.get(NodeInstance, node_id)
+    if not n or not get_kind(n.kind).is_vm:
+        return False
+    try:
+        p = subprocess.run(["docker", "logs", cname], capture_output=True, text=True, timeout=20)
+    except Exception:
+        return False
+    return "Startup complete" not in (p.stdout + p.stderr)
+
+
+async def _ssh_ready(target) -> bool:
+    import asyncssh
+    from app.services.device_exec import SSH_OPTS
+    try:
+        conn = await asyncio.wait_for(asyncssh.connect(
+            target.host, username=target.username, password=target.password,
+            connect_timeout=8, **SSH_OPTS), timeout=12)
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+async def _vm_boot_console(ws: WebSocket, target, cname: str) -> bool:
+    """Stream a booting VM's log until SSH works. True → open the CLI;
+    False → the browser went away."""
+    await ws.send_text(f"\x1b[33m[plabs] {target.name} is still booting (VMs take several minutes). "
+                       "Showing its boot log; the CLI opens here when the device is ready.\x1b[0m\r\n")
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "logs", "-f", "--tail", "30", cname,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+
+    async def forward():
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                await asyncio.sleep(1)
+                continue
+            await ws.send_text(line.decode("utf-8", errors="replace").rstrip("\n") + "\r\n")
+
+    async def watch_ws():
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                return
+
+    async def probe():
+        while not await _ssh_ready(target):
+            await asyncio.sleep(10)
+
+    tasks = {name: asyncio.create_task(c) for name, c in
+             (("fwd", forward()), ("ws", watch_ws()), ("ssh", probe()))}
+    try:
+        done, _ = await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in tasks.values():
+            t.cancel()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    if tasks["ssh"] in done and not tasks["ssh"].cancelled():
+        await ws.send_text("\r\n\x1b[32m[plabs] Device is ready.\x1b[0m\r\n")
+        return True
+    return False
+
+
+async def _ssh_console(ws: WebSocket, target, quiet: bool = False) -> bool:
     """Bridge the browser terminal to an SSH PTY on the device. Returns False
     (without closing the socket) if SSH can't be established, so the caller
     can fall back to docker exec."""
@@ -346,8 +428,8 @@ async def _ssh_console(ws: WebSocket, target) -> bool:
             asyncssh.connect(target.host, username=target.username, password=target.password,
                              connect_timeout=10, **SSH_OPTS), timeout=15)
     except (OSError, asyncssh.Error, asyncio.TimeoutError) as e:
-        await ws.send_text(f"\x1b[33m[plabs] SSH to {target.host} not available yet ({e.__class__.__name__}); "
-                           f"falling back to the container console.\x1b[0m\r\n")
+        if not quiet:
+            await ws.send_text(f"\x1b[33m[plabs] SSH to {target.host} failed ({e.__class__.__name__}).\x1b[0m\r\n")
         return False
     cols, rows = 120, 32
     proc = await conn.create_process(term_type="xterm-256color", term_size=(cols, rows), encoding=None)

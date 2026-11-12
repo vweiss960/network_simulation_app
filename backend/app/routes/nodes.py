@@ -123,6 +123,8 @@ def update_node(topology_id: int, node_id: int, data: NodeUpdate, db: Session = 
     for k in ("image_ref", "icon", "x", "y", "startup_config", "min_memory_mb", "min_cpu_cores", "color", "notes"):
         if k in patch:
             setattr(n, k, patch[k])
+    if "startup_config" in patch:
+        n.carry_config = ""     # an edited startup config is what the user wants to boot
     db.commit()
     if _DEPLOY_FIELDS & patch.keys():
         lab_service.request_sync(db, topology_id)

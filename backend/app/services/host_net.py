@@ -92,6 +92,34 @@ def bridge_port_name(topology_id: int, node_id: int, port_index: int) -> str:
     return f"pl{_b36(topology_id)}n{_b36(node_id)}p{_b36(port_index)}"
 
 
+def wire_name(topology_id: int, link_id: int, side: str) -> str:
+    """Host-side half of a patched cable (side 'a' or 'b'), host-unique."""
+    return f"pw{_b36(topology_id)}l{_b36(link_id)}{side}"
+
+
+def join_wires(pairs: list[tuple[str, str]]) -> list[str]:
+    """Join each pair of host-side veth halves into a transparent wire: a tc
+    mirred redirect in both directions (every frame, LACP/LLDP/STP included).
+    Idempotent; re-run after every deploy because a recreated device brings
+    a new half. Returns pairs that couldn't be joined (a half is missing)."""
+    missing = []
+    for a, b in pairs:
+        if not (link_exists(a) and link_exists(b)):
+            missing.append(f"{a}-{b}")
+            continue
+        for d in (a, b):
+            _run(["tc", "qdisc", "replace", "dev", d, "clsact"])
+            _run(["tc", "filter", "del", "dev", d, "ingress"])
+        for src, dst in ((a, b), (b, a)):
+            rc, _o, e = _run(["tc", "filter", "add", "dev", src, "ingress", "pref", "1", "handle", "1",
+                              "matchall", "action", "mirred", "egress", "redirect", "dev", dst])
+            if rc != 0:
+                missing.append(f"{src}->{dst}: {e.strip()[:120]}")
+        for d in (a, b):
+            _run(["ip", "link", "set", d, "up"])
+    return missing
+
+
 def vlan_ifname(nic: str, vlan: int) -> str:
     name = f"{nic}.{vlan}"
     if len(name) > _IFNAME_MAX:

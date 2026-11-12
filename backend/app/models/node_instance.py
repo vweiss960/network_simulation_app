@@ -28,6 +28,10 @@ class NodeInstance(Base):
     # the kind's defaults (device_kinds).
     credentials_json = Column(Text, default="{}")
     startup_config = Column(Text, default="")
+    # Running config captured just before the app recreated this device (VMs
+    # keep their config inside the container). Boots in place of
+    # startup_config until the lab is destroyed or startup_config is edited.
+    carry_config = Column(Text, default="")
     min_memory_mb = Column(Integer, default=0)
     min_cpu_cores = Column(Integer, default=0)
     color = Column(String, default="")

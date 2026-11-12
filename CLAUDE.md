@@ -49,6 +49,10 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   in a Node container (the host has no Node).
 - Live: deploy a small lab of `plabs/host` / `plabs/frr` nodes via the UI or
   API and check `docker ps --filter label=containerlab=<lab_name>`.
+- Live editing end to end: `python3 scripts/live_edit_test.py <jwt>` builds a
+  throwaway XRd/FRR/c8000v lab, configures devices live, adds/removes nodes
+  and links, and checks configs + pings after each step (`--no-vm` skips the
+  8000v; ~20 min with it). Run after touching reconcile / YAML / host_net.
 
 ## Architecture
 
@@ -127,8 +131,33 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   → device recreated).
 - containerlab quirks: its reconcile ignores `startup-config` changes, so
   startup files are content-hashed and `lab_service._startup_changed` removes
-  those containers before reconciling; adding a link to a kind without live
-  link support (XRd, vrnetlab VMs) recreates that device.
+  those containers before reconciling — *and* their node directory
+  (`clab-<lab>/<node>/`): containerlab copies the startup config there once
+  (vrnetlab `/config`, XRd `first-boot.cfg` + `xr-storage`) and reuses the
+  stale copy otherwise.
+- **Live edits must not break neighbours** (verified by an end-to-end harness:
+  add/remove nodes + links on a running XRd/FRR/c8000v lab, check configs +
+  pings). Facts that drive the design:
+  - Kinds without `live_links` (everything but `linux`) are recreated on any
+    link change. containerlab's *in-place* recreate is buggy: the node gets
+    only the changed links (XRd `XR_INTERFACES`, vrnetlab `CLAB_INTFS`), so
+    `_recreate_plan` predicts those nodes and `_apply_plan` removes them
+    first → containerlab creates them as new nodes with every interface.
+  - A running XRd / vrnetlab VM binds its interfaces at boot: a hot-added
+    or *replaced* veth (same name) is never picked up. So every cable that
+    touches such a kind is split into two host-side halves
+    (`host:pw<t>l<link>a|b`) joined by `tc mirred` (`host_net.join_wires`,
+    re-run after every deploy/reconcile/node start). Recreating a device then
+    replaces only its own half; neighbours are untouched.
+  - XRd keeps its config in the lab dir (`xr-storage`) across recreation.
+    VMs don't: `_carry_running_configs` saves their running config into
+    `NodeInstance.carry_config`, which boots instead of `startup_config` until
+    the lab is destroyed or the startup config is edited.
+    `clab_yaml.day0_config` makes IOS/XE running configs bootable (drops the
+    self-signed cert — it crashed CVAC — license/platform/version lines, adds
+    explicit `no shutdown`, keeps `end`).
+- Console for a booting vrnetlab VM streams `docker logs` (vrnetlab owns the
+  serial port while booting) and switches to SSH when it answers.
 
 ### Layout
 `backend/app/`: `config.py` (env + paths, defaults inside the repo),

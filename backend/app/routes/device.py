@@ -195,6 +195,7 @@ async def restore_snapshot(topology_id: int, snapshot_id: int, body: RestoreIn, 
     if body.mode != "reboot":
         raise HTTPException(400, "mode must be 'reboot' or 'live'")
     n.startup_config = s.config
+    n.carry_config = ""
     db.commit()
     scheduled = lab_service.request_sync(db, topology_id)   # changed startup config → device recreated
     return {"ok": True, "mode": "reboot", "recreating": scheduled,

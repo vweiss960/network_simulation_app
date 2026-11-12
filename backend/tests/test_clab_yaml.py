@@ -16,7 +16,9 @@ def test_yaml_uses_node_kind_image_and_kernel_names(db):
     doc = _doc(db, t)
     assert doc["name"] == f"plabs-{t.id}-Core-Lab"
     assert doc["topology"]["nodes"]["P1"] == {"kind": "cisco_xrd", "image": "ios-xr/xrd-control-plane:25.4.2"}
-    assert doc["topology"]["links"] == [{"endpoints": ["P1:Gi0-0-0-0", "PE1:eth1"]}]
+    # XRd / VM cables are split into host halves joined by tc (see clab_yaml)
+    assert doc["topology"]["links"] == [{"endpoints": ["P1:Gi0-0-0-0", f"host:pw{t.id}l1a"]},
+                                        {"endpoints": ["PE1:eth1", f"host:pw{t.id}l1b"]}]
 
 
 def test_no_host_port_publishing(db):

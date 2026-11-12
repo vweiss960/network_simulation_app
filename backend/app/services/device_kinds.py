@@ -61,6 +61,9 @@ class DeviceKind:
     description: str = ""
     # Ports reachable on the mgmt IP, for the UI / automation tooling.
     services: dict[str, int] = field(default_factory=dict)
+    # containerlab can add/remove this kind's links while it runs. Every other
+    # kind is recreated on a link change (see lab_service._recreate_plan).
+    live_links: bool = False
 
     def interfaces(self, count: int) -> list[dict]:
         count = max(0, min(count, self.max_interfaces))
@@ -152,7 +155,7 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         kind="linux", label="Linux", family="linux",
         kernel_iface=_pattern("eth{n1}"),
         config_iface=_pattern("eth{n1}"),
-        exec_cli=["sh"], ssh=False,
+        exec_cli=["sh"], ssh=False, live_links=True,
         boot_seconds=5, min_memory_mb=512, min_cpu_cores=1,
         max_interfaces=32, default_interfaces=4,
         description="Generic Linux container: FRR, hosts, the automation workstation.",
