@@ -186,7 +186,7 @@ export const api = {
         built_image_tag: string; tag_still_loaded: boolean;
         error_message: string; uploaded_at: string | null; built_at: string | null;
       }>;
-      platforms: Array<{ key: string; vendor: string; label: string; clab_kind: string; qcow_hint: string }>;
+      platforms: Array<{ key: string; vendor: string; label: string; clab_kind: string; qcow_hint: string; hints: string[] }>;
       active_build_id: number | null;
     }>(`/lab/qcow-images`),
   uploadQcowImage: async (file: File, platform: string, onProgress?: (pct: number) => void) => {
@@ -220,6 +220,9 @@ export const api = {
       xhr.send(fd);
     });
   },
+  reclassifyQcowImage: (id: number, platform: string) =>
+    request<{ id: number; platform: string; clab_kind: string; status: string }>(
+      `/lab/qcow-images/${id}`, json('PATCH', { platform })),
   buildQcowImage: (id: number) =>
     request<{ id: number; status: string }>(`/lab/qcow-images/${id}/build`, { method: 'POST' }),
   getQcowImageStatus: (id: number) =>

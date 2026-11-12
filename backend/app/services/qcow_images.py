@@ -112,9 +112,55 @@ PLATFORMS: dict[str, dict] = {
 def list_platforms() -> list[dict]:
     """Expose the supported platform registry to the frontend dropdown."""
     return [
-        {"key": k, **{kk: vv for kk, vv in v.items() if kk != "subdir"}}
+        {"key": k, **{kk: vv for kk, vv in v.items() if kk != "subdir"},
+         "hints": [h for h, plat in _PLATFORM_HINTS if plat == k]}
         for k, v in PLATFORMS.items()
     ]
+
+
+def check_platform(filename: str, platform: str) -> None:
+    """Refuse an unknown platform, or one the file name clearly contradicts
+    (a c8000v-… file sent as cat9kv builds a broken image)."""
+    if platform not in PLATFORMS:
+        raise QcowImageError(f"Unknown platform '{platform}'. Supported: {list(PLATFORMS)}")
+    guess = guess_platform(filename)
+    if guess and guess != platform:
+        raise QcowImageError(
+            f"{filename!r} looks like a {PLATFORMS[guess]['label']} image, not "
+            f"{PLATFORMS[platform]['label']}. Pick '{PLATFORMS[guess]['label']}' as the platform.")
+
+
+def reclassify(db: Session, image_id: int, platform: str) -> DeviceImage:
+    """Change an image's platform. A previous build is discarded (its tag is
+    removed from templates that picked it up and from Docker) so the image
+    must be rebuilt for the new platform."""
+    img = get_image(db, image_id)
+    if not img:
+        raise QcowImageError("Image not found")
+    if img.status == "building":
+        raise QcowImageError("Can't change the platform while the image is building.")
+    check_platform(img.filename, platform)
+    if platform == img.platform:
+        return img
+    _discard_build(db, img)
+    info = PLATFORMS[platform]
+    img.platform, img.vendor, img.clab_kind = platform, info["vendor"], info["clab_kind"]
+    img.status, img.error_message = "uploaded", ""
+    db.commit()
+    db.refresh(img)
+    return img
+
+
+def _discard_build(db: Session, img: DeviceImage) -> None:
+    from app.models.node_template import NodeTemplate
+    tag = img.built_image_tag
+    if tag:
+        for t in db.query(NodeTemplate).filter(NodeTemplate.image_ref == tag).all():
+            t.image_ref = ""
+        if tag.startswith("vrnetlab/"):
+            subprocess.run(["docker", "rmi", "-f", tag], capture_output=True, timeout=120)
+    img.built_image_tag = ""
+    img.built_at = None
 
 
 # ---------- Storage helpers ----------
@@ -182,9 +228,8 @@ def save_uploaded_qcow(db: Session, file_obj, filename: str, platform: str) -> D
     Writes to a `.partial` first so a dropped connection doesn't leave a
     truncated file masquerading as a complete one.
     """
-    if platform not in PLATFORMS:
-        raise QcowImageError(f"Unknown platform '{platform}'. Supported: {list(PLATFORMS)}")
     safe = _safe_filename(filename)
+    check_platform(safe, platform)
     ensure_dirs()
 
     dest = QCOW_DIR / safe
@@ -440,20 +485,21 @@ def _run_build(image_id: int) -> None:
         after_tags = _list_docker_image_tags()
         new_tags = sorted(after_tags - before_tags)
 
-        if rc == 0 and new_tags:
-            # If multiple new tags appeared, prefer one whose repo contains
-            # the vrnetlab pattern (vr- or vrnetlab/) so we don't capture
-            # an unrelated daemon-side push.
-            preferred = [t for t in new_tags if "vr-" in t or t.startswith("vrnetlab/")]
-            # Some platforms (c8000v) also emit controller-/ztp- variants from
-            # the same qcow; the plain autonomous image is the one to use.
-            plain = [t for t in preferred if not re.search(r":(controller|ztp)-", t)]
-            img.built_image_tag = (plain or preferred or new_tags)[0]
+        # Only a vrnetlab-named tag counts: base images pulled during the
+        # build also show up as "new", and vrnetlab's Makefile loop exits 0
+        # even when the inner docker build fails.
+        preferred = [t for t in new_tags if t.startswith("vrnetlab/") or "/vr-" in t]
+        # Some platforms (c8000v) also emit controller-/ztp- variants from
+        # the same qcow; the plain autonomous image is the one to use.
+        plain = [t for t in preferred if not re.search(r":(controller|ztp)-", t)]
+        if rc == 0 and preferred:
+            img.built_image_tag = (plain or preferred)[0]
             img.status = "built"
             img.built_at = datetime.now(timezone.utc)
             _fill_template_images(db, img.clab_kind, img.built_image_tag)
-        elif rc == 0 and not new_tags:
-            _mark_failed(db, img, "Build exited 0 but no new Docker image appeared — check the log.")
+        elif rc == 0:
+            _mark_failed(db, img, "vrnetlab produced no image — the docker build failed. "
+                                  "Check the log (is the platform right for this qcow2?).")
             return
         else:
             _mark_failed(db, img, f"vrnetlab make exited {rc} — check the log for details.")
@@ -580,8 +626,7 @@ def list_unregistered(db: Session) -> list[dict]:
 
 
 def register_existing(db: Session, filename: str, platform: str) -> DeviceImage:
-    if platform not in PLATFORMS:
-        raise QcowImageError(f"Unknown platform '{platform}'. Supported: {list(PLATFORMS)}")
+    check_platform(filename, platform)
     path = QCOW_DIR / filename
     if "/" in filename or not path.is_file():
         raise QcowImageError(f"{filename!r} is not in {QCOW_DIR}")

@@ -70,7 +70,11 @@ export const useLabStore = create<LabStore>((set, get) => ({
   consoleTabs: [],
   activeConsoleId: null,
 
-  setPage: (page) => set({ page }),
+  setPage: (page) => {
+    set({ page });
+    // Images may have been built / loaded since the palette was fetched.
+    if (page === 'workspace' || page === 'templates') get().loadTemplates().catch(() => {});
+  },
 
   bootstrap: async () => {
     const [features, kinds] = await Promise.all([api.getFeatures(), api.listKinds()]);
@@ -84,7 +88,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
   openTopology: async (id) => {
     set({ currentTopologyId: id, page: 'workspace', selection: null, consoleTabs: [], activeConsoleId: null,
           nodes: [], links: [], lab: null });
-    await Promise.all([get().refreshTopology(), get().pollLab()]);
+    await Promise.all([get().refreshTopology(), get().pollLab(), get().loadTemplates().catch(() => {})]);
   },
 
   closeTopology: () => {

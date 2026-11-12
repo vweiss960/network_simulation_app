@@ -437,6 +437,21 @@ def qcow_register(body: RegisterQcowIn, db: Session = Depends(get_db)):
     return {"id": img.id, "filename": img.filename, "platform": img.platform, "status": img.status}
 
 
+class ReclassifyQcowIn(BaseModel):
+    platform: str
+
+
+@images_router.patch("/qcow-images/{image_id}")
+def qcow_reclassify(image_id: int, body: ReclassifyQcowIn, db: Session = Depends(get_db)):
+    """Change the platform of an uploaded image (discards a previous build)."""
+    from app.services import qcow_images as qi
+    try:
+        img = qi.reclassify(db, image_id, body.platform)
+    except qi.QcowImageError as e:
+        raise HTTPException(404 if "not found" in str(e) else 400, str(e))
+    return {"id": img.id, "platform": img.platform, "clab_kind": img.clab_kind, "status": img.status}
+
+
 @images_router.post("/qcow-images/{image_id}/build")
 def qcow_build(image_id: int, db: Session = Depends(get_db)):
     """Kick off the vrnetlab build in a background thread. Returns immediately;

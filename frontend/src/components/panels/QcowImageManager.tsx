@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { api } from '../../utils/api';
 import { useUploadStore } from '../../stores/useUploadStore';
+import { useLabStore } from '../../stores/useLabStore';
 
 type QcowImage = {
   id: number;
@@ -33,7 +34,13 @@ type QcowImage = {
   built_at: string | null;
 };
 
-type Platform = { key: string; vendor: string; label: string; clab_kind: string; qcow_hint: string };
+type Platform = { key: string; vendor: string; label: string; clab_kind: string; qcow_hint: string; hints: string[] };
+
+/** Platform suggested by the file name (same substrings the server checks). */
+function guessPlatform(filename: string, platforms: Platform[]): string {
+  const low = filename.toLowerCase();
+  return platforms.find(p => (p.hints || []).some(h => low.includes(h)))?.key || '';
+}
 
 export default function QcowImageManager() {
   const [open, setOpen] = useState(true);
@@ -52,7 +59,12 @@ export default function QcowImageManager() {
   const refresh = async () => {
     try {
       const r = await api.listQcowImages();
-      setImages(r.images);
+      // A build that just finished fills in its template's image: refresh the palette.
+      setImages(prev => {
+        if (r.images.some(i => i.status === 'built' && prev.find(p => p.id === i.id)?.status === 'building'))
+          useLabStore.getState().loadTemplates().catch(() => {});
+        return r.images;
+      });
       setPlatforms(r.platforms);
       setActiveBuildId(r.active_build_id);
       if (!uploadPlatform && r.platforms.length > 0) setUploadPlatform(r.platforms[0].key);
@@ -107,11 +119,36 @@ export default function QcowImageManager() {
   }, [logImageId]);
 
   const upload = async (file: File) => {
-    if (!uploadPlatform) { toast.error('Pick a platform first.'); return; }
     if (fileRef.current) fileRef.current.value = '';
+    // The file name decides when it names a known platform; the dropdown is
+    // only used for names that don't (the server refuses a contradiction).
+    const guessed = guessPlatform(file.name, platforms);
+    const platform = guessed || uploadPlatform;
+    if (!platform) { toast.error('Pick a platform first.'); return; }
+    if (guessed && guessed !== uploadPlatform) {
+      setUploadPlatform(guessed);
+      toast(`Detected ${platforms.find(p => p.key === guessed)?.label} from the file name.`);
+    }
     // Resumable, chunked: survives dropped connections / sleep; progress shows
     // in the Uploads panel. Registers the image when it completes.
-    useUploadStore.getState().start(file, 'qcow', uploadPlatform, () => refresh());
+    useUploadStore.getState().start(file, 'qcow', platform, () => refresh());
+  };
+
+  const reclassify = async (img: QcowImage, platform: string) => {
+    if (platform === img.platform) return;
+    const label = platforms.find(p => p.key === platform)?.label || platform;
+    if (img.status === 'built' && !confirm(
+      `Change ${img.filename} to ${label}?\n\nThe built image '${img.built_image_tag}' is discarded; ` +
+      `you'll need to Build again.`)) return;
+    setBusyId(img.id);
+    try {
+      await api.reclassifyQcowImage(img.id, platform);
+      toast.success(`${img.filename} is now ${label} — ready to Build`);
+      refresh();
+    } catch (e: any) {
+      toast.error(e?.message || String(e));
+    }
+    setBusyId(null);
   };
 
   const startBuild = async (img: QcowImage) => {
@@ -247,12 +284,20 @@ export default function QcowImageManager() {
                       {statusBadge(img.status)}
                       <span>{img.size_mb} MB</span>
                       <span>·</span>
-                      <span>{img.platform}</span>
+                      <select
+                        className="text-[10px] bg-surface-800 border border-surface-700 rounded px-1 py-0 text-surface-200"
+                        value={img.platform}
+                        onChange={e => reclassify(img, e.target.value)}
+                        disabled={busyId === img.id || img.status === 'building'}
+                        title={img.status === 'building' ? 'Wait for the build to finish' : 'Platform (changing it requires a rebuild)'}
+                      >
+                        {platforms.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+                      </select>
                       <span>·</span>
                       <span className="font-mono">{img.clab_kind}</span>
                     </div>
                   </div>
-                  {img.status === 'uploaded' && (
+                  {(img.status === 'uploaded' || img.status === 'failed') && (
                     <button
                       className="btn btn-primary btn-sm text-[10px]"
                       onClick={() => startBuild(img)}

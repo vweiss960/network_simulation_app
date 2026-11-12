@@ -37,9 +37,13 @@ def list_uploads(user=Depends(get_current_user)):
 @router.post("/")
 def start_upload(body: StartIn, user=Depends(get_current_user)):
     if body.purpose == "qcow":
-        from app.services.qcow_images import PLATFORMS
+        from app.services.qcow_images import PLATFORMS, QcowImageError, check_platform
         if body.platform not in PLATFORMS:
             raise HTTPException(400, f"Pick a platform ({', '.join(PLATFORMS)})")
+        try:
+            check_platform(body.filename, body.platform)
+        except QcowImageError as e:
+            raise HTTPException(400, str(e))
     try:
         return uploads.start(user.username, body.filename, body.size, body.last_modified, body.purpose, body.platform)
     except UploadError as e:
