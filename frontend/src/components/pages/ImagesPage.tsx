@@ -10,11 +10,27 @@ export default function ImagesPage() {
   const [docker, setDocker] = useState<string[]>([]);
   const [pct, setPct] = useState<number | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
+  const [found, setFound] = useState<{ filename: string; size_mb: number; platform: string }[]>([]);
+  const [folder, setFolder] = useState('');
+  const [platforms, setPlatforms] = useState<{ key: string; label: string; qcow_hint: string }[]>([]);
+  const [qcowKey, setQcowKey] = useState(0);   // remounts the VM image manager after a register
   const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = () => {
     api.listLabImages().then(r => setFiles(r.images)).catch(() => {});
     api.listDockerImages().then(r => setDocker(r.images)).catch(() => {});
+    api.listUnregisteredQcow().then(r => { setFound(r.files); setFolder(r.folder); }).catch(() => {});
+    api.listQcowPlatforms().then(r => setPlatforms(r.platforms)).catch(() => {});
+  };
+
+  const register = async (filename: string, platform: string) => {
+    if (!platform) { toast.error('Pick the platform first'); return; }
+    try {
+      await api.registerQcow(filename, platform);
+      toast.success(`${filename} registered — click Build below`);
+      setQcowKey(k => k + 1);
+      refresh();
+    } catch (e) { toast.error((e as Error).message); }
   };
   useEffect(refresh, []);
 
@@ -74,7 +90,18 @@ export default function ImagesPage() {
 
         <section>
           <h2 className="font-semibold mb-2">VM images (qcow2 → vrnetlab)</h2>
-          <div className="rounded border border-surface-700 p-3"><QcowImageManager /></div>
+          <p className="text-xs text-surface-400 mb-2">
+            Upload a qcow2 below, or copy it to the server (faster for multi-GB images), e.g.{' '}
+            <code className="select-all">scp image.qcow2 server:{folder || '…/device_images/qcow'}/</code>, then register it here.
+            Building wraps the VM in a container image (Cat8000v / Cat9000v builds boot the VM once to install — several minutes).
+          </p>
+          {found.length > 0 && (
+            <div className="rounded border border-sky-800/60 bg-sky-950/20 p-3 mb-3">
+              <div className="text-xs font-semibold text-sky-200 mb-2">Found on the server, not registered yet</div>
+              {found.map(f => <FoundRow key={f.filename} f={f} platforms={platforms} onRegister={register} />)}
+            </div>
+          )}
+          <div className="rounded border border-surface-700 p-3"><QcowImageManager key={qcowKey} /></div>
         </section>
 
         <section>
@@ -84,6 +111,27 @@ export default function ImagesPage() {
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function FoundRow({ f, platforms, onRegister }: {
+  f: { filename: string; size_mb: number; platform: string };
+  platforms: { key: string; label: string; qcow_hint: string }[];
+  onRegister: (filename: string, platform: string) => void;
+}) {
+  const [platform, setPlatform] = useState(f.platform);
+  return (
+    <div className="flex items-center gap-2 py-1 text-sm">
+      <span className="font-mono flex-1 truncate">{f.filename}</span>
+      <span className="text-xs text-surface-400">{(f.size_mb / 1024).toFixed(1)} GB</span>
+      <select value={platform} onChange={e => setPlatform(e.target.value)}
+        className="px-2 py-1 text-xs rounded bg-surface-900 border border-surface-700">
+        <option value="">— platform —</option>
+        {platforms.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+      </select>
+      <button onClick={() => onRegister(f.filename, platform)}
+        className="px-2 py-1 text-xs rounded bg-primary-600 hover:bg-primary-500 text-white">Register</button>
     </div>
   );
 }

@@ -415,6 +415,28 @@ def qcow_upload(
     }
 
 
+@images_router.get("/qcow-images/unregistered")
+def qcow_unregistered(db: Session = Depends(get_db)):
+    """qcow2 files copied into the images folder (scp/rsync) but not registered."""
+    from app.services import qcow_images as qi
+    return {"files": qi.list_unregistered(db), "folder": str(qi.QCOW_DIR)}
+
+
+class RegisterQcowIn(BaseModel):
+    filename: str
+    platform: str
+
+
+@images_router.post("/qcow-images/register")
+def qcow_register(body: RegisterQcowIn, db: Session = Depends(get_db)):
+    from app.services import qcow_images as qi
+    try:
+        img = qi.register_existing(db, body.filename, body.platform)
+    except qi.QcowImageError as e:
+        raise HTTPException(400, str(e))
+    return {"id": img.id, "filename": img.filename, "platform": img.platform, "status": img.status}
+
+
 @images_router.post("/qcow-images/{image_id}/build")
 def qcow_build(image_id: int, db: Session = Depends(get_db)):
     """Kick off the vrnetlab build in a background thread. Returns immediately;

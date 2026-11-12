@@ -71,7 +71,8 @@ class DeviceKind:
 
 
 _XR_SERVICES = {"ssh": 22, "netconf": 830, "gnmi": 57400}
-_XE_SERVICES = {"ssh": 22, "netconf": 830, "restconf": 443, "gnmi": 57400}
+# IOS-XE gNMI: insecure server on 50052 (`gnxi` / `gnmi-yang server`), TLS on 9339.
+_XE_SERVICES = {"ssh": 22, "netconf": 830, "restconf": 443, "gnmi": 50052}
 
 KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
     DeviceKind(
@@ -109,6 +110,18 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         boot_seconds=300, min_memory_mb=4096, min_cpu_cores=2, is_vm=True,
         max_interfaces=8, default_interfaces=4,
         description="IOS-XE VM (vrnetlab). NETCONF/RESTCONF/gNMI, MPLS, L3VPN.",
+        services=_XE_SERVICES,
+    ),
+    DeviceKind(
+        kind="cisco_cat9kv", label="Cisco Catalyst 9000v", family="iosxe",
+        kernel_iface=_pattern("eth{n1}"),
+        config_iface=_pattern("GigabitEthernet1/0/{n1}"),
+        mgmt_iface="GigabitEthernet0/0",
+        default_user="admin", default_password="admin",
+        exec_cli=["telnet", "127.0.0.1", "5000"],
+        boot_seconds=720, min_memory_mb=18432, min_cpu_cores=4, is_vm=True,
+        max_interfaces=24, default_interfaces=8,
+        description="IOS-XE Catalyst 9000 switch VM (vrnetlab, UADP/Q200 ASIC emulation). Heavy: ~18 GB RAM.",
         services=_XE_SERVICES,
     ),
     DeviceKind(

@@ -131,6 +131,12 @@ export const api = {
   putLabNetwork: (data: MgmtSettings) =>
     request<{ settings: MgmtSettings }>('/lab-network/', json('PUT', data)),
 
+  listUnregisteredQcow: () =>
+    request<{ files: { filename: string; size_mb: number; platform: string }[]; folder: string }>('/lab/qcow-images/unregistered'),
+  registerQcow: (filename: string, platform: string) =>
+    request<any>('/lab/qcow-images/register', json('POST', { filename, platform })),
+  listQcowPlatforms: () => request<{ platforms: { key: string; label: string; qcow_hint: string }[] }>('/lab/qcow-images'),
+
   // Users
   listUsers: () => request<any[]>('/auth/users'),
   createUser: (data: { username: string; password: string; display_name?: string; is_admin?: boolean }) =>

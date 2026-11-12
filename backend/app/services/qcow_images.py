@@ -68,6 +68,13 @@ class QcowImageError(Exception):
 # (cisco/csr1000v, cisco/vios, …). The `subdir` value here is the path
 # RELATIVE to the cloned repo root — Path joins it correctly.
 PLATFORMS: dict[str, dict] = {
+    "cat9kv": {
+        "vendor": "cisco",
+        "label": "Cisco Catalyst 9000v (switch)",
+        "subdir": "cisco/cat9kv",
+        "clab_kind": "cisco_cat9kv",
+        "qcow_hint": "cat9kv-prd-<ver>.qcow2 (UADP by default; prefix the version with Q200- for Q200)",
+    },
     "c8000v": {
         "vendor": "cisco",
         "label": "Cisco Catalyst 8000v",
@@ -113,9 +120,17 @@ def list_platforms() -> list[dict]:
 # ---------- Storage helpers ----------
 
 def ensure_dirs() -> None:
-    """Idempotent — called at startup and before each operation."""
+    """Idempotent — called at startup and before each operation. The qcow
+    drop folder is handed to the owner of the images dir so large images can
+    be copied in with scp/rsync and registered from the UI."""
     QCOW_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        st = os.stat(DEVICE_IMAGES_DIR)
+        if st.st_uid != 0 and os.stat(QCOW_DIR).st_uid == 0 and os.geteuid() == 0:
+            os.chown(QCOW_DIR, st.st_uid, st.st_gid)
+    except OSError:
+        pass
 
 
 def ensure_vrnetlab_repo() -> str | None:
@@ -430,7 +445,10 @@ def _run_build(image_id: int) -> None:
             # the vrnetlab pattern (vr- or vrnetlab/) so we don't capture
             # an unrelated daemon-side push.
             preferred = [t for t in new_tags if "vr-" in t or t.startswith("vrnetlab/")]
-            img.built_image_tag = preferred[0] if preferred else new_tags[0]
+            # Some platforms (c8000v) also emit controller-/ztp- variants from
+            # the same qcow; the plain autonomous image is the one to use.
+            plain = [t for t in preferred if not re.search(r":(controller|ztp)-", t)]
+            img.built_image_tag = (plain or preferred or new_tags)[0]
             img.status = "built"
             img.built_at = datetime.now(timezone.utc)
             _fill_template_images(db, img.clab_kind, img.built_image_tag)
@@ -535,3 +553,44 @@ def _fill_template_images(db, kind: str, tag: str) -> None:
     from app.models.node_template import NodeTemplate
     for t in db.query(NodeTemplate).filter(NodeTemplate.kind == kind, NodeTemplate.image_ref == "").all():
         t.image_ref = tag
+
+
+# ---------- Files copied straight into the qcow folder ----------
+
+_PLATFORM_HINTS = [("cat9kv", "cat9kv"), ("c9kv", "cat9kv"), ("c8000v", "c8000v"), ("csr1000v", "csr1000v"),
+                   ("xrv9k", "xrv9k"), ("vios", "vios")]
+
+
+def guess_platform(filename: str) -> str:
+    low = filename.lower()
+    return next((p for key, p in _PLATFORM_HINTS if key in low), "")
+
+
+def list_unregistered(db: Session) -> list[dict]:
+    """qcow2 files in the drop folder that have no image row yet."""
+    ensure_dirs()
+    known = {r.filename for r in db.query(DeviceImage).all()}
+    out = []
+    for f in sorted(QCOW_DIR.iterdir()):
+        if f.is_file() and f.suffix.lower() in (".qcow2", ".qcow") and not f.name.startswith(".") \
+                and f.name not in known:
+            out.append({"filename": f.name, "size_mb": f.stat().st_size // (1024 * 1024),
+                        "platform": guess_platform(f.name)})
+    return out
+
+
+def register_existing(db: Session, filename: str, platform: str) -> DeviceImage:
+    if platform not in PLATFORMS:
+        raise QcowImageError(f"Unknown platform '{platform}'. Supported: {list(PLATFORMS)}")
+    path = QCOW_DIR / filename
+    if "/" in filename or not path.is_file():
+        raise QcowImageError(f"{filename!r} is not in {QCOW_DIR}")
+    if db.query(DeviceImage).filter(DeviceImage.filename == filename).first():
+        raise QcowImageError(f"{filename!r} is already registered")
+    info = PLATFORMS[platform]
+    img = DeviceImage(filename=filename, size_bytes=path.stat().st_size, sha256="", vendor=info["vendor"],
+                      platform=platform, clab_kind=info["clab_kind"], status="uploaded")
+    db.add(img)
+    db.commit()
+    db.refresh(img)
+    return img
