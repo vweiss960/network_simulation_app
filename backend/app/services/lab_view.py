@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 from app.models.link import Link
 from app.models.node_instance import NodeInstance
 from app.models.topology import Topology
-from app.services.device_kinds import get_kind
+from app.services.device_kinds import get_kind, is_bridge
+from app.services.host_net import Segment, bridge_port_name
 
 LAB_PREFIX = "plabs"
 
@@ -57,7 +58,24 @@ def compute_lab_view(db: Session, topology_id: int) -> dict:
 
     safe_names: dict[int, str] = {}
     used: set[str] = set()
+    out_nodes, skipped = [], []
+    bridge_names: dict[int, str] = {}
     for n in nodes:
+        if not is_bridge(n.kind):
+            continue
+        seg = Segment.from_dict(n.network)
+        if not seg.configured:
+            skipped.append({"id": n.id, "name": n.name, "reason": "Network not connected — choose a NIC in its settings"})
+            continue
+        bname = seg.bridge(topology_id, n.id)
+        if bname in used:
+            skipped.append({"id": n.id, "name": n.name, "reason": "Another Network node in this lab already uses that NIC / VLAN"})
+            continue
+        used.add(bname)
+        bridge_names[n.id] = bname
+    for n in nodes:
+        if is_bridge(n.kind):
+            continue
         base = safe_node_name(n.name)
         cand, i = base, 1
         while cand in used:
@@ -66,9 +84,22 @@ def compute_lab_view(db: Session, topology_id: int) -> dict:
         used.add(cand)
         safe_names[n.id] = cand
 
-    out_nodes, skipped = [], []
     by_id: dict[int, NodeInstance] = {}
     for n in nodes:
+        if is_bridge(n.kind):
+            if n.id not in bridge_names:
+                continue
+            seg = Segment.from_dict(n.network)
+            by_id[n.id] = n
+            out_nodes.append({
+                "id": n.id, "topology_id": n.topology_id, "template_id": n.template_id,
+                "name": n.name, "clab_name": bridge_names[n.id],
+                "lab_kind": n.kind, "lab_image": "", "lab_container_name": None,
+                "lab_ssh_user": None, "mgmt_ip": "", "interfaces": n.interfaces, "startup_config": "",
+                "min_memory_mb": 0, "min_cpu_cores": 0, "requires_hugepages": False,
+                "is_bridge": True, "segment": seg.to_dict(), "bridge": bridge_names[n.id],
+            })
+            continue
         k = get_kind(n.kind)
         user, _pw = node_credentials(n)
         if not n.image_ref:
@@ -87,18 +118,28 @@ def compute_lab_view(db: Session, topology_id: int) -> dict:
             "min_memory_mb": n.min_memory_mb or k.min_memory_mb,
             "min_cpu_cores": n.min_cpu_cores or k.min_cpu_cores,
             "requires_hugepages": k.requires_hugepages or ("vrouter" in (n.image_ref or "")),
+            "is_bridge": False,
         })
+
+    def kernel(node: NodeInstance, iface: str) -> str:
+        if is_bridge(node.kind):
+            # Bridge ports are host-side veths: must be unique host-wide.
+            idx = next((i for i, x in enumerate(node.interfaces) if x.get("name") == iface), 0)
+            return bridge_port_name(topology_id, node.id, idx + 1)
+        return node.kernel_iface(iface)
 
     out_links = []
     for l in links:
         s, t = by_id.get(l.source_node_id), by_id.get(l.target_node_id)
         if not s or not t:
             continue
+        if is_bridge(s.kind) and is_bridge(t.kind):
+            continue  # two bridges can't be cabled by a veth in clab; skip
         out_links.append({
             "id": l.id, "topology_id": l.topology_id,
             "source_node_id": l.source_node_id, "target_node_id": l.target_node_id,
-            "source_interface": s.kernel_iface(l.source_interface),
-            "target_interface": t.kernel_iface(l.target_interface),
+            "source_interface": kernel(s, l.source_interface),
+            "target_interface": kernel(t, l.target_interface),
             "original_source_interface": l.source_interface,
             "original_target_interface": l.target_interface,
         })

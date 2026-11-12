@@ -13,7 +13,7 @@ from app.models.database import SessionLocal, init_db
 from app.models.node_template import NodeTemplate
 from app.models.user import User
 from app.routes import auth as auth_routes
-from app.routes import lab, lab_console, links, node_templates, nodes, topologies
+from app.routes import lab, lab_console, lab_network, links, node_templates, nodes, topologies
 
 class _RedactTokens(logging.Filter):
     """Console WebSockets carry the JWT as ?token=…; keep it out of access logs."""
@@ -49,6 +49,7 @@ app.include_router(nodes.router, dependencies=auth_dep)
 app.include_router(links.router, dependencies=auth_dep)
 app.include_router(lab.router, dependencies=auth_dep)
 app.include_router(lab.images_router, dependencies=auth_dep)
+app.include_router(lab_network.router, dependencies=auth_dep)
 # Console / log WebSockets authenticate via ?token=<jwt> (browsers can't set
 # headers on a WebSocket upgrade).
 app.include_router(lab_console.router)
@@ -79,6 +80,12 @@ SEED_TEMPLATES = [
          description="FRRouting with all daemons enabled (scripts/build-images.sh)."),
     dict(name="Linux Host", vendor="Linux", model="alpine", kind="linux", image_ref="plabs/host:latest",
          icon="host", interface_count=1, description="End host with ping / traceroute / iperf3 / tcpdump."),
+    dict(name="Network (NIC / VLAN)", vendor="Network", model="uplink", kind="bridge", image_ref="",
+         icon="cloud", interface_count=0,
+         description="Connects devices to a physical network: a host NIC (untagged) or one VLAN on a trunk NIC."),
+    dict(name="Lab Switch", vendor="Network", model="switch", kind="bridge", image_ref="",
+         icon="switch", interface_count=0,
+         description="Internal L2 segment between lab devices (no physical uplink)."),
     dict(name="Automation Workstation", vendor="Linux", model="workstation", kind="linux",
          image_ref="plabs/workstation:latest", icon="workstation", interface_count=1,
          description="Python, ncclient, netmiko, pyATS, Ansible, gnmic — for automation labs."),
@@ -112,6 +119,8 @@ def startup():
             elif admin.is_admin and admin.is_local:
                 admin.hashed_password = hash_password(ADMIN_PASSWORD)  # reset via env
         db.commit()
+        from app.services.lab_service import restore_host_network
+        restore_host_network(db)
     finally:
         db.close()
 

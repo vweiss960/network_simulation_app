@@ -32,6 +32,8 @@ class NodeInstance(Base):
     min_cpu_cores = Column(Integer, default=0)
     color = Column(String, default="")
     notes = Column(Text, default="")
+    # Network nodes (kind=bridge): {"mode": internal|access|trunk, "nic": .., "vlan": ..}
+    network_json = Column(Text, default="{}")
 
     topology = relationship("Topology", back_populates="nodes")
 
@@ -56,6 +58,17 @@ class NodeInstance(Base):
     @credentials.setter
     def credentials(self, value):
         self.credentials_json = json.dumps(dict(value or {}))
+
+    @property
+    def network(self) -> dict:
+        try:
+            return dict(json.loads(self.network_json or "{}"))
+        except Exception:
+            return {}
+
+    @network.setter
+    def network(self, value):
+        self.network_json = json.dumps(dict(value or {}))
 
     def kernel_iface(self, config_name: str) -> str:
         for i in self.interfaces:

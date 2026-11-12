@@ -84,7 +84,14 @@ class NodeCreate(BaseModel):
     startup_config: Optional[str] = None
 
 
+class NetworkSpec(BaseModel):
+    mode: str = "internal"     # internal | access | trunk
+    nic: str = ""
+    vlan: int = 0
+
+
 class NodeUpdate(BaseModel):
+    network: Optional[NetworkSpec] = None
     name: Optional[str] = None
     image_ref: Optional[str] = None
     icon: Optional[str] = None
@@ -118,6 +125,8 @@ class NodeOut(BaseModel):
     min_cpu_cores: int = 0
     color: str = ""
     notes: str = ""
+    network: Optional[NetworkSpec] = None
+    network_label: str = ""
 
 
 class NodePositions(BaseModel):

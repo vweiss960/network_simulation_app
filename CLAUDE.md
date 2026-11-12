@@ -9,7 +9,8 @@ Guidance for Claude Code when working in this repository.
 the lab: every node is a real containerlab device (container or vrnetlab VM)
 with its own kind + image, and edits to a deployed topology apply live.
 Roadmap (see the plan in `~/.claude/plans/so-i-want-your-wobbly-lampson.md`):
-bridged-NIC management network with a unique IP per device (Phase 2), device
+bridged-NIC management network + Network nodes mapping lab ports onto host
+NICs / trunk VLANs (Phase 2, done), device
 access layer + more Cisco kinds (3), CCNP SP / Automation curriculum with
 graded labs (4), an AI lab agent (5).
 
@@ -64,11 +65,35 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   if the topology has a deployed lab, a background, per-topology-serialized,
   coalesced reconcile regenerates the YAML and runs `containerlab deploy`.
   Position/colour/notes edits don't reconcile.
-- `services/clab_yaml.py` emits the topology file: no host `ports:`; every lab
-  shares the `plabs-mgmt` Docker network (default 172.30.0.0/22,
-  `PLABS_LAB_MGMT_SUBNET`). For `cisco_xrd`, a startup config is prefixed with
-  containerlab's own first-boot defaults (it *replaces* them otherwise).
+- `services/clab_yaml.py` emits the topology file: no host `ports:`. For
+  `cisco_xrd`, a startup config is prefixed with containerlab's own first-boot
+  defaults (it *replaces* them otherwise).
 - Multiple labs can run at once; `_assert_capacity` checks RAM instead.
+
+### Host networking (`services/host_net.py`, `lab_network.py`)
+- **Management network** (Network page, `/api/lab-network`, stored in
+  `app_settings`): *internal* = Docker network `plabs-mgmt`
+  (172.30.0.0/22, server-only reach); *bridged* = Linux bridge on a physical
+  NIC (untagged or one VLAN) + Docker network `plabs-mgmt-bridged` created with
+  `inhibit_ipv4` (Docker must not put the upstream gateway IP on the host
+  bridge). Devices get static IPs from a pool (IPAM in `lab_network.assign_ips`,
+  unique across all labs, sticky per device). Changing it requires all labs
+  destroyed.
+- **Network nodes** (`kind: bridge` in the registry; `NodeInstance.network`
+  = `{mode: internal|access|trunk, nic, vlan}`) become clab `kind: bridge`
+  nodes. Bridges are named deterministically (`pl-<nic>[-<vlan>]`, internal
+  `pl-sw<topo>-<node>`), so labs using the same NIC/VLAN share one segment.
+  Ports grow as devices are cabled; host-side veth names are host-unique
+  (`host_net.bridge_port_name`).
+- `lab_service._prepare_host_network` creates bridges / VLAN sub-interfaces /
+  the mgmt network before every deploy and reconcile; `gc_host_network`
+  removes unused `pl-*` bridges after reconcile/destroy; `restore_host_network`
+  recreates them at startup (reboot recovery). A `DOCKER-USER` ACCEPT rule per
+  bridge stops br_netfilter + Docker's FORWARD DROP eating bridged frames.
+- Access (untagged) mode is refused on the server's own uplink (default-route /
+  addressed NIC); trunk VLANs on it are fine.
+- Schema: `init_db()` → `add_missing_columns()` adds new model columns to an
+  existing SQLite DB automatically (additive only).
 
 ### Layout
 `backend/app/`: `config.py` (env + paths, defaults inside the repo),
@@ -79,9 +104,9 @@ Schema is `create_all()` only — no migrations yet; add additive migrations if
 a released DB needs a new column.
 
 `frontend/src/`: `stores/useLabStore.ts` (all workspace state + actions),
-`components/workspace/` (Workspace, Palette, Inspector, LabSummary),
+`components/workspace/` (Workspace, Palette, Inspector, NetworkInspector, LabSummary),
 `components/canvas/` (Canvas, DeviceNode, CableEdge, ContextMenu),
-`components/pages/` (LabsHome, TemplatesPage, ImagesPage), reused
+`components/pages/` (LabsHome, TemplatesPage, ImagesPage, NetworkPage), reused
 `LabConsoleDrawer`, `LinkNetemModal`, `LoginPage`, `panels/QcowImageManager`,
 `panels/UserManagementPanel`. `utils/api.ts` wraps every endpoint.
 
@@ -92,4 +117,5 @@ a released DB needs a new column.
 ### Host notes
 The server also runs the original Phanero (ports 80/3000/8000) and other apps
 on 8080/3100/3939 — pick other ports. eno1 is the main LAN; eno2-4 and
-enp66s0f0-3 are spare NICs intended for the lab networks (Phase 2).
+enp66s0f0-3 are spare NICs for lab networks. Live-test bridges only on spare
+NICs; never put eno1 in access mode.

@@ -1,0 +1,305 @@
+"""Host networking for lab Network nodes and the bridged management network.
+
+Every Network node (and the bridged management network) is a Linux bridge on
+the lab host:
+
+  * internal  — bridge only; a switch between lab devices
+  * access    — the whole physical NIC is enslaved (untagged)
+  * trunk     — an 802.1Q sub-interface `<nic>.<vlan>` is enslaved
+
+Bridge names are deterministic from (nic, vlan), so every lab that points at
+the same NIC/VLAN shares one bridge — the same physical segment. The backend
+runs as root (systemd or privileged container) and drives `ip` / `iptables`
+directly against the host network namespace.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+from dataclasses import dataclass
+
+SYS_NET = "/sys/class/net"
+_IFNAME_MAX = 15
+
+
+class HostNetError(ValueError):
+    pass
+
+
+def _run(cmd: list[str], timeout: int = 20) -> tuple[int, str, str]:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", f"{cmd[0]}: not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timed out: {' '.join(cmd)}"
+
+
+def _must(cmd: list[str]) -> str:
+    rc, out, err = _run(cmd)
+    if rc != 0:
+        raise HostNetError(f"{' '.join(cmd)} failed: {(err or out).strip()}")
+    return out
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+# --- naming ------------------------------------------------------------------
+
+def _b36(n: int) -> str:
+    chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while True:
+        n, r = divmod(n, 36)
+        out = chars[r] + out
+        if n == 0:
+            return out
+
+
+def _fit(name: str, key: str) -> str:
+    """Keep names within the kernel's 15-char limit and clab's [A-Za-z0-9_-]."""
+    name = re.sub(r"[^A-Za-z0-9_-]", "-", name)
+    if len(name) <= _IFNAME_MAX:
+        return name
+    return "pl-" + hashlib.sha1(key.encode()).hexdigest()[:10]
+
+
+def segment_bridge_name(nic: str, vlan: int | None) -> str:
+    """Bridge for a physical segment. Shared by every lab using it."""
+    if vlan:
+        return _fit(f"pl-{nic}-{vlan}", f"{nic}.{vlan}")
+    return _fit(f"pl-{nic}", nic)
+
+
+def internal_bridge_name(topology_id: int, node_id: int) -> str:
+    return f"pl-sw{_b36(topology_id)}-{_b36(node_id)}"
+
+
+def bridge_port_name(topology_id: int, node_id: int, port_index: int) -> str:
+    """Host-side veth name for a device cabled to a Network node. Lives in the
+    host namespace, so it must be unique host-wide (≤ 15 chars)."""
+    return f"pl{_b36(topology_id)}n{_b36(node_id)}p{_b36(port_index)}"
+
+
+def vlan_ifname(nic: str, vlan: int) -> str:
+    name = f"{nic}.{vlan}"
+    if len(name) > _IFNAME_MAX:
+        name = f"pv{hashlib.sha1(name.encode()).hexdigest()[:6]}.{vlan}"
+    return name
+
+
+# --- discovery ---------------------------------------------------------------
+
+def _default_route_ifaces() -> set[str]:
+    rc, out, _ = _run(["ip", "-j", "route", "show", "default"])
+    if rc != 0:
+        return set()
+    try:
+        return {r.get("dev") for r in json.loads(out or "[]") if r.get("dev")}
+    except json.JSONDecodeError:
+        return set()
+
+
+def _addrs() -> dict[str, list[str]]:
+    rc, out, _ = _run(["ip", "-j", "-4", "addr", "show"])
+    res: dict[str, list[str]] = {}
+    if rc == 0:
+        try:
+            for i in json.loads(out or "[]"):
+                res[i["ifname"]] = [f"{a['local']}/{a['prefixlen']}" for a in i.get("addr_info", [])]
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return res
+
+
+def is_physical(nic: str) -> bool:
+    return os.path.exists(f"{SYS_NET}/{nic}/device") and not os.path.exists(f"{SYS_NET}/{nic}/bridge")
+
+
+def list_nics() -> list[dict]:
+    """Physical NICs with link state and what they're attached to."""
+    if not os.path.isdir(SYS_NET):
+        return []
+    default = _default_route_ifaces()
+    addrs = _addrs()
+    out = []
+    for nic in sorted(os.listdir(SYS_NET)):
+        if not is_physical(nic):
+            continue
+        master = os.path.basename(os.path.realpath(f"{SYS_NET}/{nic}/master")) if os.path.exists(f"{SYS_NET}/{nic}/master") else ""
+        speed = _read(f"{SYS_NET}/{nic}/speed")
+        out.append({
+            "name": nic,
+            "mac": _read(f"{SYS_NET}/{nic}/address"),
+            "operstate": _read(f"{SYS_NET}/{nic}/operstate"),
+            "carrier": _read(f"{SYS_NET}/{nic}/carrier") == "1",
+            "speed_mbps": int(speed) if speed.lstrip("-").isdigit() and int(speed) > 0 else None,
+            "addresses": addrs.get(nic, []),
+            "master": master,
+            # The server's own uplink: access mode would take its IP away.
+            "protected": nic in default or bool(addrs.get(nic)) and not master.startswith("pl-"),
+        })
+    return out
+
+
+def link_exists(name: str) -> bool:
+    return os.path.exists(f"{SYS_NET}/{name}")
+
+
+def carrier(name: str) -> bool:
+    return _read(f"{SYS_NET}/{name}/carrier") == "1"
+
+
+# --- validation --------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Segment:
+    mode: str              # internal | access | trunk
+    nic: str = ""
+    vlan: int = 0
+
+    @staticmethod
+    def from_dict(d: dict | None) -> "Segment":
+        d = d or {}
+        return Segment(mode=d.get("mode") or "internal", nic=(d.get("nic") or "").strip(),
+                       vlan=int(d.get("vlan") or 0))
+
+    def to_dict(self) -> dict:
+        return {"mode": self.mode, "nic": self.nic, "vlan": self.vlan}
+
+    @property
+    def configured(self) -> bool:
+        return self.mode == "internal" or bool(self.nic)
+
+    def bridge(self, topology_id: int, node_id: int) -> str:
+        if self.mode == "internal":
+            return internal_bridge_name(topology_id, node_id)
+        return segment_bridge_name(self.nic, self.vlan if self.mode == "trunk" else None)
+
+    def describe(self) -> str:
+        if self.mode == "internal":
+            return "Lab switch"
+        if not self.nic:
+            return "Not connected — choose a NIC"
+        return f"{self.nic} · VLAN {self.vlan}" if self.mode == "trunk" else f"{self.nic} (untagged)"
+
+
+def validate_segment(seg: Segment, nics: list[dict] | None = None) -> None:
+    if seg.mode not in ("internal", "access", "trunk"):
+        raise HostNetError(f"Unknown network mode '{seg.mode}'")
+    if seg.mode == "internal" or not seg.nic:
+        return
+    nics = list_nics() if nics is None else nics
+    by = {n["name"]: n for n in nics}
+    if seg.nic not in by:
+        raise HostNetError(f"'{seg.nic}' is not a physical NIC on this host")
+    if seg.mode == "trunk" and not (1 <= seg.vlan <= 4094):
+        raise HostNetError("VLAN ID must be between 1 and 4094")
+    if seg.mode == "access" and by[seg.nic]["protected"]:
+        raise HostNetError(
+            f"{seg.nic} carries this server's own connection — use trunk mode with a VLAN tag instead of taking over the whole port")
+
+
+# --- bridges -----------------------------------------------------------------
+
+def _forward_rule(bridge: str, add: bool) -> None:
+    """Docker loads br_netfilter and sets FORWARD to DROP, which would drop
+    frames bridged between lab veths and the NIC. Allow them explicitly in
+    DOCKER-USER (the chain Docker leaves to users)."""
+    rule = ["DOCKER-USER", "-i", bridge, "-o", bridge, "-j", "ACCEPT"]
+    rc, _, _ = _run(["iptables", "-C", *rule])
+    if add and rc != 0:
+        rc2, _, _ = _run(["iptables", "-L", "DOCKER-USER", "-n"])
+        if rc2 == 0:
+            _run(["iptables", "-I", *rule])
+    elif not add and rc == 0:
+        _run(["iptables", "-D", *rule])
+
+
+def ensure_bridge(name: str, seg: Segment, mtu: int | None = None) -> None:
+    """Idempotently create the bridge and attach its uplink."""
+    if not link_exists(name):
+        _must(["ip", "link", "add", name, "type", "bridge", "stp_state", "0"])
+    uplink = None
+    if seg.mode == "access" and seg.nic:
+        uplink = seg.nic
+    elif seg.mode == "trunk" and seg.nic:
+        uplink = vlan_ifname(seg.nic, seg.vlan)
+        if not link_exists(uplink):
+            _must(["ip", "link", "add", "link", seg.nic, "name", uplink, "type", "vlan", "id", str(seg.vlan)])
+        _must(["ip", "link", "set", seg.nic, "up"])
+    if uplink:
+        master = os.path.basename(os.path.realpath(f"{SYS_NET}/{uplink}/master")) if os.path.exists(f"{SYS_NET}/{uplink}/master") else ""
+        if master and master != name:
+            raise HostNetError(f"{uplink} is already attached to {master}")
+        if master != name:
+            _must(["ip", "link", "set", uplink, "master", name])
+        _must(["ip", "link", "set", uplink, "up"])
+    if mtu:
+        _run(["ip", "link", "set", name, "mtu", str(mtu)])
+    _must(["ip", "link", "set", name, "up"])
+    _forward_rule(name, True)
+
+
+def delete_bridge(name: str, seg: Segment) -> None:
+    """Remove the bridge and the VLAN sub-interface we created. The physical
+    NIC itself is detached and left down."""
+    _forward_rule(name, False)
+    if seg.mode == "trunk" and seg.nic:
+        sub = vlan_ifname(seg.nic, seg.vlan)
+        if link_exists(sub):
+            _run(["ip", "link", "del", sub])
+    elif seg.mode == "access" and seg.nic and link_exists(seg.nic):
+        _run(["ip", "link", "set", seg.nic, "nomaster"])
+    if link_exists(name):
+        _run(["ip", "link", "del", name])
+
+
+def ensure_host_address(bridge: str, cidr: str) -> None:
+    rc, out, _ = _run(["ip", "-j", "addr", "show", "dev", bridge])
+    have = set()
+    if rc == 0:
+        try:
+            for i in json.loads(out or "[]"):
+                have |= {f"{a['local']}/{a['prefixlen']}" for a in i.get("addr_info", [])}
+        except (json.JSONDecodeError, KeyError):
+            pass
+    if cidr not in have:
+        _must(["ip", "addr", "add", cidr, "dev", bridge])
+
+
+def list_plabs_bridges() -> list[str]:
+    if not os.path.isdir(SYS_NET):
+        return []
+    return sorted(n for n in os.listdir(SYS_NET)
+                  if n.startswith("pl-") and os.path.exists(f"{SYS_NET}/{n}/bridge"))
+
+
+def gc_bridges(keep: set[str]) -> list[str]:
+    """Delete Phanero Labs bridges (pl-*) nothing uses any more. VLAN
+    sub-interfaces enslaved to them are deleted; physical NICs are detached."""
+    removed = []
+    for br in list_plabs_bridges():
+        if br in keep:
+            continue
+        brif = f"{SYS_NET}/{br}/brif"
+        for member in (os.listdir(brif) if os.path.isdir(brif) else []):
+            if os.path.exists(f"/proc/net/vlan/{member}"):
+                _run(["ip", "link", "del", member])
+            elif is_physical(member):
+                _run(["ip", "link", "set", member, "nomaster"])
+        _forward_rule(br, False)
+        _run(["ip", "link", "del", br])
+        removed.append(br)
+    return removed

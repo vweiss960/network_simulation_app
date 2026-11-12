@@ -5,6 +5,7 @@ import { api } from '../../utils/api';
 import type { Device, Link } from '../../types';
 import LinkNetemModal from '../LinkNetemModal';
 import LabSummary from './LabSummary';
+import NetworkInspector from './NetworkInspector';
 
 const field = 'w-full px-2 py-1.5 text-sm rounded bg-surface-900 border border-surface-700 focus:border-primary-500 outline-none';
 const label = 'block text-[11px] uppercase tracking-wider text-surface-500 mb-1';
@@ -13,7 +14,7 @@ export default function Inspector() {
   const { selection, nodes, links } = useLabStore();
   if (selection?.type === 'node') {
     const n = nodes.find(x => x.id === selection.id);
-    if (n) return <NodeInspector key={n.id} node={n} />;
+    if (n) return n.kind === 'bridge' ? <NetworkInspector key={n.id} node={n} /> : <NodeInspector key={n.id} node={n} />;
   }
   if (selection?.type === 'link') {
     const l = links.find(x => x.id === selection.id);

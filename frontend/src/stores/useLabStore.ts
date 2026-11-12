@@ -1,11 +1,11 @@
 import { create } from 'zustand';
 import toast from 'react-hot-toast';
 import { api } from '../utils/api';
-import type { Device, DeviceKind, LabState, Link, NodeTemplate, Topology } from '../types';
+import type { Device, DeviceKind, LabState, Link, NetworkSpec, NodeTemplate, Topology } from '../types';
 import type { ConsoleTab } from '../components/LabConsoleDrawer';
 
 export type Selection = { type: 'node' | 'link'; id: number } | null;
-export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'users';
+export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users';
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -38,7 +38,7 @@ interface LabStore {
   select: (s: Selection) => void;
 
   addNode: (templateId: number, x: number, y: number) => Promise<void>;
-  updateNode: (id: number, data: Partial<Device> & { interface_count?: number; password?: string }) => Promise<boolean>;
+  updateNode: (id: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec }) => Promise<boolean>;
   moveNodes: (positions: Record<number, [number, number]>) => void;
   deleteNode: (id: number) => Promise<void>;
   connect: (a: number, b: number, aIf?: string, bIf?: string) => Promise<void>;

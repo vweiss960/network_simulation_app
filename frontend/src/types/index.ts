@@ -23,6 +23,27 @@ export interface Device {
   image_ref: string; icon: string; x: number; y: number; interfaces: Iface[]; mgmt_ipv4: string;
   username: string; startup_config: string; min_memory_mb: number; min_cpu_cores: number;
   color: string; notes: string;
+  network: NetworkSpec | null; network_label: string;
+}
+
+export interface NetworkSpec { mode: 'internal' | 'access' | 'trunk'; nic: string; vlan: number }
+
+export interface HostNic {
+  name: string; mac: string; operstate: string; carrier: boolean; speed_mbps: number | null;
+  addresses: string[]; master: string; protected: boolean;
+}
+
+export interface MgmtSettings {
+  mode: 'internal' | 'bridged'; nic: string; vlan: number; subnet: string; gateway: string;
+  host_ip: string; pool_start: string; pool_end: string; mtu: number;
+}
+
+export interface LabNetworkInfo {
+  settings: MgmtSettings;
+  status: { ok: boolean; detail: string; bridge?: string; bridge_exists?: boolean; nic_carrier?: boolean };
+  nics: HostNic[];
+  bridges: string[];
+  usage: { topology_id: number; topology: string; node: string; nic: string; vlan: number; bridge: string }[];
 }
 
 export interface Link {
@@ -34,7 +55,8 @@ export type LabStatus = 'idle' | 'deploying' | 'running' | 'syncing' | 'destroyi
 export type ReadyState = 'absent' | 'booting' | 'up' | 'down' | 'starting' | 'unknown';
 
 export interface NodeRuntime {
-  container: string; state: string; ready_state: ReadyState; uptime_sec: number | null; mgmt_ip: string;
+  container: string | null; state: string; ready_state: ReadyState; uptime_sec: number | null; mgmt_ip: string;
+  bridge?: string; carrier?: boolean | null;
 }
 
 export interface LabState {

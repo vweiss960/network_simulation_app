@@ -41,8 +41,9 @@ export default function Canvas() {
         kindLabel: kinds[n.kind]?.label ?? n.kind,
         mgmtIp: rt?.mgmt_ip || n.mgmt_ipv4,
         ready: rt?.ready_state ?? 'absent',
-        noImage: !n.image_ref,
+        noImage: n.kind === 'bridge' ? (n.network?.mode !== 'internal' && !n.network?.nic) : !n.image_ref,
         deployed,
+        networkLabel: n.kind === 'bridge' ? n.network_label : undefined,
       },
     };
   }), [nodes, lab, kinds, selection, deployed]);
@@ -89,6 +90,14 @@ export default function Canvas() {
     const live = rt && rt.state !== 'absent';
     const running = rt?.state === 'running';
     select({ type: 'node', id });
+    if (node?.kind === 'bridge') {
+      setMenu({ x: e.clientX, y: e.clientY, items: [
+        { label: `Delete ${node.name}`, danger: true, onClick: () => {
+          if (!deployed || confirm(`Delete ${node.name}? Devices cabled to it lose that connection.`)) deleteNode(id);
+        } },
+      ] });
+      return;
+    }
     setMenu({
       x: e.clientX, y: e.clientY, items: [
         { label: 'Open console', onClick: () => openConsole(id), disabled: !running },

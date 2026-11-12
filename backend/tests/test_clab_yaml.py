@@ -49,14 +49,6 @@ def test_xrd_startup_config_keeps_clab_defaults(db, tmp_path, monkeypatch):
     assert "ipv4 address 1.1.1.1/32" in body and body.rstrip().endswith("end")
 
 
-def test_mgmt_ip_emitted_when_assigned(db):
-    t = make_topology(db)
-    n = make_node(db, t, name="A")
-    n.mgmt_ipv4 = "10.50.0.10"
-    db.flush()
-    assert _doc(db, t)["topology"]["nodes"]["A"]["mgmt-ipv4"] == "10.50.0.10"
-
-
 def test_resource_estimate_uses_kind_defaults(db):
     t = make_topology(db)
     make_node(db, t, kind="cisco_xrd", image="x")

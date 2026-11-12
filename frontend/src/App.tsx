@@ -1,12 +1,13 @@
 import { useEffect } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { Boxes, HardDrive, LayoutGrid, LogOut, Users } from 'lucide-react';
+import { Boxes, Cable, HardDrive, LayoutGrid, LogOut, Users } from 'lucide-react';
 import { useAuthStore } from './stores/useAuthStore';
 import { useLabStore, type Page } from './stores/useLabStore';
 import LoginPage, { PhaneroLogo } from './components/LoginPage';
 import LabsHome from './components/pages/LabsHome';
 import ImagesPage from './components/pages/ImagesPage';
 import TemplatesPage from './components/pages/TemplatesPage';
+import NetworkPage from './components/pages/NetworkPage';
 import Workspace from './components/workspace/Workspace';
 import UserManagementPanel from './components/panels/UserManagementPanel';
 
@@ -14,6 +15,7 @@ const NAV: { page: Page; label: string; icon: typeof Boxes; admin?: boolean }[] 
   { page: 'labs', label: 'Labs', icon: LayoutGrid },
   { page: 'templates', label: 'Templates', icon: Boxes },
   { page: 'images', label: 'Images', icon: HardDrive },
+  { page: 'network', label: 'Network', icon: Cable },
   { page: 'users', label: 'Users', icon: Users, admin: true },
 ];
 
@@ -52,6 +54,7 @@ export default function App() {
         {inWorkspace ? <Workspace />
           : page === 'templates' ? <TemplatesPage />
           : page === 'images' ? <ImagesPage />
+          : page === 'network' ? <NetworkPage />
           : page === 'users' ? <div className="max-w-4xl mx-auto p-6"><UserManagementPanel /></div>
           : <LabsHome />}
       </div>

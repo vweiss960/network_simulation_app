@@ -14,7 +14,7 @@ export function shortIf(name: string): string {
   const m = name.match(/^([A-Za-z]+)(.*)$/);
   if (!m) return name;
   const [, word, rest] = m;
-  if (/^(eth|e)$/i.test(word) || word.length <= 3) return name;
+  if (/^(eth|e|port)$/i.test(word) || word.length <= 3) return name;
   return word.slice(0, 2) + rest;
 }
 

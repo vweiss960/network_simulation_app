@@ -1,4 +1,4 @@
-import type { Device, DeviceKind, LabState, Link, NodeTemplate, Topology } from '../types';
+import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Topology } from '../types';
 
 const BASE = '/api';
 
@@ -65,7 +65,7 @@ export const api = {
   listNodes: (tid: number) => request<Device[]>(`/topologies/${tid}/nodes/`),
   createNode: (tid: number, data: { template_id?: number; kind?: string; image_ref?: string; name?: string; x: number; y: number }) =>
     request<Device>(`/topologies/${tid}/nodes/`, json('POST', data)),
-  updateNode: (tid: number, nid: number, data: Partial<Device> & { interface_count?: number; password?: string }) =>
+  updateNode: (tid: number, nid: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec }) =>
     request<Device>(`/topologies/${tid}/nodes/${nid}`, json('PATCH', data)),
   saveNodePositions: (tid: number, positions: Record<number, [number, number]>) =>
     request<{ ok: boolean }>(`/topologies/${tid}/nodes/positions`, json('PUT', { positions })),
@@ -108,6 +108,11 @@ export const api = {
   loadLabImage: (filename: string) => request<any>('/lab/images/load', json('POST', { filename })),
   getHostCapacity: () =>
     request<{ memory_mb: number; memory_available_mb: number; cpu_cores: number; hugepages_count: number }>('/lab/host-capacity'),
+
+  // Host networking
+  getLabNetwork: () => request<LabNetworkInfo>('/lab-network/'),
+  putLabNetwork: (data: MgmtSettings) =>
+    request<{ settings: MgmtSettings; status: LabNetworkInfo['status'] }>('/lab-network/', json('PUT', data)),
 
   // Users
   listUsers: () => request<any[]>('/auth/users'),

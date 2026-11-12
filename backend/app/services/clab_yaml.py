@@ -15,20 +15,9 @@ from app.models.topology import Topology
 from app.services.lab_view import compute_lab_view
 
 
-MGMT_NETWORK = os.environ.get("PLABS_LAB_MGMT_NETWORK", "plabs-mgmt").strip() or "plabs-mgmt"
-DEFAULT_MGMT_SUBNET = "172.30.0.0/22"
-
-
-def _mgmt_settings() -> dict:
-    """Management network shared by every Phanero Labs lab (one Docker network,
-    so devices in different labs can reach each other and the host).
-    Phase 2 replaces the env lookup with the Lab Network settings (bridged NIC
-    + static per-node IPs)."""
-    return {
-        "network": MGMT_NETWORK,
-        "subnet": os.environ.get("PLABS_LAB_MGMT_SUBNET", "").strip() or DEFAULT_MGMT_SUBNET,
-        "subnet6": os.environ.get("PLABS_LAB_MGMT_SUBNET6", "").strip(),
-    }
+def _mgmt_settings(db: Session):
+    from app.services.lab_network import get_settings
+    return get_settings(db)
 
 
 def _first_host(subnet: str, default: str) -> str:
@@ -80,7 +69,7 @@ def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str) -> str:
     )
 
 
-def generate_clab_yaml(db: Session, topology_id: int) -> dict:
+def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = True) -> dict:
     topology = db.query(Topology).filter(Topology.id == topology_id).first()
     if not topology:
         raise ValueError(f"Topology {topology_id} not found")
@@ -89,14 +78,23 @@ def generate_clab_yaml(db: Session, topology_id: int) -> dict:
     lab_name = view["lab_name"]
     lab_dir = LAB_STATE_DIR / lab_name
     configs_dir = lab_dir / "configs"
-    mgmt = _mgmt_settings()
-    gw_v4 = _first_host(mgmt["subnet"], "172.20.20.1")
-    gw_v6 = _first_host(mgmt["subnet6"], "2001:172:20:20::1")
+    mgmt = _mgmt_settings(db)
+    if mgmt.bridged and assign_ips:
+        from app.services.lab_network import assign_ips as _assign
+        ips = _assign(db, mgmt, [n["id"] for n in view["nodes"] if not n["is_bridge"]])
+        for n in view["nodes"]:
+            if n["id"] in ips:
+                n["mgmt_ip"] = ips[n["id"]]
+    gw_v4 = mgmt.effective_gateway()
+    gw_v6 = "2001:172:20:20::1"
 
     clab_nodes: dict = {}
     included_nodes = []
     rendered_config_paths: list[str] = []
     for n in view["nodes"]:
+        if n["is_bridge"]:
+            clab_nodes[n["clab_name"]] = {"kind": "bridge"}
+            continue
         entry: dict = {"kind": n["lab_kind"], "image": n["lab_image"]}
         body = (n.get("startup_config") or "").strip("\n")
         if body:
@@ -109,7 +107,7 @@ def generate_clab_yaml(db: Session, topology_id: int) -> dict:
             # Relative to the YAML so clab resolves it from the lab dir.
             entry["startup-config"] = f"configs/{n['clab_name']}.cfg"
             rendered_config_paths.append(str(cfg_path))
-        if n.get("mgmt_ip"):
+        if mgmt.bridged and n.get("mgmt_ip"):
             entry["mgmt-ipv4"] = n["mgmt_ip"]
         clab_nodes[n["clab_name"]] = entry
         included_nodes.append({
@@ -130,9 +128,9 @@ def generate_clab_yaml(db: Session, topology_id: int) -> dict:
             "endpoints": [f"{a}:{l['source_interface']}", f"{b}:{l['target_interface']}"],
         })
 
-    m = {"network": mgmt["network"], "ipv4-subnet": mgmt["subnet"]}
-    if mgmt["subnet6"]:
-        m["ipv6-subnet"] = mgmt["subnet6"]
+    m = {"network": mgmt.docker_network, "ipv4-subnet": mgmt.subnet}
+    if mgmt.bridged:
+        m["ipv4-gw"] = gw_v4
     doc: dict = {"name": lab_name, "mgmt": m}
     doc["topology"] = {
         "nodes": clab_nodes,
@@ -149,6 +147,8 @@ def generate_clab_yaml(db: Session, topology_id: int) -> dict:
         "rendered_config_paths": rendered_config_paths,
         "resource_estimate": {
             "memory_mb": sum(n["min_memory_mb"] for n in included_nodes),
+            "bridges": [{"node_id": n["id"], "bridge": n["bridge"], "segment": n["segment"]}
+                        for n in view["nodes"] if n["is_bridge"]],
             "cpu_cores": sum(n["min_cpu_cores"] for n in included_nodes),
             "requires_hugepages": any(n["requires_hugepages"] for n in included_nodes),
             "node_count": len(included_nodes),

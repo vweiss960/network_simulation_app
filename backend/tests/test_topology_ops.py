@@ -63,3 +63,9 @@ def test_shrinking_interfaces_blocked_when_cabled(db):
         set_interface_count(db, a, 2)
     set_interface_count(db, a, 3)
     assert len(a.interfaces) == 3
+
+
+def test_nodes_without_position_are_spread_on_a_grid(db):
+    t = make_topology(db)
+    pos = {(n.x, n.y) for n in (make_node(db, t) for _ in range(6))}
+    assert len(pos) == 6

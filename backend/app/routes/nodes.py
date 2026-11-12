@@ -9,13 +9,15 @@ from app.models.node_instance import NodeInstance
 from app.models.topology import Topology
 from app.schemas.schemas import NodeCreate, NodeUpdate, NodeOut, NodePositions
 from app.services import lab_service
-from app.services.topology_ops import TopologyError, create_node, set_interface_count
+from app.services.device_kinds import is_bridge
+from app.services.host_net import Segment
+from app.services.topology_ops import TopologyError, create_node, set_interface_count, set_network
 
 router = APIRouter(prefix="/api/topologies/{topology_id}/nodes", tags=["nodes"])
 
 # Fields whose change alters the deployed device (→ reconcile). Position,
 # colour and notes are canvas-only.
-_DEPLOY_FIELDS = {"name", "image_ref", "interface_count", "startup_config", "username", "password"}
+_DEPLOY_FIELDS = {"name", "image_ref", "interface_count", "startup_config", "username", "password", "network"}
 
 
 def node_out(n: NodeInstance) -> dict:
@@ -27,6 +29,8 @@ def node_out(n: NodeInstance) -> dict:
         "startup_config": n.startup_config or "",
         "min_memory_mb": n.min_memory_mb or 0, "min_cpu_cores": n.min_cpu_cores or 0,
         "color": n.color or "", "notes": n.notes or "",
+        "network": n.network if is_bridge(n.kind) else None,
+        "network_label": Segment.from_dict(n.network).describe() if is_bridge(n.kind) else "",
     }
 
 
@@ -92,7 +96,12 @@ def update_node(topology_id: int, node_id: int, data: NodeUpdate, db: Session = 
         if clash:
             raise HTTPException(400, f"A device named '{name}' already exists")
         n.name = name
-    if "interface_count" in patch:
+    if patch.get("network") is not None:
+        try:
+            set_network(db, n, patch["network"])
+        except TopologyError as e:
+            raise HTTPException(400, str(e))
+    if "interface_count" in patch and not is_bridge(n.kind):
         try:
             set_interface_count(db, n, patch["interface_count"])
         except TopologyError as e:

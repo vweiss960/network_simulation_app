@@ -27,7 +27,8 @@ export default function Palette() {
             <div className="space-y-1">
               {ts.map(t => {
                 const Icon = deviceIcon(t.icon);
-                const missing = !t.image_ref || t.image_available === false;
+                const isNet = t.kind === 'bridge';
+                const missing = !isNet && (!t.image_ref || t.image_available === false);
                 return (
                   <div key={t.id} draggable
                     onDragStart={e => { e.dataTransfer.setData(TEMPLATE_DND, String(t.id)); e.dataTransfer.effectAllowed = 'copy'; }}
@@ -37,7 +38,7 @@ export default function Palette() {
                     <div className="min-w-0 flex-1">
                       <div className={`text-xs truncate ${missing ? 'text-surface-400' : 'text-surface-100'}`}>{t.name}</div>
                       <div className="text-[10px] text-surface-500 truncate">
-                        {kinds[t.kind]?.is_vm ? 'VM' : 'container'}
+                        {isNet ? 'network' : kinds[t.kind]?.is_vm ? 'VM' : 'container'}
                         {missing && <span className="text-amber-400"> · {t.image_ref ? 'image not loaded' : 'no image'}</span>}
                       </div>
                     </div>

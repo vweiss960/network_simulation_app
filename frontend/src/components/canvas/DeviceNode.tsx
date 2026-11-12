@@ -11,6 +11,7 @@ export interface DeviceNodeData {
   ready: ReadyState;
   noImage: boolean;
   deployed: boolean;
+  networkLabel?: string;   // Network nodes: "eno2 · VLAN 120" / "Lab switch"
 }
 
 const RING: Record<ReadyState, string> = {
@@ -42,13 +43,13 @@ function DeviceNode({ data, selected }: NodeProps<DeviceNodeData>) {
           className="!w-3 !h-3 !bg-primary-400 !border-0 !-right-1.5 opacity-0 group-hover:opacity-100 plabs-handle" />
       </div>
       <div className="mt-1 text-xs font-semibold text-surface-100 leading-tight">{data.name}</div>
-      <div className="text-[10px] text-surface-400 leading-tight">{data.kindLabel}</div>
-      {data.deployed && (
+      <div className="text-[10px] text-surface-400 leading-tight">{data.networkLabel ?? data.kindLabel}</div>
+      {data.deployed && data.networkLabel === undefined && (
         <div className="text-[10px] font-mono leading-tight text-surface-300">
           {data.mgmtIp || STATE_LABEL[data.ready]}
         </div>
       )}
-      {data.noImage && <div className="text-[10px] text-amber-400 leading-tight">no image</div>}
+      {data.noImage && <div className="text-[10px] text-amber-400 leading-tight">{data.networkLabel !== undefined ? 'not connected' : 'no image'}</div>}
     </div>
   );
 }

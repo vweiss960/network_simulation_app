@@ -26,3 +26,12 @@ def test_features_endpoint_is_public():
     assert raw.get("/api/features").status_code == 200
     # sanity: the override fixture and this raw client target the same hook
     assert get_current_user is not None
+
+
+def test_add_missing_columns_is_additive(db):
+    from sqlalchemy import text
+    from app.models.database import add_missing_columns, engine
+    with engine.begin() as c:
+        c.execute(text("ALTER TABLE node_instances DROP COLUMN network_json"))
+    assert "node_instances.network_json" in add_missing_columns()
+    assert add_missing_columns() == []

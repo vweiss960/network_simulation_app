@@ -7,3 +7,4 @@ from app.models.link import Link  # noqa: F401
 from app.models.lab_deployment import LabDeployment  # noqa: F401
 from app.models.device_image import DeviceImage  # noqa: F401
 from app.models.lab_gnmi_subscription import LabGnmiSubscription  # noqa: F401
+from app.models.app_setting import AppSetting  # noqa: F401

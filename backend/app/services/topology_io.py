@@ -44,6 +44,9 @@ def export_topology(db: Session, topology_id: int) -> dict:
              "interfaces": len(n.interfaces), "position": [round(n.x or 0, 1), round(n.y or 0, 1)]}
         if n.startup_config:
             d["startup_config"] = n.startup_config
+        if n.kind == "bridge":
+            d.pop("image")
+            d["network"] = n.network
         out_nodes.append(d)
     links = db.query(Link).filter(Link.topology_id == topology_id).order_by(Link.id).all()
     return {
@@ -123,6 +126,7 @@ def build_into(db: Session, topology: Topology, spec: dict) -> None:
             db, topology.id, name=nd.get("name"), kind=kind, image_ref=nd.get("image") or "",
             icon=nd.get("icon"), interface_count=nd.get("interfaces"),
             x=float(pos[0]), y=float(pos[1]), startup_config=nd.get("startup_config") or "",
+            network=nd.get("network"),
         )
         ids[n.name] = n.id
     for row in spec.get("links") or []:

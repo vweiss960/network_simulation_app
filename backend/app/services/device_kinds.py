@@ -178,7 +178,23 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
     ),
 ]}
 
+# Network nodes: a Linux bridge on the lab host, optionally uplinked to a
+# physical NIC (access) or one VLAN on it (trunk). Not a container — its
+# "interfaces" are bridge ports, created on demand as devices are cabled to it.
+BRIDGE_KIND = "bridge"
+KINDS[BRIDGE_KIND] = DeviceKind(
+    kind=BRIDGE_KIND, label="Network", family="bridge",
+    kernel_iface=_pattern("port{n1}"), config_iface=_pattern("port{n1}"),
+    exec_cli=[], ssh=False, boot_seconds=0, min_memory_mb=0, min_cpu_cores=0,
+    max_interfaces=128, default_interfaces=0,
+    description="Connects device ports to a physical NIC, a VLAN on a trunk NIC, or an internal lab switch.",
+)
+
 DEFAULT_KIND = "linux"
+
+
+def is_bridge(kind: str | None) -> bool:
+    return kind == BRIDGE_KIND
 
 
 def get_kind(kind: str | None) -> DeviceKind:
