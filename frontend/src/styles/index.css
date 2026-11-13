@@ -47,8 +47,11 @@ body {
 
 /* Opening a lab: the canvas stays hidden until its view is fitted, then
    devices and drawings settle in place (no jump from the default viewport). */
+/* opacity, not visibility: React Flow sets visibility: visible on each node
+   once it's measured, which overrides a hidden parent and leaked devices at
+   their pre-fit positions. A parent's opacity can't be overridden. */
 .plabs-hidden .react-flow__viewport,
-.plabs-hidden .react-flow__edgelabel-renderer { visibility: hidden; }
+.plabs-hidden .react-flow__edgelabel-renderer { opacity: 0; }
 /* (inner element: the node itself is positioned with transform) */
 .plabs-reveal .react-flow__node > * { animation: plabs-settle 650ms cubic-bezier(.2,.8,.2,1) 120ms both; }
 .plabs-reveal .react-flow__edges, .plabs-reveal .react-flow__edgelabel-renderer { animation: plabs-fade 600ms ease 200ms both; }
