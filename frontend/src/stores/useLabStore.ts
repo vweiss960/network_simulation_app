@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import toast from 'react-hot-toast';
-import { api, type CaptureInfo } from '../utils/api';
+import { api, type CaptureInfo, type StopResult } from '../utils/api';
 import type { Annotation, Device, DeviceKind, LabState, Link, NetworkSpec, NodeTemplate, Topology } from '../types';
 import type { ConsoleTab } from '../components/LabConsoleDrawer';
 
@@ -75,6 +75,8 @@ interface LabStore {
   /** all = power every device on first (Deploy / Start all); else only devices that are on. */
   deploy: (all?: boolean) => Promise<void>;
   destroy: () => Promise<void>;
+  /** Save configs on the devices and stop them (kept). Returns the result, or null on error. */
+  stopLab: (force?: boolean) => Promise<StopResult | null>;
   nodeAction: (id: number, action: 'start' | 'stop' | 'restart') => Promise<void>;
 
   openConsole: (nodeId: number, type?: 'console' | 'logs', cli?: string) => void;
@@ -265,12 +267,15 @@ export const useLabStore = create<LabStore>((set, get) => ({
 
   deploy: async (all = false) => {
     const tid = get().currentTopologyId!;
-    set({ busy: 'Deploying…' });
+    const wasStopped = get().lab?.status === 'stopped';
+    set({ busy: wasStopped ? 'Starting…' : 'Deploying…' });
     const poll = setInterval(() => get().pollLab(), 3000);
     try {
       const r = await api.deployLab(tid, all);
       const missing = (r.skipped_nodes ?? []).filter((s: { off?: boolean }) => !s.off);
-      if (missing.length) {
+      if (r.started) {
+        toast.success('Lab started — devices come back with their saved config');
+      } else if (missing.length) {
         toast(`Skipped ${missing.length} device(s) without an image`, { icon: '⚠️' });
       } else {
         toast.success('Lab deployed');
@@ -294,6 +299,21 @@ export const useLabStore = create<LabStore>((set, get) => ({
       const keep = get().consoleTabs.filter(t => t.type === 'capture');
       set({ consoleTabs: keep, activeConsoleId: keep[keep.length - 1]?.id ?? null, capturing: {} });
     } catch (e) { toast.error(errMsg(e)); }
+    finally { set({ busy: null }); get().pollLab(); }
+  },
+
+  stopLab: async (force = false) => {
+    const tid = get().currentTopologyId!;
+    set({ busy: force ? 'Stopping…' : 'Saving configs…' });
+    try {
+      const r = await api.stopLab(tid, force);
+      if (r.stopped) {
+        const n = r.saved.length;
+        toast.success(`Lab stopped${n ? ` — ${n} device config${n === 1 ? '' : 's'} saved on the devices` : ''}`);
+        set({ capturing: {} });
+      }
+      return r;
+    } catch (e) { toast.error(errMsg(e)); return null; }
     finally { set({ busy: null }); get().pollLab(); }
   },
 

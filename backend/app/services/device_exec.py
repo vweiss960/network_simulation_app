@@ -261,6 +261,29 @@ async def configure(t: Target, config: str | list[str], timeout: float = 120, re
     return {"ok": not errors, "errors": errors, "output": "\n".join(x for x in transcript if x)}
 
 
+async def save_config(t: Target, timeout: float = 120) -> str:
+    """Make the running config the device's own startup config, so it comes
+    back after the device is stopped and started. Returns what was done."""
+    if not t.uses_ssh:
+        if not _is_frr(t):
+            return "nothing to save (plain Linux)"
+        rc, text = await asyncio.to_thread(_docker_exec, t, ["vtysh", "-c", "write memory"], int(timeout))
+        if rc != 0:
+            raise ExecError(f"{t.name}: write memory failed: {text.strip()[-200:]}")
+        return "write memory"
+    if t.family == "iosxr":
+        return "already saved (IOS-XR commits persist)"
+    if t.family not in ("iosxe", "ios", "eos"):
+        raise ExecError(f"{t.name}: saving the config isn't implemented for {t.family}")
+    async with CliSession(t, timeout) as s:
+        out = await s.send("write memory", timeout=timeout, questions=True)
+        if not s.prompt:                        # "[confirm]" / overwrite questions
+            out += "\n" + await s.send("", timeout=timeout)
+    if re.search(r"%\s*(Error|Invalid|Failed)|\[FAILED\]", out):
+        raise ExecError(f"{t.name}: write memory failed: {out.strip().splitlines()[-1]}")
+    return "write memory"
+
+
 def normalize_config(family: str, text: str) -> str:
     """Strip banners / timestamps a device prints around its running config."""
     out = []

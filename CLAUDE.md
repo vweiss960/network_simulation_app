@@ -172,6 +172,15 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
     `clab_yaml.day0_config` makes IOS/XE running configs bootable (drops the
     self-signed cert — it crashed CVAC — license/platform/version lines, adds
     explicit `no shutdown`, keeps `end`).
+- Lab power: **Stop** (`POST …/lab/stop`, `lab_service.stop_lab`) has every
+  running device save its running config as its own startup config
+  (`device_exec.save_config`: write memory / FRR write; XR commits persist),
+  refuses if one can't unless `force`, then `containerlab stop` — containers
+  are kept, status `stopped`, host networking (bridges, mgmt network, leases)
+  kept. Deploy on a stopped lab = `start_lab`: `containerlab start` on the
+  last applied YAML, patches, then a reconcile for edits made while stopped
+  (request_sync is a no-op while stopped). **Wipe** (UI name for destroy)
+  needs the lab name typed and snapshots running devices first by default.
 - Console for a booting vrnetlab VM streams `docker logs` (vrnetlab owns the
   serial port while booting) and switches to SSH when it answers.
 

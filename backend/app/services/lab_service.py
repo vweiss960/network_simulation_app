@@ -903,7 +903,7 @@ def _ensure_fresh_yaml(db: Session, topology_id: int) -> tuple[Path, str, dict]:
 
 def _active_specs(db: Session, exclude: Optional[int] = None) -> list[dict]:
     out = []
-    for d in db.query(LabDeployment).filter(LabDeployment.status.in_(_ACTIVE_STATES + ("failed",))).all():
+    for d in db.query(LabDeployment).filter(LabDeployment.status.in_(_ACTIVE_STATES + ("failed", "stopped"))).all():
         if d.topology_id == exclude or not d.lab_name:
             continue
         try:
@@ -1165,7 +1165,10 @@ def _set_enabled(db: Session, topology_id: int, only: Optional[int] = None) -> N
 
 
 def deploy_lab(db: Session, topology_id: int, start_all: bool = False) -> dict:
-    """Deploy (or reconcile) the topology's powered-on devices."""
+    """Deploy (or reconcile) the topology's powered-on devices. A stopped lab
+    is started instead: the same containers come back."""
+    if _get_or_create_deployment(db, topology_id).status == "stopped":
+        return start_lab(db, topology_id, start_all=start_all)
     if start_all:
         _set_enabled(db, topology_id)
     _apply_pending_changes(db, topology_id)
@@ -1287,8 +1290,10 @@ def _node_short_name(db: Session, topology_id: int, node_id: int) -> str:
 
 def _node_action(db: Session, topology_id: int, node_id: int, action: str, timeout: int) -> dict:
     dep = _get_or_create_deployment(db, topology_id)
-    if dep.status not in _ACTIVE_STATES + ("failed",) or not dep.lab_name:
+    if dep.status not in _ACTIVE_STATES + ("failed", "stopped") or not dep.lab_name:
         raise LabError("The lab is not deployed. Deploy it first.")
+    if dep.status == "stopped" and action != "start":
+        raise LabError("The lab is stopped. Start it first.")
     short = _node_short_name(db, topology_id, node_id)
     with _lock_for(topology_id):
         yaml_path = _yaml_path_for(dep.lab_name)
@@ -1299,6 +1304,11 @@ def _node_action(db: Session, topology_id: int, node_id: int, action: str, timeo
     if rc != 0:
         raise LabError(f"containerlab {action} --node {short} failed: {err or out}")
     if action in ("start", "restart"):
+        dep = _get_or_create_deployment(db, topology_id)
+        if dep.status == "stopped":            # one device of a stopped lab: the lab is live again
+            dep.status = "running"
+            db.commit()
+            _prepare_host_network(db, topology_id, generate_clab_yaml(db, topology_id, assign_ips=False))
         _apply_patches(generate_clab_yaml(db, topology_id))    # the device brought new cable halves
     return {"ok": True, "node_id": node_id, "action": action}
 
@@ -1324,6 +1334,11 @@ def start_node(db: Session, topology_id: int, node_id: int) -> dict:
     if not node or node.topology_id != topology_id:
         raise LabError("Device not found")
     dep = _get_or_create_deployment(db, topology_id)
+    if dep.status == "stopped" and node.enabled != 0 and not node.pending:
+        return _node_action(db, topology_id, node_id, "start", 300)
+    if dep.status == "stopped":                 # off, or with saved changes: start the lab first
+        start_lab(db, topology_id)
+        dep = _get_or_create_deployment(db, topology_id)
     if dep.status not in _ACTIVE_STATES and dep.status != "failed":
         _set_enabled(db, topology_id, only=node_id)
         return {**deploy_lab(db, topology_id), "node_id": node_id, "action": "deploy"}
@@ -1354,6 +1369,110 @@ def start_node(db: Session, topology_id: int, node_id: int) -> dict:
 
 def stop_node(db: Session, topology_id: int, node_id: int) -> dict:
     return _node_action(db, topology_id, node_id, "stop", 180)
+
+
+def save_device_configs(db: Session, topology_id: int) -> dict:
+    """Save every running device's running config as its own startup config
+    (write memory / FRR write; IOS-XR commits are already persistent)."""
+    import asyncio
+    from app.services import device_exec
+    from app.services.device_kinds import is_bridge
+    state = get_deployment_state(db, topology_id)
+    targets, skipped = [], []
+    for n in db.query(NodeInstance).filter(NodeInstance.topology_id == topology_id).order_by(NodeInstance.id):
+        if is_bridge(n.kind):
+            continue
+        if state["nodes"].get(n.id, {}).get("state") != "running":
+            skipped.append(n.name)
+            continue
+        try:
+            targets.append(device_exec.target_for(db, topology_id, n.id))
+        except device_exec.ExecError as e:
+            skipped.append(f"{n.name} ({e})")
+
+    async def one(t):
+        try:
+            return t.name, await asyncio.wait_for(device_exec.save_config(t), 150), None
+        except asyncio.TimeoutError:
+            return t.name, None, "timed out"
+        except Exception as e:                  # noqa: BLE001 — reported per device
+            return t.name, None, str(e)
+
+    async def all_():
+        return await asyncio.gather(*(one(t) for t in targets))
+
+    results = asyncio.run(all_()) if targets else []
+    return {"saved": [{"device": n, "how": how} for n, how, err in results if err is None],
+            "failed": [{"device": n, "error": err} for n, _h, err in results if err is not None],
+            "skipped": skipped}
+
+
+def stop_lab(db: Session, topology_id: int, force: bool = False) -> dict:
+    """Stop every device but keep it: each saves its running config as its
+    own startup config first, then its container is stopped (not removed).
+    Start brings the same devices back. If a device can't save its config
+    nothing is stopped, unless `force`."""
+    dep = _get_or_create_deployment(db, topology_id)
+    if dep.status not in ("running", "syncing", "failed") or not dep.lab_name:
+        raise LabError("The lab isn't running.")
+    saved = save_device_configs(db, topology_id)
+    if saved["failed"] and not force:
+        return {"ok": False, "stopped": False, **saved}
+    _sync_pending.discard(topology_id)
+    try:
+        from app.services import packet_capture
+        packet_capture.stop_topology(topology_id)
+    except Exception:
+        pass
+    with _lock_for(topology_id):
+        yaml_path = _yaml_path_for(dep.lab_name)
+        if not yaml_path.exists():
+            yaml_path, _lab, _spec = _ensure_fresh_yaml(db, topology_id)
+        rc, out, err = _run(["containerlab", "stop", "-t", str(yaml_path)], timeout=600, cwd=str(yaml_path.parent))
+        dep = _get_or_create_deployment(db, topology_id)
+        if rc != 0:
+            dep.last_error = (err or out or "containerlab stop failed")[-4000:]
+            db.commit()
+            raise LabError(f"containerlab stop failed: {dep.last_error}")
+        dep.status, dep.last_error, dep.finished_at = "stopped", "", datetime.utcnow()
+        db.commit()
+    return {"ok": True, "stopped": True, **saved}
+
+
+def start_lab(db: Session, topology_id: int, start_all: bool = False) -> dict:
+    """Start a stopped lab's devices (the same containers, with the config
+    they saved), then apply anything edited while it was stopped."""
+    if start_all:
+        _set_enabled(db, topology_id)
+    with _lock_for(topology_id):
+        dep = _get_or_create_deployment(db, topology_id)
+        if dep.status != "stopped" or not dep.lab_name:
+            raise LabError("The lab isn't stopped.")
+        yaml_path = _yaml_path_for(dep.lab_name)
+        applied = dep.last_yaml or ""
+        if applied:                              # start what was deployed; edits reconcile after
+            yaml_path.write_text(applied)
+        spec = generate_clab_yaml(db, topology_id)
+        _assert_capacity(db, topology_id, spec)
+        _prepare_host_network(db, topology_id, spec)
+        dep.status, dep.started_at, dep.finished_at = "deploying", datetime.utcnow(), None
+        db.commit()
+        rc, out, err = _run(["containerlab", "start", "-t", str(yaml_path)], timeout=900, cwd=str(yaml_path.parent))
+        dep = _get_or_create_deployment(db, topology_id)
+        dep.finished_at = datetime.utcnow()
+        if rc != 0:
+            dep.status = "failed"
+            dep.last_error = (err or out or "containerlab start failed")[-4000:]
+            db.commit()
+            raise LabError(f"containerlab start failed: {dep.last_error}")
+        dep.status, dep.last_error = "running", ""
+        db.commit()
+        _apply_patches(spec)
+    # Devices added / changed / powered on while the lab was stopped.
+    _apply_pending_changes(db, topology_id)
+    _schedule_sync(topology_id)
+    _start_addons(db, topology_id, dep.lab_name)
+    return {"ok": True, "lab_name": dep.lab_name, "started": True, "output_tail": (out or "")[-2000:]}
 
 
 def restart_node(db: Session, topology_id: int, node_id: int) -> dict:

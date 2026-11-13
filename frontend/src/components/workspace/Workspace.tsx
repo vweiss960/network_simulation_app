@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ReactFlowProvider } from 'reactflow';
-import { Info, Loader2, Play, RefreshCcw, Square, X } from 'lucide-react';
+import { Info, Loader2, Play, RefreshCcw, Square, Trash2, X } from 'lucide-react';
 import { PhaneroLogo } from '../LoginPage';
 import { useLabStore } from '../../stores/useLabStore';
-import { api } from '../../utils/api';
+import { api, type StopResult } from '../../utils/api';
+import { StopFailedDialog, WipeLabDialog } from './LabPowerDialogs';
 import Canvas from '../canvas/Canvas';
 import Inspector from './Inspector';
 import LabSummary from './LabSummary';
@@ -19,10 +20,11 @@ const STATUS_STYLE: Record<LabStatus, string> = {
   running: 'bg-emerald-900/60 text-emerald-200',
   destroying: 'bg-amber-900/60 text-amber-200',
   failed: 'bg-red-900/60 text-red-200',
+  stopped: 'bg-amber-900/50 text-amber-200',
 };
 const STATUS_LABEL: Record<LabStatus, string> = {
   idle: 'Not deployed', deploying: 'Deploying', syncing: 'Applying changes', running: 'Running',
-  destroying: 'Destroying', failed: 'Error',
+  destroying: 'Wiping', failed: 'Error', stopped: 'Stopped',
 };
 
 export default function Workspace() {
@@ -31,6 +33,9 @@ export default function Workspace() {
     consoleTabs, activeConsoleId, setActiveConsole, closeConsole, currentTopologyId, selection,
   } = useLabStore();
   const [showInfo, setShowInfo] = useState(false);
+  const stopLab = useLabStore(st => st.stopLab);
+  const [wiping, setWiping] = useState(false);
+  const [stopFailed, setStopFailed] = useState<StopResult | null>(null);
   // While the entry animation runs, the area around the growing canvas
   // keeps the Labs page's light background.
   const entering = useLabStore(st => !!st.enterFrom);
@@ -81,7 +86,7 @@ export default function Workspace() {
           ? <input autoFocus value={name} onChange={e => setName(e.target.value)} onBlur={saveName}
               onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') setEditingName(false); }}
               className="px-2 py-1 text-sm rounded bg-surface-900 border border-primary-500 outline-none" />
-          : <button className="text-sm font-semibold hover:underline decoration-dotted" title={deployed ? 'Destroy the lab to rename it' : 'Rename'}
+          : <button className="text-sm font-semibold hover:underline decoration-dotted" title={deployed ? 'Wipe the lab to rename it' : 'Rename'}
               onClick={() => { if (!deployed) { setName(topology?.name ?? ''); setEditingName(true); } }}>
               {topology?.name ?? '…'}
             </button>}
@@ -91,7 +96,7 @@ export default function Workspace() {
         {lab?.pending_sync && <span className="text-[11px] text-sky-300">changes queued…</span>}
         <div className="flex-1" />
         {busy && <Loader2 size={16} className="animate-spin text-surface-400" />}
-        {deployed && status !== 'failed' && offCount > 0 && (
+        {deployed && status !== 'failed' && status !== 'stopped' && offCount > 0 && (
           <button onClick={() => deploy(true)} disabled={!!busy} title="Start every device that is off"
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-40">
             <Play size={14} /> Start all ({offCount} off)
@@ -103,19 +108,35 @@ export default function Workspace() {
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40">
             <Play size={14} /> Deploy
           </button>
+        ) : status === 'stopped' ? (
+          <button onClick={() => deploy(false)} disabled={!!busy}
+            title="Start the lab: the same devices come back with the config they saved"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40">
+            <Play size={14} /> Start
+          </button>
         ) : (
           <button onClick={() => deploy(false)} disabled={!!busy} title="Re-apply the topology to the running lab (reconcile)"
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-surface-700 hover:bg-surface-600 disabled:opacity-40">
             <RefreshCcw size={14} /> Re-apply
           </button>
         )}
-        {deployed && (
-          <button onClick={() => { if (confirm('Destroy the lab? All containers are removed and running config not saved in startup configs is lost.')) destroy(); }}
-            disabled={!!busy}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-red-700/80 hover:bg-red-600 text-white disabled:opacity-40">
-            <Square size={14} /> Destroy
+        {deployed && status !== 'stopped' && status !== 'destroying' && (
+          <button onClick={async () => { const r = await stopLab(); if (r && !r.stopped) setStopFailed(r); }}
+            disabled={!!busy || status === 'deploying'}
+            title="Stop every device, keeping it: each saves its running config on the device first, and Start brings it back"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-amber-600 hover:bg-amber-500 text-white disabled:opacity-40">
+            <Square size={13} fill="currentColor" /> Stop
           </button>
         )}
+        {deployed && (
+          <button onClick={() => setWiping(true)} disabled={!!busy}
+            title="Wipe: delete every device and the config saved on them (asks to confirm)"
+            className="flex items-center gap-1.5 px-2 py-1.5 text-sm rounded text-red-300 hover:text-red-200 hover:bg-red-900/30 disabled:opacity-40">
+            <Trash2 size={14} /> Wipe…
+          </button>
+        )}
+        {wiping && <WipeLabDialog onClose={() => setWiping(false)} />}
+        {stopFailed && <StopFailedDialog result={stopFailed} onClose={() => setStopFailed(null)} />}
         <button onClick={() => setShowInfo(v => !v)} title="This lab: resources, host checks, YAML, tips"
           className={`p-1.5 rounded ${showInfo ? 'bg-surface-600 text-white' : 'hover:bg-surface-700 text-surface-300'}`}>
           <Info size={18} />

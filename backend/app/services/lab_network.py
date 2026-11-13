@@ -323,7 +323,7 @@ def renew_due(db: Session) -> None:
     from app.models.lab_deployment import LabDeployment
     from app.models.node_instance import NodeInstance
     deployed = {d.topology_id for d in db.query(LabDeployment).filter(
-        LabDeployment.status.in_(("deploying", "running", "syncing", "failed")))}
+        LabDeployment.status.in_(("deploying", "running", "syncing", "failed", "stopped")))}
     now = time.time()
     with _lock:
         for row in db.query(MgmtLease).all():

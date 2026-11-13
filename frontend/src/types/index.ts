@@ -63,7 +63,7 @@ export interface Link {
   source_interface: string; target_interface: string; label: string; color: string;
 }
 
-export type LabStatus = 'idle' | 'deploying' | 'running' | 'syncing' | 'destroying' | 'failed';
+export type LabStatus = 'idle' | 'deploying' | 'running' | 'syncing' | 'destroying' | 'failed' | 'stopped';
 export type ReadyState = 'absent' | 'booting' | 'up' | 'down' | 'starting' | 'unknown';
 
 export interface NodeRuntime {

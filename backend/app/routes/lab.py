@@ -12,7 +12,7 @@ from app.models.database import get_db
 from app.services.clab_yaml import generate_clab_yaml, get_host_capacity
 from app.services.lab_view import compute_lab_view
 from app.services.lab_service import (
-    LabError, deploy_lab, destroy_lab, get_deployment_state,
+    LabError, deploy_lab, destroy_lab, get_deployment_state, stop_lab,
     list_device_images, load_device_image, save_uploaded_image, get_host_prereqs,
     start_node, stop_node, restart_node,
     get_link_netem, set_link_netem, reset_link_netem,
@@ -82,6 +82,17 @@ def lab_deploy(topology_id: int, all: bool = False, db: Session = Depends(get_db
     (the Deploy / "Start all" buttons); otherwise only devices that are on."""
     try:
         return deploy_lab(db, topology_id, start_all=all)
+    except LabError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/stop")
+def lab_stop(topology_id: int, force: bool = False, db: Session = Depends(get_db)):
+    """Stop every device, keeping it: each saves its running config as its
+    own startup config first. If one can't, nothing is stopped (ok=false
+    with the reasons) unless force=true."""
+    try:
+        return stop_lab(db, topology_id, force=force)
     except LabError as e:
         raise HTTPException(400, str(e))
 

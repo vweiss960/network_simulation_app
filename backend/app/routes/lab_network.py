@@ -62,7 +62,7 @@ def put_lab_network(data: SettingsIn, db: Session = Depends(get_db)):
         raise HTTPException(400, str(e))
     old = lab_network.get_settings(db)
     if old.subnet != new.subnet and db.query(LabDeployment).filter(
-            LabDeployment.status.in_(("deploying", "running", "syncing", "destroying"))).count():
+            LabDeployment.status.in_(("deploying", "running", "syncing", "destroying", "stopped"))).count():
         raise HTTPException(409, "Destroy all running labs before changing the internal management subnet.")
     lab_network.save_settings(db, new)
     return {"settings": asdict(new)}

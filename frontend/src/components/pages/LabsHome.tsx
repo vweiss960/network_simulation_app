@@ -12,8 +12,9 @@ const STATE: Record<string, { dot: string; label: string; text: string }> = {
   running: { dot: 'bg-emerald-500', label: 'Running', text: 'text-emerald-700' },
   deploying: { dot: 'bg-sky-500 animate-pulse', label: 'Deploying', text: 'text-sky-700' },
   syncing: { dot: 'bg-sky-500 animate-pulse', label: 'Applying changes', text: 'text-sky-700' },
-  destroying: { dot: 'bg-amber-500 animate-pulse', label: 'Destroying', text: 'text-amber-700' },
+  destroying: { dot: 'bg-amber-500 animate-pulse', label: 'Wiping', text: 'text-amber-700' },
   failed: { dot: 'bg-red-500', label: 'Error', text: 'text-red-600' },
+  stopped: { dot: 'bg-amber-400', label: 'Stopped', text: 'text-amber-700' },
 };
 const stateOf = (t: Topology) => STATE[t.lab_status] ?? STATE.idle;
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -155,7 +156,7 @@ function LabCard({ t, duplicate, index, exit, onOpen: open, onChanged }:
 
   const rename = async () => {
     setMenu(false);
-    if (t.lab_status !== 'idle') { toast.error('Destroy the lab before renaming it (its containers are named after it).'); return; }
+    if (t.lab_status !== 'idle') { toast.error('Wipe the lab before renaming it (its containers are named after it).'); return; }
     const n = prompt('Rename lab', t.name);
     if (!n?.trim() || n.trim() === t.name) return;
     try { await api.updateTopology(t.id, { name: n.trim() }); onChanged(); } catch (e) { toast.error((e as Error).message); }

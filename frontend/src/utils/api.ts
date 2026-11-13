@@ -32,6 +32,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 const json = (method: string, body?: unknown): RequestInit =>
   ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
 
+/** Stop lab: devices save their config on themselves, then stop (kept). */
+export interface StopResult {
+  ok: boolean; stopped: boolean;
+  saved: { device: string; how: string }[]; failed: { device: string; error: string }[]; skipped: string[];
+}
+
 /** A packet capture on a lab link (backend services/packet_capture.py). */
 export interface CaptureInfo {
   id: string; topology_id: number; link_id: number; title: string; side: string; filter: string;
@@ -175,6 +181,7 @@ export const api = {
   getLabEstimate: (tid: number) => request<any>(`/topologies/${tid}/lab/estimate`),
   getLabPrereqs: (tid: number) => request<any>(`/topologies/${tid}/lab/prereqs`),
   deployLab: (tid: number, all = false) => request<any>(`/topologies/${tid}/lab/deploy${all ? '?all=true' : ''}`, json('POST')),
+  stopLab: (tid: number, force = false) => request<StopResult>(`/topologies/${tid}/lab/stop${force ? '?force=true' : ''}`, json('POST')),
   destroyLab: (tid: number) => request<any>(`/topologies/${tid}/lab/destroy`, json('POST')),
   redeployLab: (tid: number) => request<any>(`/topologies/${tid}/lab/redeploy`, json('POST')),
   startNode: (tid: number, nid: number) => request<any>(`/topologies/${tid}/lab/node/${nid}/start`, json('POST')),
