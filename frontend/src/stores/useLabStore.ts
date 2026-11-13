@@ -44,7 +44,13 @@ interface LabStore {
   bootstrap: () => Promise<void>;
   loadTemplates: () => Promise<void>;
   loadTopologies: () => Promise<void>;
-  openTopology: (id: number) => Promise<void>;
+  /** from: the screen rect of the lab card that was clicked (entry transition). */
+  openTopology: (id: number, from?: { x: number; y: number; w: number; h: number; name: string }) => Promise<void>;
+  enterFrom: { x: number; y: number; w: number; h: number; name: string } | null;
+  clearEnter: () => void;
+  /** The canvas has fitted its view and is visible (the entry transition waits for it). */
+  canvasReady: boolean;
+  setCanvasReady: (v: boolean) => void;
   closeTopology: () => void;
   refreshTopology: () => Promise<void>;
   pollLab: () => Promise<void>;
@@ -88,6 +94,10 @@ export const useLabStore = create<LabStore>((set, get) => ({
   selection: null,
   annotations: [],
   tool: 'select',
+  enterFrom: null,
+  clearEnter: () => set({ enterFrom: null }),
+  canvasReady: false,
+  setCanvasReady: (canvasReady) => set({ canvasReady }),
   consoleTabs: [],
   activeConsoleId: null,
 
@@ -106,8 +116,12 @@ export const useLabStore = create<LabStore>((set, get) => ({
   loadTemplates: async () => set({ templates: await api.listTemplates(true) }),
   loadTopologies: async () => set({ topologies: await api.listTopologies() }),
 
-  openTopology: async (id) => {
+  openTopology: async (id, from) => {
     set({ currentTopologyId: id, page: 'workspace', selection: null, consoleTabs: [], activeConsoleId: null,
+          enterFrom: from ?? null, canvasReady: false,
+          // Drop the previous visit's record: until this lab's data arrives the
+          // canvas must not mistake "not loaded yet" for "empty lab".
+          topology: null,
           nodes: [], links: [], lab: null, annotations: [], tool: 'select' });
     await Promise.all([get().refreshTopology(), get().pollLab(), get().loadTemplates().catch(() => {})]);
   },

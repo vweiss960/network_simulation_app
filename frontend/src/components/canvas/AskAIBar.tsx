@@ -31,8 +31,8 @@ export default function AskAIBar() {
   };
 
   return (
-    <div className="absolute top-4 left-4 right-[340px] z-10 flex justify-center pointer-events-none">
-    <div className="w-full max-w-[560px] min-w-[260px] pointer-events-auto">
+    <div className="absolute top-4 left-4 right-[340px] z-10 flex justify-start pointer-events-none">
+    <div className="w-full max-w-[520px] min-w-[260px] pointer-events-auto">
       <div className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 shadow-sm
           focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-100">
         <Sparkles size={18} className="text-blue-600 shrink-0" />

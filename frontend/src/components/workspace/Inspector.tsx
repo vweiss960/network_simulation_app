@@ -236,7 +236,7 @@ function LinkInspector({ link }: { link: Link }) {
         {pick(aFree, link.source_interface, v => updateLink(link.id, { source_interface: v }))}
         <label className={`${label} mt-2`}>{b.name}</label>
         {pick(bFree, link.target_interface, v => updateLink(link.id, { target_interface: v }))}
-        {deployed && <div className="text-[11px] text-surface-500 mt-2">Re-pinning a running cable re-creates it on the new interfaces.</div>}
+        {deployed && <div className="text-[11px] text-surface-500 mt-2">Changing the ports of a running cable re-patches it live — no device restarts.</div>}
       </Section>
       <Section title="Impairments">
         <Btn icon={<Zap size={13} />} onClick={() => setNetem(true)} disabled={!deployed}>Delay / loss / rate…</Btn>

@@ -186,7 +186,7 @@ a released DB needs a new column.
 `frontend/src/`: `stores/useLabStore.ts` (all workspace state + actions),
 `components/workspace/` (Workspace — no palette: devices are added from the canvas
 right-click menu via `canvas/AddDevicePicker`; Inspector shows only for a
-selected device/cable; LabSummary opens as the left "Lab info" panel from the
+selected device/cable; LabSummary opens as the right-hand "Lab info" panel from the
 header's info button; NetworkInspector),
 `components/canvas/` (Canvas, DeviceNode, CableEdge, ContextMenu, icons = classic
 network symbols, AnnotationNodes = group boxes / text / notes stored in

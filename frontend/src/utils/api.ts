@@ -103,7 +103,7 @@ export const api = {
   stopNode: (tid: number, nid: number) => request<any>(`/topologies/${tid}/lab/node/${nid}/stop`, json('POST')),
   restartNode: (tid: number, nid: number) => request<any>(`/topologies/${tid}/lab/node/${nid}/restart`, json('POST')),
   getLinkDegradation: (tid: number, lid: number) => request<any>(`/topologies/${tid}/lab/link/${lid}/netem`),
-  setLinkDegradation: (tid: number, lid: number, data: { delay: string; jitter: string; loss: number; rate: number; corruption: number }) =>
+  setLinkDegradation: (tid: number, lid: number, data: { delay: string; jitter: string; loss: number; rate: number; corruption: number; direction?: 'both' | 'a' | 'b' }) =>
     request<any>(`/topologies/${tid}/lab/link/${lid}/netem`, json('POST', data)),
   resetLinkDegradation: (tid: number, lid: number) => request<any>(`/topologies/${tid}/lab/link/${lid}/netem`, json('DELETE')),
 

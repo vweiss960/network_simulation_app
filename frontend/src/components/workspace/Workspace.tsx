@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { ReactFlowProvider } from 'reactflow';
-import { ArrowLeft, Info, Loader2, Play, RefreshCcw, Square, X } from 'lucide-react';
+import { Info, Loader2, Play, RefreshCcw, Square, X } from 'lucide-react';
+import { PhaneroLogo } from '../LoginPage';
 import { useLabStore } from '../../stores/useLabStore';
 import { api } from '../../utils/api';
 import Canvas from '../canvas/Canvas';
 import Inspector from './Inspector';
 import LabSummary from './LabSummary';
+import LabEnterTransition from './LabEnterTransition';
 import LabConsoleDrawer from '../LabConsoleDrawer';
 import type { LabStatus } from '../../types';
 
@@ -28,6 +30,10 @@ export default function Workspace() {
     consoleTabs, activeConsoleId, setActiveConsole, closeConsole, currentTopologyId, selection,
   } = useLabStore();
   const [showInfo, setShowInfo] = useState(false);
+  // While the entry animation runs, the area around the growing canvas
+  // keeps the Labs page's light background.
+  const entering = useLabStore(st => !!st.enterFrom);
+
   const inspecting = selection?.type === 'node' || selection?.type === 'link';
   const offCount = nodes.filter(n => n.kind !== 'bridge' && n.enabled === false).length;
   const [editingName, setEditingName] = useState(false);
@@ -54,8 +60,13 @@ export default function Workspace() {
 
   return (
     <div className="h-full flex flex-col">
-      <header className="h-12 shrink-0 flex items-center gap-3 px-3 border-b border-surface-700 bg-surface-800/60">
-        <button onClick={closeTopology} className="p-1 rounded hover:bg-surface-700" title="All labs"><ArrowLeft size={18} /></button>
+      {/* Same bar as the rest of the app; the logo goes back to the Labs page. */}
+      <header className="h-[60px] shrink-0 flex items-center gap-3 px-5 border-b border-surface-700 bg-surface-900">
+        <button onClick={closeTopology} title="Back to all labs"
+          className="flex items-center justify-center w-10 h-10 -ml-2 rounded-lg hover:bg-white/10">
+          <PhaneroLogo />
+        </button>
+        <div className="w-px h-6 bg-surface-700" />
         {editingName
           ? <input autoFocus value={name} onChange={e => setName(e.target.value)} onBlur={saveName}
               onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') setEditingName(false); }}
@@ -100,11 +111,12 @@ export default function Workspace() {
           <Info size={18} />
         </button>
       </header>
-      <div className="flex-1 flex min-h-0">
+      <div className={`flex-1 flex min-h-0 ${entering ? 'bg-[#f3f5f9] plabs-entering' : ''}`}>
         <main className="flex-1 relative min-w-0">
+          <LabEnterTransition />
           <ReactFlowProvider><Canvas /></ReactFlowProvider>
           {showInfo && (
-            <div className="absolute top-0 left-0 bottom-0 z-20 w-80 border-r border-surface-700 bg-surface-800 shadow-2xl flex flex-col">
+            <div className="absolute top-0 right-0 bottom-0 z-30 w-80 border-l border-surface-700 bg-surface-800 shadow-2xl flex flex-col">
               <div className="h-10 shrink-0 flex items-center justify-between px-3 border-b border-surface-700">
                 <span className="text-sm font-semibold">Lab info</span>
                 <button onClick={() => setShowInfo(false)} className="p-1 rounded hover:bg-surface-700"><X size={15} /></button>

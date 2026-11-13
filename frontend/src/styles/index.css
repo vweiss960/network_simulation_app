@@ -37,3 +37,46 @@ body {
 
 /* Device labels stay readable where a cable passes behind them. */
 .plabs-halo { text-shadow: 0 0 2px #f4f6f9, 0 0 3px #f4f6f9, 0 0 4px #f4f6f9, 0 0 6px #f4f6f9; }
+
+/* Range sliders (link conditions): filled track up to the thumb. */
+.plabs-range { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; cursor: pointer;
+  background: linear-gradient(to right, #2f81f7 0, #2f81f7 var(--pct, 0%), #30363d var(--pct, 0%), #30363d 100%); }
+.plabs-range::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 999px;
+  background: #fff; border: 2px solid #2f81f7; box-shadow: 0 1px 3px rgb(0 0 0 / .4); }
+.plabs-range::-moz-range-thumb { width: 16px; height: 16px; border-radius: 999px; background: #fff; border: 2px solid #2f81f7; }
+
+/* Opening a lab: the canvas stays hidden until its view is fitted, then
+   devices and drawings settle in place (no jump from the default viewport). */
+.plabs-hidden .react-flow__viewport,
+.plabs-hidden .react-flow__edgelabel-renderer { visibility: hidden; }
+/* (inner element: the node itself is positioned with transform) */
+.plabs-reveal .react-flow__node > * { animation: plabs-settle 650ms cubic-bezier(.2,.8,.2,1) 120ms both; }
+.plabs-reveal .react-flow__edges, .plabs-reveal .react-flow__edgelabel-renderer { animation: plabs-fade 600ms ease 200ms both; }
+@keyframes plabs-settle { from { opacity: 0; transform: translateY(6px) scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes plabs-fade { from { opacity: 0; } to { opacity: 1; } }
+/* Labs page: cards arrive with a light stagger. */
+.plabs-card-in { animation: plabs-card 340ms cubic-bezier(.2,.8,.2,1) both; }
+@keyframes plabs-card { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .plabs-reveal .react-flow__node > *, .plabs-reveal .react-flow__edges, .plabs-reveal .react-flow__edgelabel-renderer,
+  .plabs-card-in { animation: none !important; }
+}
+
+/* Leaving the Labs page: the rest recedes, the chosen card lifts and turns
+   into the canvas surface the lab then grows from. */
+.plabs-page-out { animation: plabs-recede 340ms ease forwards; }
+.plabs-card-out { animation: plabs-recede 340ms ease forwards !important; }
+.plabs-card-chosen { animation: plabs-chosen 380ms cubic-bezier(.45,.05,.25,1) forwards !important; position: relative; z-index: 1; }
+.plabs-card-chosen > * { animation: plabs-vanish 220ms ease forwards; }
+@keyframes plabs-recede { to { opacity: 0; transform: scale(0.97); } }
+@keyframes plabs-vanish { to { opacity: 0; } }
+@keyframes plabs-chosen {
+  to { transform: scale(1.025); background-color: #f4f6f9; border-color: #dbe1ea; box-shadow: 0 14px 34px rgb(15 23 42 / 0.16); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plabs-page-out, .plabs-card-out, .plabs-card-chosen, .plabs-card-chosen > * { animation: none !important; }
+}
+
+/* While a lab opens, its dot grid fades in (the lifted card was plain). */
+.plabs-entering .react-flow__background { animation: plabs-fade 650ms ease both; }
+@media (prefers-reduced-motion: reduce) { .plabs-entering .react-flow__background { animation: none; } }

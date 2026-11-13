@@ -27,7 +27,7 @@ export default function Canvas() {
   const {
     nodes, links, lab, kinds, selection, select, addNode, moveNodes, connect, deleteNode, deleteLink,
     openConsole, nodeAction, currentTopologyId, annotations, tool, setTool, addAnnotation, updateAnnotations,
-    deleteAnnotation, topology,
+    deleteAnnotation, topology, setCanvasReady,
   } = useLabStore();
   const rf = useRef<ReactFlowInstance | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -89,15 +89,31 @@ export default function Canvas() {
 
   // Fit the view once, when a lab that already has content opens — not when
   // the first device is added to an empty lab (the view would jump).
+  // The canvas stays invisible until then, so devices never show at the
+  // default viewport and jump into place; it's revealed already fitted.
   const fitted = useRef<number | null>(null);
+  const [reveal, setReveal] = useState(false);
+  // Visibility and the reveal animation change in the SAME local render. (The
+  // store's canvasReady re-renders separately, so keying visibility off it
+  // showed the topology for a frame or two before the fade-in started.)
+  const [shown, setShown] = useState(false);
   useEffect(() => {
     if (!topology || topology.id !== currentTopologyId || fitted.current === topology.id) return;
-    if (nodes.length === 0 && annotations.length === 0) { fitted.current = topology.id; return; }
+    const show = () => {
+      setShown(true);
+      setReveal(true);
+      setCanvasReady(true);
+      setTimeout(() => setReveal(false), 900);
+    };
+    if (nodes.length === 0 && annotations.length === 0) { fitted.current = topology.id; show(); return; }
     if (rfNodes.length > 0 && rfNodes.every(n => n.width)) {
       fitted.current = topology.id;
-      requestAnimationFrame(() => rf.current?.fitView({ maxZoom: 1, padding: 0.3 }));
+      requestAnimationFrame(() => {
+        rf.current?.fitView({ maxZoom: 1, padding: 0.3, duration: 0 });
+        requestAnimationFrame(show);           // one frame for the new viewport to paint
+      });
     }
-  }, [topology, currentTopologyId, rfNodes, nodes.length, annotations.length]);
+  }, [topology, currentTopologyId, rfNodes, nodes.length, annotations.length, setCanvasReady]);
 
   // Group drag: members = devices / text / notes / smaller groups inside the box at drag start.
   const groupDrag = useRef<{ id: string; x: number; y: number; members: { id: string; x: number; y: number }[] } | null>(null);
@@ -320,7 +336,8 @@ export default function Canvas() {
   })();
 
   return (
-    <div ref={wrapper} className={`w-full h-full bg-[#f4f6f9] ${tool !== 'select' ? 'plabs-placing' : ''}`}
+    <div ref={wrapper} className={`w-full h-full bg-[#f4f6f9] ${tool !== 'select' ? 'plabs-placing' : ''}
+        ${shown ? '' : 'plabs-hidden'} ${reveal ? 'plabs-reveal' : ''}`}
       tabIndex={0} onKeyDown={onKeyDown}>
       <ReactFlow
         nodes={rfNodes}

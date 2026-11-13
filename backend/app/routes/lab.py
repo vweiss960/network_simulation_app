@@ -233,6 +233,7 @@ class NetemIn(BaseModel):
     loss: float = 0          # packet loss %
     rate: int = 0            # rate limit Kbit (0 = unlimited)
     corruption: float = 0    # corruption %
+    direction: str = "both"  # both | a (source → target) | b (target → source)
 
 
 @router.get("/link/{link_id}/netem")
@@ -248,7 +249,7 @@ def lab_set_link_netem(topology_id: int, link_id: int, body: NetemIn, db: Sessio
     try:
         return set_link_netem(db, topology_id, link_id, delay=body.delay.strip(),
                               jitter=body.jitter.strip(), loss=body.loss, rate=body.rate,
-                              corruption=body.corruption)
+                              corruption=body.corruption, direction=body.direction)
     except LabError as e:
         raise HTTPException(400, str(e))
 

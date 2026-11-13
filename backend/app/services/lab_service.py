@@ -1430,15 +1430,23 @@ def destroy_lab_by_name(lab_name: str) -> None:
 # --- Link impairments (netem) ----------------------------------------------
 # Requires the `sch_netem` kernel module on the host (`sudo modprobe sch_netem`).
 
-def _link_endpoints_for(db: Session, topology_id: int, link_id: int) -> list[tuple[str, str]]:
+def _link_endpoints_for(db: Session, topology_id: int, link_id: int) -> list[dict]:
+    """Device ends of a cable: {side: a|b, node, container, interface}. A
+    Network-node end has no container and is left out. Impairment set on an
+    end shapes traffic *leaving* that device."""
     from app.services.lab_view import compute_lab_view
     view = compute_lab_view(db, topology_id)
-    cname = {n["id"]: n["lab_container_name"] for n in view["nodes"]}
+    by_id = {n["id"]: n for n in view["nodes"]}
     for l in view["links"]:
         if l["id"] == link_id:
-            return [(cname[nid], iface) for nid, iface in
-                    [(l["source_node_id"], l["source_interface"]), (l["target_node_id"], l["target_interface"])]
-                    if cname.get(nid) and iface]
+            out = []
+            for side, nid, iface in (("a", l["source_node_id"], l["source_interface"]),
+                                     ("b", l["target_node_id"], l["target_interface"])):
+                n = by_id.get(nid)
+                if n and n.get("lab_container_name") and iface:
+                    out.append({"side": side, "node": n["name"], "container": n["lab_container_name"],
+                                "interface": iface})
+            return out
     return []
 
 
@@ -1453,34 +1461,43 @@ def get_link_netem(db: Session, topology_id: int, link_id: int) -> dict:
     if not eps:
         raise LabError("Link not found in the lab — deploy the lab first.")
     endpoints = []
-    for cname, iface in eps:
-        rc, out, _ = _run(["containerlab", "tools", "netem", "show", "-n", cname, "--format", "json"], timeout=15)
+    for ep in eps:
+        rc, out, _ = _run(["containerlab", "tools", "netem", "show", "-n", ep["container"], "--format", "json"], timeout=15)
         impair = None
         if rc == 0 and out.strip():
             try:
-                for item in (json.loads(out).get(cname) or []):
-                    if item.get("interface") == iface:
-                        impair = {
+                for item in (json.loads(out).get(ep["container"]) or []):
+                    if item.get("interface") == ep["interface"]:
+                        imp = {
                             "delay": item.get("delay") or "", "jitter": item.get("jitter") or "",
                             "loss": item.get("packet_loss") or 0, "rate": item.get("rate") or 0,
                             "corruption": item.get("corruption") or 0,
                         }
+                        if imp["delay"] or imp["jitter"] or imp["loss"] or imp["rate"] or imp["corruption"]:
+                            impair = imp
                         break
             except (json.JSONDecodeError, AttributeError):
                 pass
-        endpoints.append({"container": cname, "interface": iface, "impairment": impair})
+        endpoints.append({**ep, "impairment": impair})
     return {"link_id": link_id, "endpoints": endpoints}
 
 
 def set_link_netem(db: Session, topology_id: int, link_id: int, delay: str = "", jitter: str = "",
-                   loss: float = 0, rate: int = 0, corruption: float = 0) -> dict:
+                   loss: float = 0, rate: int = 0, corruption: float = 0, direction: str = "both") -> dict:
+    """Impair a cable. direction: both | a (traffic leaving the source end,
+    i.e. source → target) | b (target → source); the other end is cleared."""
     eps = _link_endpoints_for(db, topology_id, link_id)
     if not eps:
         raise LabError("Link not found in the lab — deploy the lab first.")
-    if not (delay or jitter or float(loss or 0) or int(rate or 0) or float(corruption or 0)):
-        return reset_link_netem(db, topology_id, link_id)
+    if direction not in ("both", "a", "b"):
+        raise LabError("direction must be both, a or b")
+    empty = not (delay or jitter or float(loss or 0) or int(rate or 0) or float(corruption or 0))
     errors = []
-    for cname, iface in eps:
+    for ep in eps:
+        cname, iface = ep["container"], ep["interface"]
+        if empty or (direction != "both" and ep["side"] != direction):
+            _run(["containerlab", "tools", "netem", "reset", "-n", cname, "-i", iface], timeout=15)
+            continue
         cmd = ["containerlab", "tools", "netem", "set", "-n", cname, "-i", iface]
         if delay:
             cmd += ["--delay", str(delay)]
@@ -1504,8 +1521,8 @@ def reset_link_netem(db: Session, topology_id: int, link_id: int) -> dict:
     eps = _link_endpoints_for(db, topology_id, link_id)
     if not eps:
         raise LabError("Link not found in the lab — deploy the lab first.")
-    for cname, iface in eps:
-        _run(["containerlab", "tools", "netem", "reset", "-n", cname, "-i", iface], timeout=15)
+    for ep in eps:
+        _run(["containerlab", "tools", "netem", "reset", "-n", ep["container"], "-i", ep["interface"]], timeout=15)
     return get_link_netem(db, topology_id, link_id)
 
 

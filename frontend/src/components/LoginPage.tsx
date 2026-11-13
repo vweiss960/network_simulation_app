@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
 import { useAuthStore } from '../stores/useAuthStore';
+import { DEVICE_ICONS } from './canvas/icons';
 
 /** The fan-of-rays mark (same artwork as the app header). */
 export function PhaneroLogo({ className = '' }: { className?: string }) {
@@ -17,25 +18,30 @@ export function PhaneroLogo({ className = '' }: { className?: string }) {
   );
 }
 
-function Wordmark() {
+/** Logo + wordmark + tagline (the current branding), for a light background. */
+function Brand() {
   return (
-    <div className="flex items-center gap-3">
-      <PhaneroLogo />
-      <span className="text-sm font-semibold tracking-[0.2em] uppercase text-surface-100">
-        Phanero <span className="text-emerald-400">Labs</span>
-      </span>
+    <div>
+      <div className="flex items-center gap-3">
+        <PhaneroLogo className="!text-primary-500" />
+        <span className="text-sm font-semibold tracking-[0.2em] uppercase text-slate-900">
+          Phanero <span className="text-emerald-600">Labs</span>
+        </span>
+      </div>
+      <p className="mt-2.5 text-sm text-slate-600">
+        see what others <span className="text-slate-900 font-semibold">cannot.</span>
+      </p>
     </div>
   );
 }
 
-// ── Background illustration ─────────────────────────────────────────────
-// A network floating in 3D space, seen through a slowly orbiting camera with
-// a real depth of field: nodes near the focal plane are crisp, nodes in front
-// of or behind it blur and fade with distance. Deliberately dim and slow so
-// it never competes with the form. One still frame for reduced motion.
-type V3 = { x: number; y: number; z: number };
+// ── Whiteboard sketch ───────────────────────────────────────────────────
+// A hand-drawn network on a dotted whiteboard: lines with a little wobble,
+// the canvas's own network symbols, and margin notes in handwriting. A
+// turbulence filter roughens everything slightly. Lines draw themselves in
+// once on load (skipped for reduced motion); otherwise it's static.
 
-/** Deterministic PRNG so the scene is the same on every load. */
+/** Deterministic PRNG so the sketch is the same on every load. */
 function mulberry32(seed: number) {
   return () => {
     seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
@@ -44,253 +50,292 @@ function mulberry32(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+const rnd = mulberry32(11);
+const j = (n: number) => (rnd() * 2 - 1) * n;
 
-function buildScene() {
-  const rnd = mulberry32(7);
-  const nodes: V3[] = Array.from({ length: 46 }, () => ({
-    x: (rnd() * 2 - 1) * 1.7, y: (rnd() * 2 - 1) * 0.75, z: (rnd() * 2 - 1) * 1.3,
-  }));
-  const d2 = (a: V3, b: V3) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
-  const linkSet = new Set<string>();
-  nodes.forEach((n, i) => {
-    nodes.map((m, j) => [j, d2(n, m)] as const).filter(([j]) => j !== i)
-      .sort((a, b) => a[1] - b[1]).slice(0, 2)
-      .forEach(([j]) => linkSet.add(i < j ? `${i}-${j}` : `${j}-${i}`));
-  });
-  const links = [...linkSet].map(k => k.split('-').map(Number) as [number, number]);
-  // A highlighted route: a nearest-neighbor walk across the field.
-  const path: number[] = [0];
-  while (path.length < 6) {
-    const cur = nodes[path[path.length - 1]];
-    const next = nodes.map((m, j) => [j, d2(cur, m)] as const)
-      .filter(([j]) => !path.includes(j) && nodes[j].x > cur.x - 0.1)
-      .sort((a, b) => a[1] - b[1])[0];
-    if (!next) break;
-    path.push(next[0]);
-  }
-  const amber: [number, number] = links[Math.floor(links.length * 0.7)];
-  // A few nodes get dotted "drop lines" to a floor plane below the field.
-  const drops = nodes.map((_, i) => i).filter(i => i % 6 === 2);
-  return { nodes, links, path, amber, drops };
+/** A slightly wobbly straight line, as drawn with a marker. */
+function wobbleLine(x1: number, y1: number, x2: number, y2: number, amp = 2.2): string {
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len, ny = dx / len;
+  const o1 = j(amp), o2 = j(amp);
+  const c1 = [x1 + dx * 0.33 + nx * o1, y1 + dy * 0.33 + ny * o1];
+  const c2 = [x1 + dx * 0.66 + nx * o2, y1 + dy * 0.66 + ny * o2];
+  return `M${x1 + j(1)},${y1 + j(1)} C${c1[0]},${c1[1]} ${c2[0]},${c2[1]} ${x2 + j(1)},${y2 + j(1)}`;
 }
 
-// Pre-rendered node sprites: each (style, blur level) is painted ONCE into a
-// small offscreen canvas, then stamped each frame with drawImage — no per-frame
-// canvas filters, which are expensive without a GPU. Blur is painted with
-// radial gradients rather than ctx.filter so it also works in Safari.
-const BLUR_LEVELS = [0, 2, 4, 6, 9];
-const SPRITE_R = 10;    // node radius inside a sprite (scaled when drawn)
-const SPRITE_PAD = 32;  // room for the widest blur halo (~2.5 × 9px)
-
-/** "rgb(r,g,b)" + alpha → "rgba(r,g,b,a)" */
-const withAlpha = (rgb: string, a: number) => rgb.replace('rgb(', 'rgba(').replace(')', `,${a})`);
-
-function makeSprite(ring: string, dot: boolean, blur: number): HTMLCanvasElement {
-  const size = (SPRITE_R + SPRITE_PAD) * 2;
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  const g = c.getContext('2d')!;
-  const mid = size / 2;
-  if (!blur) {
-    // In focus: a crisp ring.
-    g.fillStyle = 'rgb(11,18,32)';
-    g.strokeStyle = ring;
-    g.lineWidth = 2.4;
-    g.beginPath(); g.arc(mid, mid, SPRITE_R, 0, Math.PI * 2); g.fill(); g.stroke();
-  } else {
-    // Out of focus: the ring smeared into a soft disc, wider and fainter with blur.
-    const outer = SPRITE_R + blur * 2.5;
-    const at = (r: number) => Math.min(1, Math.max(0, r / outer));
-    const grad = g.createRadialGradient(mid, mid, 0, mid, mid, outer);
-    grad.addColorStop(0, 'rgba(11,18,32,0.9)');
-    grad.addColorStop(at(SPRITE_R - blur * 0.8), 'rgba(11,18,32,0.75)');
-    grad.addColorStop(at(SPRITE_R), withAlpha(ring, 0.8 / (1 + blur * 0.18)));
-    grad.addColorStop(at(SPRITE_R + blur * 1.2), withAlpha(ring, 0.25 / (1 + blur * 0.18)));
-    grad.addColorStop(1, withAlpha(ring, 0));
-    g.fillStyle = grad;
-    g.beginPath(); g.arc(mid, mid, outer, 0, Math.PI * 2); g.fill();
+/** A loose hand-drawn ellipse (overshoots its start, like a quick loop). */
+function sketchEllipse(cx: number, cy: number, rx: number, ry: number): string {
+  const pts: string[] = [];
+  const start = rnd() * Math.PI * 2, turns = 1.08, steps = 36;
+  for (let i = 0; i <= steps; i++) {
+    const a = start + (i / steps) * Math.PI * 2 * turns;
+    const k = 1 + j(0.035) + (i / steps) * 0.05;
+    pts.push(`${(cx + Math.cos(a) * rx * k).toFixed(1)},${(cy + Math.sin(a) * ry * k).toFixed(1)}`);
   }
-  if (dot) {
-    const r = SPRITE_R * 0.3 + blur * 0.6;
-    const grad = g.createRadialGradient(mid, mid, 0, mid, mid, r);
-    grad.addColorStop(0, ring);
-    grad.addColorStop(blur ? 0.3 : 0.95, ring);
-    grad.addColorStop(1, withAlpha(ring, 0));
-    g.fillStyle = grad;
-    g.beginPath(); g.arc(mid, mid, r, 0, Math.PI * 2); g.fill();
-  }
-  return c;
+  return `M${pts[0]} L${pts.slice(1).join(' ')}`;
 }
 
-function LoginBackdrop() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (!canvas || !ctx) return;
-    const scene = buildScene();
-    const pathLinks = new Set(scene.path.slice(1).map((j, i) => {
-      const a = scene.path[i]; return a < j ? `${a}-${j}` : `${j}-${a}`;
-    }));
-    // Per-link style is fixed; work it out once rather than every frame.
-    const linkStyles = scene.links.map(([a, b]) => {
-      const kind = pathLinks.has(a < b ? `${a}-${b}` : `${b}-${a}`) ? 'path'
-        : (scene.amber[0] === a && scene.amber[1] === b) || (scene.amber[0] === b && scene.amber[1] === a) ? 'amber' : 'plain';
-      return { a, b, kind };
-    });
-    const onPath = new Set(scene.path);
-    const sprites = {
-      plain: BLUR_LEVELS.map(b => makeSprite('rgb(110,118,170)', false, b)),
-      path: BLUR_LEVELS.map(b => makeSprite('rgb(63,174,159)', true, b)),
-    };
-    const glowSprite = makeSprite('rgb(127,214,200)', true, 4);
-    const motionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-    let tooSlow = false;      // set by the safety net below
-    const animate = () => !tooSlow && !motionQuery?.matches;
-    const CAM = 3.4;          // camera distance from the field's center = focal plane
-    const FLOOR_Y = 1.05;     // floor plane for drop lines (screen-down is +y)
-    // Render at half resolution (it's a soft background), and never more than
-    // ~0.35 MP however large the screen, so big displays cost no more.
-    const MAX_PIXELS = 350_000;
-    let w = 0, h = 0, raf = 0;
+/** A hand-drawn cloud outline. */
+function cloud(x: number, y: number, w: number, h: number): string {
+  const b = y + h;
+  return `M${x + w * 0.12},${b} C${x - w * 0.08},${b} ${x - w * 0.06},${y + h * 0.48} ${x + w * 0.16},${y + h * 0.5}
+    C${x + w * 0.12},${y + h * 0.02} ${x + w * 0.52},${y - h * 0.12} ${x + w * 0.6},${y + h * 0.28}
+    C${x + w * 0.72},${y + h * 0.08} ${x + w * 1.02},${y + h * 0.22} ${x + w * 0.94},${y + h * 0.58}
+    C${x + w * 1.1},${y + h * 0.66} ${x + w * 1.06},${b + 2} ${x + w * 0.86},${b} Z`;
+}
 
-    const resize = () => {
-      w = canvas.clientWidth; h = canvas.clientHeight;
-      const res = Math.min(0.5, Math.sqrt(MAX_PIXELS / Math.max(1, w * h)));
-      canvas.width = Math.max(1, Math.round(w * res)); canvas.height = Math.max(1, Math.round(h * res));
-      ctx.setTransform(res, 0, 0, res, 0, 0);   // draw in CSS pixels
-    };
-    const project = (p: V3, yaw: number, pitch: number) => {
-      // Orbit: rotate the scene around Y (yaw), then tilt around X (pitch).
-      const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
-      const x1 = p.x * cy - p.z * sy, z1 = p.x * sy + p.z * cy;
-      const y2 = p.y * cp - z1 * sp, z2 = p.y * sp + z1 * cp;
-      const depth = z2 + CAM;
-      const f = Math.min(w, h * 1.6) * 0.9;
-      // Centre the scene left of the off-centre sign-in column (the backdrop
-      // is only shown on md+ screens, where that column sits right of centre).
-      const cx = w * 0.4;
-      return { sx: cx + (x1 * f) / depth, sy: h * 0.52 + (y2 * f) / depth, depth, scale: f / depth };
-    };
-    // Depth of field: blur grows with distance from the focal plane.
-    const blurOf = (depth: number) => Math.min(9, Math.abs(depth - CAM) * 4.2);
-    const alphaOf = (blur: number) => Math.max(0.12, 0.85 - blur * 0.08);
-    const level = (blur: number) => {
-      let best = 0;
-      BLUR_LEVELS.forEach((b, i) => { if (Math.abs(b - blur) < Math.abs(BLUR_LEVELS[best] - blur)) best = i; });
-      return best;
-    };
+const INK = '#9299a3', RED = '#cf8383', BLUE = '#a8bcd8', GREEN = '#86c39b', FAINT = '#b3b9c2';
+const HAND = "'Caveat', 'Segoe Print', 'Bradley Hand', 'Comic Sans MS', cursive";
 
-    const draw = (t: number) => {
-      const yaw = t * 0.00003 + 0.6;                 // ~3.5 min per revolution
-      const pitch = 0.18 + Math.sin(t * 0.00005) * 0.05;
-      ctx.clearRect(0, 0, w, h);
-      const pts = scene.nodes.map(n => project(n, yaw, pitch));
-
-      // Links, far first. Out-of-focus links are drawn wider and fainter,
-      // which reads as soft without a blur filter.
-      const order = linkStyles.map(ls => ({ ls, depth: (pts[ls.a].depth + pts[ls.b].depth) / 2 }))
-        .sort((x, y) => y.depth - x.depth);
-      for (const { ls: { a, b, kind }, depth } of order) {
-        const blur = blurOf(depth);
-        const alpha = alphaOf(blur) / (1 + blur * 0.25);
-        ctx.strokeStyle = kind === 'path' ? `rgba(63,174,159,${alpha * 0.7})`
-          : kind === 'amber' ? `rgba(180,130,30,${alpha * 0.6})` : `rgba(95,102,150,${alpha * 0.45})`;
-        ctx.lineWidth = Math.max(0.6, (kind === 'plain' ? 1.3 : 2.2) * pts[a].scale / 330) + blur * 0.9;
-        ctx.beginPath(); ctx.moveTo(pts[a].sx, pts[a].sy); ctx.lineTo(pts[b].sx, pts[b].sy); ctx.stroke();
-      }
-
-      // Drop lines from a few nodes to the floor plane.
-      ctx.setLineDash([2, 5]);
-      ctx.lineWidth = 1;
-      for (const i of scene.drops) {
-        const n = scene.nodes[i];
-        const floor = project({ x: n.x, y: FLOOR_Y, z: n.z }, yaw, pitch);
-        const alpha = alphaOf(blurOf(pts[i].depth)) * 0.35;
-        ctx.strokeStyle = `rgba(71,85,105,${alpha})`;
-        ctx.beginPath(); ctx.moveTo(pts[i].sx, pts[i].sy); ctx.lineTo(floor.sx, floor.sy); ctx.stroke();
-        ctx.fillStyle = `rgba(52,120,90,${alpha})`;
-        ctx.beginPath(); ctx.ellipse(floor.sx, floor.sy, 7 * floor.scale / 330, 2.4 * floor.scale / 330, 0, 0, Math.PI * 2); ctx.fill();
-      }
-      ctx.setLineDash([]);
-
-      // Nodes, far first, stamped from the pre-blurred sprites.
-      const nodeOrder = pts.map((p, i) => ({ p, i })).sort((a, b) => b.p.depth - a.p.depth);
-      for (const { p, i } of nodeOrder) {
-        const blur = blurOf(p.depth);
-        const sprite = (onPath.has(i) ? sprites.path : sprites.plain)[level(blur)];
-        const k = Math.max(0.3, 0.75 * p.scale / 330);   // sprite scale (node radius 10 → ~7.5px in focus)
-        const size = sprite.width * k;
-        ctx.globalAlpha = alphaOf(blur) * (onPath.has(i) ? 1 : 0.8);
-        ctx.drawImage(sprite, p.sx - size / 2, p.sy - size / 2, size, size);
-      }
-      ctx.globalAlpha = 1;
-
-      // A faint marker travelling along the highlighted route (~16 s per pass).
-      if (animate() && scene.path.length > 1) {
-        const segs = scene.path.length - 1;
-        const u = ((t / 16000) % 1) * segs;
-        const k = Math.floor(u), f = u - k;
-        const a = pts[scene.path[k]], b = pts[scene.path[k + 1]];
-        const size = glowSprite.width * 0.45;
-        ctx.globalAlpha = 0.35;
-        ctx.drawImage(glowSprite, a.sx + (b.sx - a.sx) * f - size / 2, a.sy + (b.sy - a.sy) * f - size / 2, size, size);
-        ctx.globalAlpha = 1;
-      }
-    };
-
-    let lastT = 0;
-    // Nothing to draw while the backdrop is hidden (narrow screens) or empty.
-    const visible = () => w > 0 && h > 0;
-    resize();
-    // Resizing clears the canvas, so repaint the current frame right away.
-    const ro = new ResizeObserver(() => { resize(); if (visible()) draw(lastT); });
-    ro.observe(canvas);
-
-    // ~15 fps is plenty for a background this slow. Safety net: after a few
-    // warm-up frames, if this machine averages over ~4 ms per frame, stop
-    // animating and keep the current frame so the login never feels sluggish.
-    const WARMUP = 5, SAMPLE = 20;
-    let last = -Infinity, frames = 0, spent = 0;
-    const loop = (t: number) => {
-      if (!animate()) return;
-      if (visible() && t - last >= 66) {
-        const t0 = performance.now();
-        draw(t);
-        lastT = last = t;
-        if (frames < WARMUP + SAMPLE) {
-          if (frames >= WARMUP) spent += performance.now() - t0;
-          frames++;
-          if (frames === WARMUP + SAMPLE && spent / SAMPLE > 4) { tooSlow = true; return; }
-        }
-      }
-      raf = requestAnimationFrame(loop);
-    };
-    const start = () => {
-      cancelAnimationFrame(raf);
-      if (animate()) raf = requestAnimationFrame(loop);
-      else if (visible()) draw(lastT);
-    };
-    // Follow the OS "reduce motion" setting live.
-    motionQuery?.addEventListener?.('change', start);
-    if (visible()) draw(0);
-    start();
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); motionQuery?.removeEventListener?.('change', start); };
-  }, []);
-
+function Sym({ kind, x, y, s = 60 }: { kind: string; x: number; y: number; s?: number }) {
+  const S = DEVICE_ICONS[kind];
   return (
-    <div className="absolute inset-0 pointer-events-none" aria-hidden>
-      <canvas ref={canvasRef} className="w-full h-full" style={{ opacity: 0.75 }} />
-      {/* Edge vignette, then the corner glow on top of it (bottom-left) — plain gradients, no CSS filters. */}
-      <div className="absolute inset-0" style={{
-        background: 'radial-gradient(ellipse at 40% 52%, transparent 40%, rgba(7,11,20,0.9) 100%)',
-      }} />
-      <div className="absolute left-0 bottom-0" style={{
-        width: '80%', height: '85%',
-        // Large soft glow rising from the bottom-left corner of the screen.
-        background: 'radial-gradient(ellipse at 0% 100%, rgba(37,99,235,0.24) 0%, rgba(37,99,235,0.10) 30%, rgba(37,99,235,0.03) 55%, transparent 75%)',
-      }} />
-    </div>
+    <g transform={`translate(${x - s / 2},${y - s / 2})`}>
+      <g style={{ color: INK }}><S size={s} fill="#f8f9fb" /></g>
+    </g>
+  );
+}
+
+function Hand({ x, y, children, color = INK, size = 26, rotate = 0 }:
+  { x: number; y: number; children: React.ReactNode; color?: string; size?: number; rotate?: number }) {
+  return (
+    <text x={x} y={y} fill={color} fontFamily={HAND} fontSize={size}
+      transform={rotate ? `rotate(${rotate} ${x} ${y})` : undefined}>{children}</text>
+  );
+}
+
+function Ink({ d, color = INK, w = 2.4, dash }: { d: string; color?: string; w?: number; dash?: string }) {
+  return <path d={d} fill="none" stroke={color} strokeWidth={w} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={dash} />;
+}
+
+/** Something drawn, then mostly wiped: faint remnants under smeared eraser streaks. */
+function Erased({ children, streaks }: { children: React.ReactNode; streaks: [number, number, number, number][] }) {
+  return (
+    <g>
+      <g opacity={0.2}>{children}</g>
+      <g filter="url(#sk-smear)">
+        {streaks.map(([x, y, w, h], i) => (
+          <path key={i} d={`M${x},${y} q${w * 0.25},${-h * 0.3} ${w * 0.5},0 t${w * 0.5},0 M${x + 6},${y + h * 0.45} q${w * 0.25},${-h * 0.3} ${w * 0.5},0 t${w * 0.46},0`}
+            fill="none" stroke="#f3f5f9" strokeOpacity={0.9} strokeWidth={h * 0.6} strokeLinecap="round" />
+        ))}
+      </g>
+    </g>
+  );
+}
+
+// Precomputed so the wobble is stable across renders.
+const SK = {
+  isp: cloud(520, 52, 150, 76),
+  ispLine: wobbleLine(585, 128, 548, 238),
+  ispB: cloud(840, 40, 130, 66),
+  ispBLine: wobbleLine(880, 106, 790, 240),
+  ibgp: `M570,268 Q665,${282 + j(3)} 758,270`,
+  e2off: wobbleLine(790, 268, 880, 268),
+  fw1: wobbleLine(560, 300, 640, 388), fw2: wobbleLine(760, 300, 690, 388),
+  aclLoop: sketchEllipse(650, 380, 66, 44),
+  c1: wobbleLine(640, 432, 486, 505), c2: wobbleLine(690, 432, 775, 505),
+  oldLink: wobbleLine(560, 300, 760, 500),
+  core: wobbleLine(492, 525, 760, 528),
+  coreLoop: sketchEllipse(615, 528, 205, 60),
+  a1: wobbleLine(455, 548, 412, 640), a2: wobbleLine(478, 548, 580, 666),
+  a3: `M760,550 L640,668`,
+  d1: wobbleLine(408, 700, 382, 790), d2: wobbleLine(428, 700, 460, 790),
+  ospfArrow: 'M330,348 C420,360 455,410 425,476',
+  ospfHead: 'M413,462 L425,476 L436,459',
+  strike: wobbleLine(98, 337, 258, 337, 1.2),
+  rrArrow: 'M690,236 C700,200 735,190 760,196',
+  dualArrow: 'M905,150 C930,190 900,230 830,252',
+  // Behind the sign-in panel: a spine/leaf fabric, a table, a timer scribble.
+  spines: [[1070, 240], [1310, 240]] as [number, number][],
+  leaves: [[1000, 420], [1145, 420], [1290, 420], [1420, 420]] as [number, number][],
+  fabricLoop: sketchEllipse(1210, 330, 270, 150),
+  tableH: [wobbleLine(985, 600, 1395, 602, 1.4), wobbleLine(985, 640, 1395, 641, 1.4),
+           wobbleLine(985, 680, 1395, 683, 1.4), wobbleLine(985, 720, 1395, 722, 1.4)],
+  tableV: [wobbleLine(1060, 570, 1062, 760, 1.4), wobbleLine(1250, 570, 1252, 760, 1.4)],
+  oneStrike: wobbleLine(1262, 708, 1330, 706, 1.2),
+  helloArrow: wobbleLine(1040, 840, 1300, 846, 1.6),
+  helloHead: 'M1288,836 L1302,846 L1287,855',
+  // Right of the panel: the DR site.
+  dc2: cloud(1478, 108, 150, 82),
+  dcLine: wobbleLine(1540, 196, 1532, 520),
+  drDash: 'M1430,440 C1470,470 1480,520 1505,548',
+  drLoop: sketchEllipse(1540, 662, 50, 26),
+  drDown: wobbleLine(1520, 588, 1500, 768), drDown2: wobbleLine(1546, 588, 1585, 760),
+  zig: 'M592,507 l7,-8 l7,8 l7,-8 l7,8',
+  // Bottom middle: a to-do list that drifted off.
+  todoUnder: wobbleLine(640, 808, 760, 810, 1.4),
+  srStrike: wobbleLine(678, 873, 734, 871, 1.2),
+  circle3: sketchEllipse(648, 912, 14, 13),
+};
+
+function WhiteboardSketch() {
+  return (
+    <svg className="absolute inset-0 w-full h-full" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden>
+      <defs>
+        {/* Gentle marker roughness on everything drawn. */}
+        <filter id="sk-rough" x="-5%" y="-5%" width="110%" height="110%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.035" numOctaves="2" seed="3" />
+          <feDisplacementMap in="SourceGraphic" scale="2.2" />
+        </filter>
+        {/* Eraser streaks: soft-edged smears. */}
+        <filter id="sk-smear" x="-10%" y="-30%" width="120%" height="160%">
+          <feGaussianBlur stdDeviation="4" />
+        </filter>
+      </defs>
+
+      {/* ── Wiped earlier drafts ── */}
+      <Erased streaks={[[826, 52, 170, 46], [820, 96, 150, 40]]}>
+        <Ink d={SK.ispB} /><Ink d={SK.ispBLine} />
+        <Hand x={866} y={90} size={26}>ISP-B?</Hand>
+      </Erased>
+      <Erased streaks={[[590, 360, 150, 40], [640, 430, 120, 36]]}>
+        <Ink d={SK.oldLink} />
+        <Hand x={650} y={455} size={22}>direct?</Hand>
+      </Erased>
+      <Erased streaks={[[80, 120, 190, 34]]}>
+        <Hand x={88} y={140} size={24}>192.168.0.0/16 → summarize??</Hand>
+      </Erased>
+      <Erased streaks={[[1110, 120, 210, 38]]}>
+        <Hand x={1120} y={140} size={26}>3-tier → ??</Hand>
+      </Erased>
+      <Erased streaks={[[1000, 770, 220, 30]]}>
+        <Hand x={1010} y={790} size={22}>hold 180 / keep 60</Hand>
+      </Erased>
+
+      <g filter="url(#sk-rough)">
+        {/* WAN edge */}
+        <Ink d={SK.isp} />
+        <Hand x={556} y={106} size={30} rotate={-4}>ISP-A</Hand>
+        <Hand x={680} y={92} size={24} rotate={-6}>AS 65001</Hand>
+        <Ink d={SK.ispLine} />
+        <Sym kind="router" x={540} y={268} />
+        <Sym kind="router" x={776} y={268} />
+        <Hand x={500} y={228} size={24} rotate={-8}>edge-1</Hand>
+        <Hand x={778} y={228} size={24} rotate={-6}>edge-2</Hand>
+        <Ink d={SK.ibgp} />
+        <Hand x={636} y={256} size={22} rotate={-6}>iBGP</Hand>
+        <Ink d={SK.rrArrow} color={FAINT} w={1.8} />
+        <Hand x={664} y={226} size={20} color={FAINT} rotate={-8}>RR?</Hand>
+        <Ink d={SK.e2off} />
+        <Hand x={918} y={140} size={24} color={RED} rotate={8}>dual-homed!!</Hand>
+        <Ink d={SK.dualArrow} color={RED} w={1.8} />
+
+        {/* Firewall */}
+        <Ink d={SK.fw1} /><Ink d={SK.fw2} />
+        <Sym kind="firewall" x={662} y={410} s={70} />
+        <Ink d={SK.aclLoop} color={RED} w={2} />
+        <Hand x={722} y={378} color={RED} size={28} rotate={-6}>ACL!!</Hand>
+        <Hand x={700} y={430} size={26} rotate={-8}>FW</Hand>
+        <Hand x={700} y={460} size={20} color={FAINT} rotate={-6}>(HA pair?)</Hand>
+
+        {/* Core */}
+        <Ink d={SK.c1} /><Ink d={SK.c2} />
+        <Sym kind="router" x={462} y={525} />
+        <Sym kind="router" x={784} y={528} />
+        <Ink d={SK.core} />
+        <Ink d={SK.coreLoop} color={BLUE} w={2.6} />
+        <Ink d={SK.zig} color={RED} w={2} />
+        <Hand x={632} y={510} color={RED} size={26} rotate={-3}>MTU 9000??</Hand>
+        <Hand x={408} y={572} size={22} rotate={-10}>core-1</Hand>
+        <Hand x={800} y={572} size={22} rotate={-8}>core-2</Hand>
+        <Hand x={330} y={610} size={20} color={BLUE} rotate={-4}>BFD 300x3</Hand>
+        <Hand x={850} y={500} size={20} color={FAINT} rotate={-6}>/31 ??</Hand>
+
+        {/* Access */}
+        <Ink d={SK.a1} /><Ink d={SK.a2} />
+        <Ink d={SK.a3} dash="6 8" />
+        <Sym kind="switch" x={406} y={668} s={74} />
+        <Sym kind="switch" x={592} y={690} s={74} />
+        <Hand x={452} y={644} size={22} rotate={-6}>acc-1</Hand>
+        <Hand x={640} y={720} size={22} rotate={-4}>acc-2</Hand>
+        <Hand x={548} y={622} size={22} rotate={-6}>LACP?</Hand>
+        <Hand x={700} y={636} size={20} color={FAINT} rotate={-4}>vPC</Hand>
+        <Ink d={wobbleLine(698, 630, 734, 628, 1)} color={RED} w={1.8} />
+        <Hand x={740} y={640} size={20} color={FAINT} rotate={-4}>Po1?</Hand>
+        <Ink d={SK.d1} w={2} /><Ink d={SK.d2} w={2} />
+
+        {/* Margin notes */}
+        <Hand x={84} y={192} size={24} color="#a5abb5">10.0.12.0/30</Hand>
+        <Hand x={84} y={224} size={24} color="#a5abb5">10.0.13.0/30</Hand>
+        <Hand x={84} y={256} size={24} color="#a5abb5">lo0 → /32s</Hand>
+        <Ink d="M206,246 l8,10 l16,-22" color={GREEN} w={2.6} />
+        <Hand x={84} y={294} size={22} color={BLUE} rotate={-2}>VLAN 10 users · 20 voice · 99 mgmt</Hand>
+        <Hand x={100} y={344} size={24} color={RED} rotate={-1}>static routes</Hand>
+        <Ink d={SK.strike} color={RED} w={2} />
+        <Hand x={272} y={346} size={28} color={RED} rotate={-4}>OSPF!</Hand>
+        <Ink d={SK.ospfArrow} color={BLUE} w={2.2} />
+        <Ink d={SK.ospfHead} color={BLUE} w={2.2} />
+        <Hand x={96} y={420} size={22} color="#a5abb5" rotate={-3}>area 0 ↔ area 1 — ABR = core?</Hand>
+        <Hand x={96} y={452} size={20} color={FAINT} rotate={-3}>stub? totally stubby?</Hand>
+        <Hand x={140} y={500} size={22} color={RED} rotate={-6}>?? ask NOC re: MTU</Hand>
+
+        {/* Bottom middle: the to-do list that drifted off */}
+        <Hand x={642} y={800} size={24} color="#a5abb5" rotate={-2}>next:</Hand>
+        <Ink d={SK.todoUnder} color={FAINT} w={1.6} />
+        <Hand x={646} y={836} size={22} color="#a5abb5" rotate={-2}>1. OSPF → IS-IS?</Hand>
+        <Hand x={646} y={870} size={22} color="#a5abb5" rotate={-2}>2. MPLS</Hand>
+        <Ink d={SK.srStrike} color={RED} w={1.6} />
+        <Hand x={742} y={870} size={22} color={RED} rotate={-4}>SR</Hand>
+        <Hand x={642} y={918} size={20} color="#a5abb5" rotate={-2}>3</Hand>
+        <Ink d={SK.circle3} color={FAINT} w={1.6} />
+        <Hand x={668} y={918} size={22} color="#a5abb5" rotate={-2}>prepend x3 on ISP-B</Hand>
+
+        {/* ── Behind the sign-in panel: a DC fabric ── */}
+        <Hand x={1010} y={190} size={28} rotate={-3}>DC-1 fabric</Hand>
+        <Ink d={wobbleLine(1008, 198, 1150, 196, 1.2)} w={1.8} />
+        {SK.spines.flatMap(([sx, sy]) => SK.leaves.map(([lx, ly], i) => (
+          <Ink key={`${sx}-${i}`} d={wobbleLine(sx, sy + 26, lx, ly - 26, 1.6)} w={2} />
+        )))}
+        {SK.spines.map(([x, y], i) => <Sym key={`s${i}`} kind="router" x={x} y={y} s={54} />)}
+        {SK.leaves.map(([x, y], i) => <Sym key={`l${i}`} kind="switch" x={x} y={y} s={62} />)}
+        <Hand x={1040} y={292} size={22} rotate={-6}>spine-1</Hand>
+        <Hand x={1328} y={292} size={22} rotate={-6}>spine-2</Hand>
+        {SK.leaves.map(([x, y], i) => <Hand key={`ll${i}`} x={x - 22} y={y + 48} size={20} rotate={-5}>{`leaf-${i + 1}`}</Hand>)}
+        <Ink d={SK.fabricLoop} color={BLUE} w={2.2} />
+        <Hand x={1176} y={330} size={26} color={BLUE} rotate={-4}>EVPN / VXLAN</Hand>
+        <Hand x={1190} y={512} size={22} color="#a5abb5" rotate={-3}>VNI 10010 → VLAN 10</Hand>
+        <Hand x={990} y={540} size={22} color={RED} rotate={-5}>ASN per leaf??</Hand>
+
+        {/* the VLAN table */}
+        {SK.tableH.map((d, i) => <Ink key={`th${i}`} d={d} w={1.6} />)}
+        {SK.tableV.map((d, i) => <Ink key={`tv${i}`} d={d} w={1.6} />)}
+        <Hand x={1000} y={592} size={22}>VLAN</Hand>
+        <Hand x={1080} y={592} size={22}>subnet</Hand>
+        <Hand x={1268} y={592} size={22}>GW</Hand>
+        <Hand x={1010} y={632} size={22} color="#a5abb5">10</Hand>
+        <Hand x={1074} y={632} size={22} color="#a5abb5">10.10.0.0/24</Hand>
+        <Hand x={1268} y={632} size={22} color="#a5abb5">.1</Hand>
+        <Hand x={1010} y={672} size={22} color="#a5abb5">20</Hand>
+        <Hand x={1074} y={672} size={22} color="#a5abb5">10.20.0.0/24</Hand>
+        <Hand x={1268} y={672} size={22} color="#a5abb5">.1</Hand>
+        <Hand x={1010} y={712} size={22} color="#a5abb5">99</Hand>
+        <Hand x={1074} y={712} size={22} color="#a5abb5">10.99.0.0/24</Hand>
+        <Hand x={1266} y={712} size={22} color="#a5abb5">.1</Hand>
+        <Ink d={SK.oneStrike} color={RED} w={1.6} />
+        <Hand x={1300} y={712} size={22} color={RED} rotate={-4}>.254</Hand>
+        <Hand x={1010} y={752} size={22} color={FAINT}>…</Hand>
+
+        {/* hello / dead scribble */}
+        <Hand x={990} y={850} size={22}>R1</Hand>
+        <Ink d={SK.helloArrow} w={1.8} /><Ink d={SK.helloHead} w={1.8} />
+        <Hand x={1130} y={834} size={20} rotate={-2}>hello 10s</Hand>
+        <Hand x={1314} y={852} size={22}>R2</Hand>
+        <Hand x={1120} y={892} size={22} color={RED} rotate={-4}>dead 40 — why 120 on R2?!</Hand>
+
+        {/* ── Right of the panel: the DR site ── */}
+        <Ink d={SK.dc2} />
+        <Hand x={1520} y={170} size={30} rotate={-4}>DC-2</Hand>
+        <Ink d={SK.dcLine} />
+        <Ink d={SK.drDash} dash="5 8" />
+        <Sym kind="router" x={1532} y={556} />
+        <Hand x={1478} y={512} size={22} rotate={-6}>dr-core</Hand>
+        <Ink d={SK.drLoop} color={RED} w={2} />
+        <Hand x={1502} y={672} size={26} color={RED} rotate={-6}>DR site?</Hand>
+        <Ink d={SK.drDown} /><Ink d={SK.drDown2} />
+        <Sym kind="host" x={1500} y={800} s={58} />
+        <Hand x={1462} y={880} size={20} color={FAINT} rotate={-6}>RPO 15m?</Hand>
+      </g>
+    </svg>
   );
 }
 
@@ -331,6 +376,8 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const server = useServerStatus();
+  // The original Phanero (network planning) runs on this host's default port.
+  const phaneroUrl = `${window.location.protocol}//${window.location.hostname}/`;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -345,114 +392,98 @@ export default function LoginPage() {
     setIsLoading(false);
   };
 
-  const inputClass = 'w-full h-12 rounded-lg bg-surface-950/70 border border-surface-700 px-4 text-base text-surface-100 '
-    + 'focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/25 transition-colors';
+  const inputClass = 'w-full h-12 rounded-lg bg-white/90 border border-slate-300 px-4 text-base text-slate-900 '
+    + 'shadow-sm focus:outline-none focus:border-primary-500 focus:ring-4 focus:ring-primary-500/15 transition-colors';
 
   return (
-    <div className="min-h-screen relative overflow-hidden bg-[#070b14] text-surface-200 flex justify-center md:justify-start">
-      {/* Backdrop across the whole screen (it shows faintly through the card) */}
+    <div className="min-h-screen relative overflow-hidden text-slate-800 flex justify-center md:justify-start"
+      style={{
+        background: '#f3f5f9',
+        backgroundImage: 'radial-gradient(#cdd3dc 1.2px, transparent 1.3px)',
+        backgroundSize: '22px 22px',
+      }}>
+      {/* Whiteboard (md+), with the brand top-left and the pitch bottom-left */}
       <div className="hidden md:block absolute inset-0">
-        <LoginBackdrop />
-        <div className="absolute top-8 left-8">
-          <Wordmark />
-          <p className="mt-3 text-sm text-surface-400">
-            see what others <span className="text-white font-semibold">cannot.</span>
+        <WhiteboardSketch />
+        <div className="absolute top-10 left-14"><Brand /></div>
+        <div className="absolute left-0 bottom-0 w-[680px] h-[300px] pointer-events-none"
+          style={{ background: 'radial-gradient(ellipse at 18% 78%, #f3f5f9 45%, rgba(243,245,249,0.85) 62%, rgba(243,245,249,0) 80%)' }} />
+        <div className="absolute left-14 bottom-12 max-w-[520px]">
+          <h2 className="text-[44px] leading-[1.08] font-bold tracking-tight text-slate-900">
+            Build it. Break it.<br />Learn it.
+          </h2>
+          <p className="mt-4 text-base leading-relaxed text-slate-600">
+            From whiteboard sketch to running lab. Real network devices, each reachable on its own address.
           </p>
         </div>
       </div>
 
-      {/* Sign-in column (460px wide): off-centre to the right — its centre at
-          75% of the width, halfway between the middle and the right edge; on
-          tablet widths (< ~920px) it sits flush right instead. Full height,
-          translucent (no backdrop blur — that would re-blur the moving backdrop
-          every frame); fades in with a small rise-and-settle. */}
-      <div className="login-card-in relative w-full max-w-[460px] md:ml-auto md:mr-[max(0px,calc(25%-230px))] min-h-screen bg-[#0c1322]/70 sm:border-x border-white/10 shadow-2xl shadow-black/50 flex flex-col px-8 sm:px-11 pt-10 pb-6">
-        <div className="md:hidden mb-8">
-          <Wordmark />
-          <p className="mt-2 text-sm text-surface-400">
-            see what others <span className="text-white font-semibold">cannot.</span>
-          </p>
-        </div>
+      {/* Sign-in column — 520px wide, its centre at 65% of the width (flush
+          right on tablet widths), full height. */}
+      <div className="relative w-full max-w-[520px] md:ml-auto md:mr-[max(0px,calc(35%-260px))] min-h-screen
+          flex flex-col px-8 sm:px-11 pt-10 pb-6 sm:border-x border-white/70 shadow-[0_0_60px_rgb(15_23_42/0.10)]"
+        style={{ background: 'rgba(236, 241, 250, 0.78)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }}>
+        <div className="md:hidden mb-8"><Brand /></div>
 
         <div className="flex-1 flex items-center">
           <form onSubmit={handleSubmit} className="w-full space-y-6">
             <div>
               {/* Same treatment as the PHANERO wordmark: uppercase, semibold, wide tracking. */}
-              <h1 className="text-2xl font-semibold tracking-[0.2em] uppercase text-white">Sign in</h1>
-              <p className="mt-2 text-base text-primary-200/80">Pick up where your network left off.</p>
+              <h1 className="text-[28px] font-bold tracking-[0.18em] uppercase text-slate-900">Sign in</h1>
+              <p className="mt-2 text-base text-slate-600">Pick up where your network left off.</p>
             </div>
 
             <div>
-              <label htmlFor="login-username" className="block mb-2 font-mono text-xs text-surface-300">
-                <span className="text-surface-500 mr-1.5">›</span>username
+              <label htmlFor="login-username" className="block mb-2 font-mono text-xs text-slate-600">
+                <span className="text-slate-400 mr-1.5">›</span>username
               </label>
-              <input
-                id="login-username"
-                type="text"
-                className={inputClass}
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                autoFocus
-                autoComplete="username"
-              />
+              <input id="login-username" type="text" className={inputClass} value={username}
+                onChange={e => setUsername(e.target.value)} autoFocus autoComplete="username" />
             </div>
 
             <div>
-              <label htmlFor="login-password" className="block mb-2 font-mono text-xs text-surface-300">
-                <span className="text-surface-500 mr-1.5">›</span>password
+              <label htmlFor="login-password" className="block mb-2 font-mono text-xs text-slate-600">
+                <span className="text-slate-400 mr-1.5">›</span>password
               </label>
               <div className="relative">
-                <input
-                  id="login-password"
-                  type={showPassword ? 'text' : 'password'}
-                  className={`${inputClass} pr-12`}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  autoComplete="current-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(v => !v)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-surface-400 hover:text-surface-200"
+                <input id="login-password" type={showPassword ? 'text' : 'password'} className={`${inputClass} pr-12`}
+                  value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
+                <button type="button" onClick={() => setShowPassword(v => !v)}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-800"
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  title={showPassword ? 'Hide password' : 'Show password'}
-                >
+                  title={showPassword ? 'Hide password' : 'Show password'}>
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
             </div>
 
             {error && (
-              <div className="text-sm text-red-400 bg-red-900/20 border border-red-800/30 rounded-lg px-3 py-2">
-                {error}
-              </div>
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>
             )}
 
-            <button
-              type="submit"
-              // Muted deep blue: quieter than the solid primary button, still the main action.
-              className="w-full h-12 rounded-lg flex items-center justify-between px-5 text-base font-medium
-                bg-primary-900/60 border border-primary-500/40 text-primary-100 transition-colors
-                enabled:hover:bg-primary-800/70 enabled:hover:border-primary-400/60 enabled:hover:text-white
-                focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40
-                disabled:text-primary-200/60 disabled:border-primary-500/25 disabled:cursor-not-allowed"
-              disabled={isLoading || !username || !password}
-            >
+            <button type="submit" disabled={isLoading || !username || !password}
+              className="w-full h-12 rounded-lg flex items-center justify-between px-5 text-base font-semibold text-white
+                bg-[#2f45a8] hover:bg-[#283c96] shadow-sm transition-colors
+                focus:outline-none focus-visible:ring-4 focus-visible:ring-primary-500/25
+                disabled:bg-[#3a4fae] disabled:cursor-not-allowed">
               <span>{isLoading ? 'Signing in…' : 'Sign in'}</span>
               <span aria-hidden className="text-xl leading-none">⟶</span>
             </button>
 
-            <p className="text-sm text-surface-400">Trouble signing in? Contact your lab administrator.</p>
+            <p className="text-sm text-slate-600">Trouble signing in? Contact your lab administrator.</p>
           </form>
         </div>
 
-        <div className="mt-8 border-t border-white/10 pt-4 flex items-center gap-2 font-mono text-xs">
+        <div className="mt-8 border-t border-slate-300/80 pt-4 flex items-center gap-2 font-mono text-xs">
           <span className={`w-1.5 h-1.5 rounded-full ${
-            server === 'up' ? 'bg-emerald-400' : server === 'down' ? 'bg-red-400' : 'bg-surface-500 animate-pulse'
+            server === 'up' ? 'bg-emerald-500' : server === 'down' ? 'bg-red-500' : 'bg-slate-400 animate-pulse'
           }`} />
-          <span className={server === 'down' ? 'text-red-300' : 'text-surface-400'}>
+          <span className={server === 'down' ? 'text-red-600' : 'text-slate-600'}>
             {server === 'up' ? 'server reachable' : server === 'down' ? 'server unreachable' : 'checking server…'}
           </span>
+          <a href={phaneroUrl} className="ml-auto font-sans text-[13px] text-primary-700 hover:text-primary-800 hover:underline">
+            Open Phanero →
+          </a>
         </div>
       </div>
     </div>
