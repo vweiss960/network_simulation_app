@@ -166,3 +166,59 @@ def test_discard_pending_and_apply_now_clears(client, db):
     client.patch(f"/api/topologies/{tid}/nodes/{nid}", json={"image_ref": "frr:2", "defer": True})
     n = client.patch(f"/api/topologies/{tid}/nodes/{nid}", json={"image_ref": "frr:3"}).json()
     assert n["image_ref"] == "frr:3" and n["pending"] == {}
+
+
+def test_annotations_roundtrip_and_export(client):
+    tid = client.post("/api/topologies/", json={"name": "ann"}).json()["id"]
+    assert client.get(f"/api/topologies/{tid}/annotations").json() == []
+    items = [{"id": "g1", "type": "group", "x": 10, "y": 20, "w": 300, "h": 200, "text": "Area 0", "color": "blue", "locked": True},
+             {"id": "t1", "type": "text", "x": 5, "y": 5, "text": "OSPF lab"},
+             {"id": "n1", "type": "note", "x": 50, "y": 60, "w": 180, "h": 100, "text": "Configure R1", "color": "yellow"}]
+    r = client.put(f"/api/topologies/{tid}/annotations", json=items)
+    assert r.status_code == 200 and r.json()[0]["locked"] is True
+    assert client.put(f"/api/topologies/{tid}/annotations", json=[{"id": "x", "type": "blob"}]).status_code == 422
+    dup = client.post(f"/api/topologies/{tid}/duplicate").json()["id"]
+    assert [a["id"] for a in client.get(f"/api/topologies/{dup}/annotations").json()] == ["g1", "t1", "n1"]
+    assert "Area 0" in client.get(f"/api/topologies/{tid}/export").text
+
+
+def test_start_single_devices(client, db, monkeypatch):
+    """Start one device on an idle lab → only it deploys; starting another on
+    the running lab adds just that one (its cables patch in); Deploy-all
+    powers everything on."""
+    from app.models.lab_deployment import LabDeployment
+    from app.models.node_instance import NodeInstance
+    from app.services import lab_service
+    from app.services.clab_yaml import generate_clab_yaml
+    tid = client.post("/api/topologies/", json={"name": "solo"}).json()["id"]
+    a = client.post(f"/api/topologies/{tid}/nodes/", json={"kind": "cisco_xrd", "image_ref": "xrd:1"}).json()["id"]
+    b = client.post(f"/api/topologies/{tid}/nodes/", json={"kind": "cisco_xrd", "image_ref": "xrd:1"}).json()["id"]
+    client.post(f"/api/topologies/{tid}/links/", json={"source_node_id": a, "target_node_id": b})
+
+    deployed = []
+    monkeypatch.setattr(lab_service, "deploy_lab", lambda db_, t, start_all=False: deployed.append(
+        sorted(n["id"] for n in generate_clab_yaml(db_, t)["included_nodes"])) or {"ok": True})
+    lab_service.start_node(db, tid, a)
+    assert deployed == [[a]]
+    spec = generate_clab_yaml(db, tid)
+    assert spec["patches"] == []                         # B is off: A's port stays unplugged
+    assert [s["name"] for s in spec["skipped_nodes"] if s.get("off")] == [db.get(NodeInstance, b).name]
+    assert client.get(f"/api/topologies/{tid}/nodes/{b}").json()["enabled"] is False
+
+    dep = db.query(LabDeployment).filter_by(topology_id=tid).first() or LabDeployment(topology_id=tid)
+    dep.status, dep.lab_name = "running", "plabs-s"
+    db.add(dep); db.commit()
+    scheduled = []
+    monkeypatch.setattr(lab_service, "_schedule_sync", lambda t: scheduled.append(t))
+    assert lab_service.start_node(db, tid, b)["action"] == "reconcile" and scheduled == [tid]
+    assert len(generate_clab_yaml(db, tid)["patches"]) == 1
+
+    lab_service._set_enabled(db, tid, only=a)
+    monkeypatch.undo()
+    monkeypatch.setattr(lab_service, "_lock_for", lambda t: __import__("contextlib").nullcontext())
+    monkeypatch.setattr(lab_service, "_ensure_fresh_yaml", lambda *a_: (_ for _ in ()).throw(RuntimeError("stop")))
+    try:
+        lab_service.deploy_lab(db, tid, start_all=True)
+    except RuntimeError:
+        pass
+    assert all(n.enabled == 1 for n in db.query(NodeInstance).filter(NodeInstance.topology_id == tid))

@@ -11,11 +11,19 @@ export interface MenuItem {
 export default function ContextMenu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
+    // Capture phase: React Flow's pan/zoom stops mousedown on the canvas
+    // before it bubbles, so a bubbling listener never saw those clicks.
+    const close = (e: Event) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('mousedown', close);
+    const opts = { capture: true };
+    window.addEventListener('pointerdown', close, opts);
+    window.addEventListener('wheel', close, opts);      // zoom / scroll would leave it floating
     window.addEventListener('keydown', esc);
-    return () => { window.removeEventListener('mousedown', close); window.removeEventListener('keydown', esc); };
+    return () => {
+      window.removeEventListener('pointerdown', close, opts);
+      window.removeEventListener('wheel', close, opts);
+      window.removeEventListener('keydown', esc);
+    };
   }, [onClose]);
   return (
     <div ref={ref} style={{ left: x, top: y }}

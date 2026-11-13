@@ -1,13 +1,24 @@
 import { create } from 'zustand';
 import toast from 'react-hot-toast';
 import { api } from '../utils/api';
-import type { Device, DeviceKind, LabState, Link, NetworkSpec, NodeTemplate, Topology } from '../types';
+import type { Annotation, Device, DeviceKind, LabState, Link, NetworkSpec, NodeTemplate, Topology } from '../types';
 import type { ConsoleTab } from '../components/LabConsoleDrawer';
 
-export type Selection = { type: 'node' | 'link'; id: number } | null;
+export type Selection = { type: 'node' | 'link'; id: number } | { type: 'annotation'; id: string } | null;
+export type CanvasTool = 'select' | 'group' | 'text' | 'note';
 export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users';
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// Annotations are saved as a whole list, debounced (drags / typing coalesce).
+let annTimer: ReturnType<typeof setTimeout> | null = null;
+function saveAnnotations(get: () => { currentTopologyId: number | null; annotations: Annotation[] }) {
+  if (annTimer) clearTimeout(annTimer);
+  annTimer = setTimeout(() => {
+    const { currentTopologyId: tid, annotations } = get();
+    if (tid) api.putAnnotations(tid, annotations).catch(e => toast.error(`Couldn't save the drawing: ${errMsg(e)}`));
+  }, 400);
+}
 
 interface LabStore {
   page: Page;
@@ -23,6 +34,8 @@ interface LabStore {
   lab: LabState | null;
   busy: string | null;           // label of a long-running lab action in flight
   selection: Selection;
+  annotations: Annotation[];
+  tool: CanvasTool;
 
   consoleTabs: ConsoleTab[];
   activeConsoleId: string | null;
@@ -36,6 +49,10 @@ interface LabStore {
   refreshTopology: () => Promise<void>;
   pollLab: () => Promise<void>;
   select: (s: Selection) => void;
+  setTool: (t: CanvasTool) => void;
+  addAnnotation: (type: Annotation['type'], x: number, y: number) => void;
+  updateAnnotations: (patches: Record<string, Partial<Annotation>>) => void;
+  deleteAnnotation: (id: string) => void;
 
   addNode: (templateId: number, x: number, y: number) => Promise<void>;
   updateNode: (id: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec; defer?: boolean }) => Promise<boolean>;
@@ -46,7 +63,8 @@ interface LabStore {
   updateLink: (id: number, data: Partial<Link>) => Promise<boolean>;
   deleteLink: (id: number) => Promise<void>;
 
-  deploy: () => Promise<void>;
+  /** all = power every device on first (Deploy / Start all); else only devices that are on. */
+  deploy: (all?: boolean) => Promise<void>;
   destroy: () => Promise<void>;
   nodeAction: (id: number, action: 'start' | 'stop' | 'restart') => Promise<void>;
 
@@ -68,6 +86,8 @@ export const useLabStore = create<LabStore>((set, get) => ({
   lab: null,
   busy: null,
   selection: null,
+  annotations: [],
+  tool: 'select',
   consoleTabs: [],
   activeConsoleId: null,
 
@@ -88,7 +108,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
 
   openTopology: async (id) => {
     set({ currentTopologyId: id, page: 'workspace', selection: null, consoleTabs: [], activeConsoleId: null,
-          nodes: [], links: [], lab: null });
+          nodes: [], links: [], lab: null, annotations: [], tool: 'select' });
     await Promise.all([get().refreshTopology(), get().pollLab(), get().loadTemplates().catch(() => {})]);
   },
 
@@ -101,8 +121,9 @@ export const useLabStore = create<LabStore>((set, get) => ({
   refreshTopology: async () => {
     const tid = get().currentTopologyId;
     if (!tid) return;
-    const [topology, nodes, links] = await Promise.all([api.getTopology(tid), api.listNodes(tid), api.listLinks(tid)]);
-    if (get().currentTopologyId === tid) set({ topology, nodes, links });
+    const [topology, nodes, links, annotations] = await Promise.all([
+      api.getTopology(tid), api.listNodes(tid), api.listLinks(tid), api.getAnnotations(tid).catch(() => null)]);
+    if (get().currentTopologyId === tid) set({ topology, nodes, links, ...(annotations ? { annotations } : {}) });
   },
 
   pollLab: async () => {
@@ -115,6 +136,30 @@ export const useLabStore = create<LabStore>((set, get) => ({
   },
 
   select: (selection) => set({ selection }),
+  setTool: (tool) => set({ tool }),
+
+  addAnnotation: (type, x, y) => {
+    const id = Math.random().toString(36).slice(2, 10);
+    const size = type === 'group' ? { w: 360, h: 220 } : type === 'note' ? { w: 200, h: 110 } : { w: 0, h: 0 };
+    const text = type === 'group' ? 'Group' : type === 'note' ? '' : 'Text';
+    const color = type === 'note' ? 'yellow' : 'blue';
+    // Group boxes are placed with the click as their top-left corner area.
+    const pos = type === 'group' ? { x: x - 40, y: y - 30 } : { x, y };
+    const a: Annotation = { id, type, ...pos, ...size, text, color, locked: false };
+    set({ annotations: [...get().annotations, a], selection: { type: 'annotation', id }, tool: 'select' });
+    saveAnnotations(get);
+  },
+
+  updateAnnotations: (patches) => {
+    set({ annotations: get().annotations.map(a => (patches[a.id] ? { ...a, ...patches[a.id] } : a)) });
+    saveAnnotations(get);
+  },
+
+  deleteAnnotation: (id) => {
+    set({ annotations: get().annotations.filter(a => a.id !== id),
+          selection: get().selection?.type === 'annotation' && get().selection?.id === id ? null : get().selection });
+    saveAnnotations(get);
+  },
 
   addNode: async (templateId, x, y) => {
     const tid = get().currentTopologyId!;
@@ -191,14 +236,15 @@ export const useLabStore = create<LabStore>((set, get) => ({
     } catch (e) { toast.error(errMsg(e)); }
   },
 
-  deploy: async () => {
+  deploy: async (all = false) => {
     const tid = get().currentTopologyId!;
     set({ busy: 'Deploying…' });
     const poll = setInterval(() => get().pollLab(), 3000);
     try {
-      const r = await api.deployLab(tid);
-      if (r.skipped_nodes?.length) {
-        toast(`Skipped ${r.skipped_nodes.length} device(s) without an image`, { icon: '⚠️' });
+      const r = await api.deployLab(tid, all);
+      const missing = (r.skipped_nodes ?? []).filter((s: { off?: boolean }) => !s.off);
+      if (missing.length) {
+        toast(`Skipped ${missing.length} device(s) without an image`, { icon: '⚠️' });
       } else {
         toast.success('Lab deployed');
       }
@@ -229,6 +275,8 @@ export const useLabStore = create<LabStore>((set, get) => ({
     try {
       const r = await api[`${action}Node` as 'startNode'](tid, id);
       if (r?.action === 'recreate') toast.success(`${name}: restarting with its saved changes`, { id: t });
+      else if (r?.action === 'deploy') toast.success(`${name} deployed on its own — start other devices when you need them`, { id: t });
+      else if (r?.action === 'reconcile') toast.success(`${name} is starting; its cables connect as it comes up`, { id: t });
       else toast.success(`${name}: ${action} done`, { id: t });
     } catch (e) { toast.error(errMsg(e), { id: t }); }
     finally { get().pollLab(); get().refreshTopology(); }

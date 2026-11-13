@@ -26,6 +26,15 @@ export interface Device {
   network: NetworkSpec | null; network_label: string;
   /** Changes saved for the device's next restart (deployed labs). */
   pending?: PendingChanges;
+  /** Powered on (part of the lab when deployed). Off devices start one at a time. */
+  enabled?: boolean;
+}
+
+/** Canvas drawing element: labelled group box, free text, or a note. */
+export interface Annotation {
+  id: string; type: 'group' | 'text' | 'note';
+  x: number; y: number; w: number; h: number;
+  text: string; color: string; locked: boolean;
 }
 
 export interface PendingChanges { image_ref?: string; interface_count?: number; startup_config?: string }
@@ -67,7 +76,7 @@ export interface LabState {
   status: LabStatus; lab_name: string; last_error: string; pending_sync: boolean;
   started_at: string | null; finished_at: string | null;
   nodes: Record<string, NodeRuntime>;
-  skipped_nodes: { id: number; name: string; reason: string }[];
+  skipped_nodes: { id: number; name: string; reason: string; off?: boolean }[];
 }
 
 export interface Snapshot {

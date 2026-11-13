@@ -54,6 +54,7 @@ def export_topology(db: Session, topology_id: int) -> dict:
         "nodes": out_nodes,
         "links": [[names[l.source_node_id], l.source_interface, names[l.target_node_id], l.target_interface]
                   for l in links],
+        **({"annotations": t.annotations} if t.annotations else {}),
     }
 
 
@@ -116,6 +117,13 @@ def parse(text: str) -> dict:
 
 def build_into(db: Session, topology: Topology, spec: dict) -> None:
     """Create the nodes/links described by `spec` inside an (empty) topology."""
+    if isinstance(spec.get("annotations"), list):
+        from pydantic import ValidationError
+        from app.schemas.schemas import Annotation
+        try:
+            topology.annotations = [Annotation(**a).model_dump() for a in spec["annotations"][:500]]
+        except (TypeError, ValidationError) as e:
+            raise TopologyError(f"Invalid annotations: {e}")
     ids: dict[str, int] = {}
     for nd in spec.get("nodes") or []:
         kind = nd.get("kind") or "linux"

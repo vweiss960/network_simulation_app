@@ -77,9 +77,11 @@ def lab_prereqs(topology_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/deploy")
-def lab_deploy(topology_id: int, db: Session = Depends(get_db)):
+def lab_deploy(topology_id: int, all: bool = False, db: Session = Depends(get_db)):
+    """Deploy / reconcile the lab. all=true powers on every device first
+    (the Deploy / "Start all" buttons); otherwise only devices that are on."""
     try:
-        return deploy_lab(db, topology_id)
+        return deploy_lab(db, topology_id, start_all=all)
     except LabError as e:
         raise HTTPException(400, str(e))
 

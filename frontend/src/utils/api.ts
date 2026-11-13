@@ -1,4 +1,4 @@
-import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology } from '../types';
+import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology, Annotation } from '../types';
 
 const BASE = '/api';
 
@@ -67,6 +67,9 @@ export const api = {
     request<Device>(`/topologies/${tid}/nodes/`, json('POST', data)),
   updateNode: (tid: number, nid: number, data: Partial<Omit<Device, 'network'>> & { interface_count?: number; password?: string; network?: NetworkSpec; defer?: boolean }) =>
     request<Device>(`/topologies/${tid}/nodes/${nid}`, json('PATCH', data)),
+  getAnnotations: (tid: number) => request<Annotation[]>(`/topologies/${tid}/annotations`),
+  putAnnotations: (tid: number, items: Annotation[]) =>
+    request<Annotation[]>(`/topologies/${tid}/annotations`, json('PUT', items)),
   discardPending: (tid: number, nid: number) => request<Device>(`/topologies/${tid}/nodes/${nid}/pending`, json('DELETE')),
   saveNodePositions: (tid: number, positions: Record<number, [number, number]>) =>
     request<{ ok: boolean }>(`/topologies/${tid}/nodes/positions`, json('PUT', { positions })),
@@ -93,7 +96,7 @@ export const api = {
   getLabYaml: (tid: number) => request<{ yaml: string; resource_estimate: Record<string, number | boolean> }>(`/topologies/${tid}/lab/yaml`),
   getLabEstimate: (tid: number) => request<any>(`/topologies/${tid}/lab/estimate`),
   getLabPrereqs: (tid: number) => request<any>(`/topologies/${tid}/lab/prereqs`),
-  deployLab: (tid: number) => request<any>(`/topologies/${tid}/lab/deploy`, json('POST')),
+  deployLab: (tid: number, all = false) => request<any>(`/topologies/${tid}/lab/deploy${all ? '?all=true' : ''}`, json('POST')),
   destroyLab: (tid: number) => request<any>(`/topologies/${tid}/lab/destroy`, json('POST')),
   redeployLab: (tid: number) => request<any>(`/topologies/${tid}/lab/redeploy`, json('POST')),
   startNode: (tid: number, nid: number) => request<any>(`/topologies/${tid}/lab/node/${nid}/start`, json('POST')),

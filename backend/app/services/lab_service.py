@@ -1157,8 +1157,17 @@ def _apply_pending_changes(db: Session, topology_id: int, node_id: Optional[int]
     return changed
 
 
-def deploy_lab(db: Session, topology_id: int) -> dict:
-    """Deploy (or reconcile) the whole topology."""
+def _set_enabled(db: Session, topology_id: int, only: Optional[int] = None) -> None:
+    """Power devices on: all of them, or exactly `only` (others off)."""
+    for n in db.query(NodeInstance).filter(NodeInstance.topology_id == topology_id):
+        n.enabled = 1 if only is None or n.id == only else 0
+    db.commit()
+
+
+def deploy_lab(db: Session, topology_id: int, start_all: bool = False) -> dict:
+    """Deploy (or reconcile) the topology's powered-on devices."""
+    if start_all:
+        _set_enabled(db, topology_id)
     _apply_pending_changes(db, topology_id)
     with _lock_for(topology_id):
         _sync_pending.discard(topology_id)
@@ -1306,8 +1315,23 @@ def _restart_with_pending(db: Session, topology_id: int, node_id: int) -> Option
 
 
 def start_node(db: Session, topology_id: int, node_id: int) -> dict:
-    """Start a stopped node. A node that was never created (added while the
-    lab was down, or a failed reconcile) is brought up by a reconcile."""
+    """Start one device. On a lab that isn't deployed, only this device comes
+    up (the others are powered off until started). A device that's off or
+    was never created joins the running lab through a reconcile; its ports
+    are pre-provisioned, so its cables are patched in and nothing else
+    restarts. A stopped container is simply started."""
+    node = db.get(NodeInstance, node_id)
+    if not node or node.topology_id != topology_id:
+        raise LabError("Device not found")
+    dep = _get_or_create_deployment(db, topology_id)
+    if dep.status not in _ACTIVE_STATES and dep.status != "failed":
+        _set_enabled(db, topology_id, only=node_id)
+        return {**deploy_lab(db, topology_id), "node_id": node_id, "action": "deploy"}
+    if node.enabled == 0:
+        node.enabled = 1
+        db.commit()
+        _schedule_sync(topology_id)
+        return {"ok": True, "node_id": node_id, "action": "reconcile"}
     res = _restart_with_pending(db, topology_id, node_id)
     if res:
         return res

@@ -9,7 +9,7 @@ from app.models.lab_deployment import LabDeployment
 from app.models.link import Link
 from app.models.node_instance import NodeInstance
 from app.models.topology import Topology
-from app.schemas.schemas import TopologyCreate, TopologyUpdate, TopologyOut
+from app.schemas.schemas import Annotation, TopologyCreate, TopologyUpdate, TopologyOut
 from app.services import lab_service, topology_io
 from app.services.lab_view import safe_lab_name
 from app.services.topology_ops import TopologyError
@@ -103,6 +103,22 @@ def duplicate_topology(topology_id: int, db: Session = Depends(get_db)):
     topology_io.build_into(db, t, spec)
     db.commit()
     return _out(db, t)
+
+
+@router.get("/{topology_id}/annotations", response_model=list[Annotation])
+def get_annotations(topology_id: int, db: Session = Depends(get_db)):
+    return _get(db, topology_id).annotations
+
+
+@router.put("/{topology_id}/annotations", response_model=list[Annotation])
+def put_annotations(topology_id: int, items: list[Annotation], db: Session = Depends(get_db)):
+    """Replace the canvas annotations (they never touch the deployed lab)."""
+    if len(items) > 500:
+        raise HTTPException(400, "Too many annotations (max 500)")
+    t = _get(db, topology_id)
+    t.annotations = [a.model_dump() for a in items]
+    db.commit()
+    return t.annotations
 
 
 @router.get("/{topology_id}/export", response_class=PlainTextResponse)

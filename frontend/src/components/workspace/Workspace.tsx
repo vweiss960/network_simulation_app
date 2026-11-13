@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { ReactFlowProvider } from 'reactflow';
-import { ArrowLeft, Loader2, Play, RefreshCcw, Square } from 'lucide-react';
+import { ArrowLeft, Info, Loader2, Play, RefreshCcw, Square, X } from 'lucide-react';
 import { useLabStore } from '../../stores/useLabStore';
 import { api } from '../../utils/api';
 import Canvas from '../canvas/Canvas';
-import Palette from './Palette';
 import Inspector from './Inspector';
+import LabSummary from './LabSummary';
 import LabConsoleDrawer from '../LabConsoleDrawer';
 import type { LabStatus } from '../../types';
 
@@ -25,8 +25,11 @@ const STATUS_LABEL: Record<LabStatus, string> = {
 export default function Workspace() {
   const {
     topology, lab, busy, nodes, closeTopology, pollLab, deploy, destroy, refreshTopology,
-    consoleTabs, activeConsoleId, setActiveConsole, closeConsole, currentTopologyId,
+    consoleTabs, activeConsoleId, setActiveConsole, closeConsole, currentTopologyId, selection,
   } = useLabStore();
+  const [showInfo, setShowInfo] = useState(false);
+  const inspecting = selection?.type === 'node' || selection?.type === 'link';
+  const offCount = nodes.filter(n => n.kind !== 'bridge' && n.enabled === false).length;
   const [editingName, setEditingName] = useState(false);
   const [name, setName] = useState('');
 
@@ -67,13 +70,20 @@ export default function Workspace() {
         {lab?.pending_sync && <span className="text-[11px] text-sky-300">changes queued…</span>}
         <div className="flex-1" />
         {busy && <Loader2 size={16} className="animate-spin text-surface-400" />}
+        {deployed && status !== 'failed' && offCount > 0 && (
+          <button onClick={() => deploy(true)} disabled={!!busy} title="Start every device that is off"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 text-white disabled:opacity-40">
+            <Play size={14} /> Start all ({offCount} off)
+          </button>
+        )}
         {!deployed || status === 'failed' ? (
-          <button onClick={deploy} disabled={!!busy || nodes.length === 0}
+          <button onClick={() => deploy(true)} disabled={!!busy || nodes.length === 0}
+            title="Start every device (or right-click a device → Start just this device)"
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40">
             <Play size={14} /> Deploy
           </button>
         ) : (
-          <button onClick={deploy} disabled={!!busy} title="Re-apply the whole topology (reconcile)"
+          <button onClick={() => deploy(false)} disabled={!!busy} title="Re-apply the topology to the running lab (reconcile)"
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-surface-700 hover:bg-surface-600 disabled:opacity-40">
             <RefreshCcw size={14} /> Re-apply
           </button>
@@ -85,14 +95,26 @@ export default function Workspace() {
             <Square size={14} /> Destroy
           </button>
         )}
+        <button onClick={() => setShowInfo(v => !v)} title="This lab: resources, host checks, YAML, tips"
+          className={`p-1.5 rounded ${showInfo ? 'bg-surface-600 text-white' : 'hover:bg-surface-700 text-surface-300'}`}>
+          <Info size={18} />
+        </button>
       </header>
       <div className="flex-1 flex min-h-0">
-        <aside className="w-56 shrink-0 border-r border-surface-700 bg-surface-800/40"><Palette /></aside>
         <main className="flex-1 relative min-w-0">
           <ReactFlowProvider><Canvas /></ReactFlowProvider>
+          {showInfo && (
+            <div className="absolute top-0 left-0 bottom-0 z-20 w-80 border-r border-surface-700 bg-surface-800 shadow-2xl flex flex-col">
+              <div className="h-10 shrink-0 flex items-center justify-between px-3 border-b border-surface-700">
+                <span className="text-sm font-semibold">Lab info</span>
+                <button onClick={() => setShowInfo(false)} className="p-1 rounded hover:bg-surface-700"><X size={15} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto"><LabSummary /></div>
+            </div>
+          )}
           <LabConsoleDrawer tabs={consoleTabs} activeId={activeConsoleId} onSetActive={setActiveConsole} onClose={closeConsole} />
         </main>
-        <aside className="w-80 shrink-0 border-l border-surface-700 bg-surface-800/40"><Inspector /></aside>
+        {inspecting && <aside className="w-80 shrink-0 border-l border-surface-700 bg-surface-800/40"><Inspector /></aside>}
       </div>
     </div>
   );

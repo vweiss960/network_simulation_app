@@ -62,10 +62,15 @@ export default function LabSummary() {
         </div>
       )}
 
-      {!!lab?.skipped_nodes?.length && (
+      {!!lab?.skipped_nodes?.filter(s => !s.off).length && (
         <div className="p-3 border-b border-surface-700">
           <div className="text-xs font-semibold text-amber-300 mb-1">Won't deploy</div>
-          {lab.skipped_nodes.map(s => <div key={s.id} className="text-xs text-surface-300"><b>{s.name}</b>: {s.reason}</div>)}
+          {lab.skipped_nodes.filter(s => !s.off).map(s => <div key={s.id} className="text-xs text-surface-300"><b>{s.name}</b>: {s.reason}</div>)}
+        </div>
+      )}
+      {!!lab?.skipped_nodes?.filter(s => s.off).length && (
+        <div className="p-3 border-b border-surface-700 text-xs text-surface-300">
+          <b>Off:</b> {lab.skipped_nodes.filter(s => s.off).map(s => s.name).join(', ')} — right-click a device → Start.
         </div>
       )}
 
@@ -84,10 +89,12 @@ export default function LabSummary() {
 
       <div className="p-3 text-xs text-surface-400 space-y-1">
         <div className="font-semibold text-surface-300">Tips</div>
-        <div>Drag devices in from the palette; drag from a device's blue dot to another device to cable them.</div>
+        <div>Right-click the canvas → Add device; drag from a device's blue dot to another device to cable them.</div>
+        <div>Start devices one at a time (right-click → Start) or all at once with Deploy; cables to devices that are off connect when they start.</div>
         <div>Changes to a running lab apply live: new devices and cables are added, removed ones are torn down.</div>
         <div>Double-click a running device to open its console (SSH for network OSes, so config mode works).</div>
-        <div>Adding a cable to a running XRd or VM device recreates it: those platforms can't hot-plug interfaces.</div>
+        <div>Cabling is live: plugging or unplugging a cable never restarts a device.</div>
+        <div>Use Group box, Text and Note (top right of the canvas) to annotate the lab; Ctrl/⌘ K asks the AI.</div>
       </div>
 
       {yaml !== null && (

@@ -152,7 +152,13 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
     be applied now or saved for the next restart (`NodeUpdate.defer` →
     `NodeInstance.pending`; `topology_ops.apply_pending` runs on the device's
     Restart / Start and on lab Deploy; `DELETE …/nodes/{id}/pending`
-    discards). containerlab's *in-place* recreate
+    discards).
+  - Devices can be started one at a time (`NodeInstance.enabled`): Start on
+    an undeployed lab deploys only that device (others off); Start on an off
+    device in a running lab adds just it (ports pre-provisioned → its cables
+    patch in, nothing else restarts). Off devices are skipped by
+    `compute_lab_view` (`off: true`). `POST …/lab/deploy?all=true` (Deploy /
+    "Start all") powers everything on; without it, only devices that are on. containerlab's *in-place* recreate
     gives a node only the changed links (XRd `XR_INTERFACES`, vrnetlab
     `CLAB_INTFS`), so `_recreate_plan` / `_apply_plan` remove such nodes
     first and containerlab creates them fresh.
@@ -178,8 +184,15 @@ Schema is `create_all()` only — no migrations yet; add additive migrations if
 a released DB needs a new column.
 
 `frontend/src/`: `stores/useLabStore.ts` (all workspace state + actions),
-`components/workspace/` (Workspace, Palette, Inspector, NetworkInspector, LabSummary),
-`components/canvas/` (Canvas, DeviceNode, CableEdge, ContextMenu),
+`components/workspace/` (Workspace — no palette: devices are added from the canvas
+right-click menu via `canvas/AddDevicePicker`; Inspector shows only for a
+selected device/cable; LabSummary opens as the left "Lab info" panel from the
+header's info button; NetworkInspector),
+`components/canvas/` (Canvas, DeviceNode, CableEdge, ContextMenu, icons = classic
+network symbols, AnnotationNodes = group boxes / text / notes stored in
+`Topology.annotations_json` via `GET|PUT /api/topologies/{id}/annotations`,
+CanvasToolbar, AskAIBar = entry point for the future lab agent; the canvas
+is light, the panels dark),
 `components/pages/` (LabsHome, TemplatesPage, ImagesPage, NetworkPage), reused
 `LabConsoleDrawer`, `LinkNetemModal`, `LoginPage`, `panels/QcowImageManager`,
 `panels/UserManagementPanel`. `utils/api.ts` wraps every endpoint.

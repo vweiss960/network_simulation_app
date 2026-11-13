@@ -4,7 +4,6 @@ import { useLabStore } from '../../stores/useLabStore';
 import { api } from '../../utils/api';
 import type { Device, Link } from '../../types';
 import LinkNetemModal from '../LinkNetemModal';
-import LabSummary from './LabSummary';
 import NetworkInspector from './NetworkInspector';
 import DeviceTools from './DeviceTools';
 
@@ -21,7 +20,7 @@ export default function Inspector() {
     const l = links.find(x => x.id === selection.id);
     if (l) return <LinkInspector key={l.id} link={l} />;
   }
-  return <LabSummary />;
+  return null;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -92,7 +91,9 @@ function NodeInspector({ node }: { node: Device }) {
           <Btn icon={<FileText size={13} />} onClick={() => openConsole(node.id, 'logs')} disabled={!rt || rt.state === 'absent'}>Logs</Btn>
           {running
             ? <Btn icon={<Square size={13} />} onClick={() => nodeAction(node.id, 'stop')}>Stop</Btn>
-            : <Btn icon={<Play size={13} />} onClick={() => nodeAction(node.id, 'start')} disabled={!deployed}>Start</Btn>}
+            : <Btn icon={<Play size={13} />} onClick={() => nodeAction(node.id, 'start')}
+                title={deployed ? 'Start this device' : 'Deploy only this device; start the others when you need them'}>
+                {deployed ? 'Start' : 'Start just this'}</Btn>}
           <Btn icon={<RotateCw size={13} />} onClick={() => nodeAction(node.id, 'restart')} disabled={!rt || rt.state === 'absent'}>Restart</Btn>
         </div>
       </div>
@@ -254,9 +255,9 @@ function LinkInspector({ link }: { link: Link }) {
   );
 }
 
-function Btn({ icon, children, onClick, disabled }: { icon: React.ReactNode; children: React.ReactNode; onClick: () => void; disabled?: boolean }) {
+function Btn({ icon, children, onClick, disabled, title }: { icon: React.ReactNode; children: React.ReactNode; onClick: () => void; disabled?: boolean; title?: string }) {
   return (
-    <button onClick={onClick} disabled={disabled}
+    <button onClick={onClick} disabled={disabled} title={title}
       className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-surface-700 hover:bg-surface-600 text-surface-100 disabled:opacity-40 disabled:cursor-not-allowed">
       {icon}{children}
     </button>

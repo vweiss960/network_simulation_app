@@ -33,6 +33,7 @@ def node_out(n: NodeInstance) -> dict:
         "network": n.network if is_bridge(n.kind) else None,
         "network_label": Segment.from_dict(n.network).describe() if is_bridge(n.kind) else "",
         "pending": n.pending,
+        "enabled": n.enabled != 0,
     }
 
 

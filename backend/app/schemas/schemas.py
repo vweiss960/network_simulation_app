@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -59,6 +59,19 @@ class TopologyCreate(BaseModel):
 class TopologyUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+
+
+class Annotation(BaseModel):
+    """A canvas drawing element: a labelled group box, free text, or a note."""
+    id: str = Field(..., min_length=1, max_length=64)
+    type: Literal["group", "text", "note"]
+    x: float = 0.0
+    y: float = 0.0
+    w: float = Field(0.0, ge=0, le=20000)
+    h: float = Field(0.0, ge=0, le=20000)
+    text: str = Field("", max_length=4000)
+    color: str = Field("blue", max_length=32)
+    locked: bool = False
 
 
 class TopologyOut(BaseModel):
@@ -132,6 +145,7 @@ class NodeOut(BaseModel):
     network: Optional[NetworkSpec] = None
     network_label: str = ""
     pending: dict = {}
+    enabled: bool = True
 
 
 class NodePositions(BaseModel):

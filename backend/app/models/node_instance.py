@@ -41,6 +41,9 @@ class NodeInstance(Base):
     # Changes saved "for the next restart" on a deployed lab:
     # {"image_ref": .., "interface_count": .., "startup_config": ..}
     pending_json = Column(Text, default="{}")
+    # Powered on: part of the lab when it's deployed. Off devices (started one
+    # at a time) aren't created; their cables are patched in when they start.
+    enabled = Column(Integer, default=1)
 
     topology = relationship("Topology", back_populates="nodes")
 

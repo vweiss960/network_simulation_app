@@ -102,6 +102,9 @@ def compute_lab_view(db: Session, topology_id: int) -> dict:
             continue
         k = get_kind(n.kind)
         user, _pw = node_credentials(n)
+        if n.enabled == 0:
+            skipped.append({"id": n.id, "name": n.name, "reason": "Off — start it to bring it up", "off": True})
+            continue
         if not n.image_ref:
             skipped.append({"id": n.id, "name": n.name, "reason": "No image set (build or load one under Images)"})
             continue

@@ -15,14 +15,25 @@ body {
 
 .react-flow__node { cursor: grab; }
 .react-flow__node:active { cursor: grabbing; }
-.react-flow__background { background: #0f172a !important; }
+/* The canvas is light (the surrounding panels stay dark). */
+.react-flow__background { background: #f4f6f9 !important; }
+/* Annotation nodes (group boxes, text, notes) carry no React Flow chrome. */
+.react-flow__node-group, .react-flow__node-text, .react-flow__node-note {
+  padding: 0; border: none; background: transparent; box-shadow: none !important; border-radius: 0;
+}
+/* While a drawing tool is active the pane places items: crosshair cursor. */
+.plabs-placing .react-flow__pane { cursor: crosshair; }
 
 /* The cable handle sits on a device's right edge; visible on hover / while connecting. */
 .react-flow__node:hover .plabs-handle,
 .react-flow__node.selected .plabs-handle,
 .react-flow.connecting .plabs-handle { opacity: 1 !important; }
 
-.react-flow__controls { background: #1e293b; border: 1px solid #334155; }
-.react-flow__controls-button { background: #1e293b; border-bottom: 1px solid #334155; fill: #cbd5e1; }
-.react-flow__controls-button:hover { background: #334155; }
-.react-flow__connectionline path { stroke: #60a5fa; stroke-width: 2; }
+.react-flow__controls { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.06); }
+.react-flow__controls-button { background: #fff; border-bottom: 1px solid #e2e8f0; fill: #475569; }
+.react-flow__controls-button:hover { background: #f1f5f9; }
+.react-flow__connectionline path { stroke: #2563eb; stroke-width: 2; }
+
+/* Device labels stay readable where a cable passes behind them. */
+.plabs-halo { text-shadow: 0 0 2px #f4f6f9, 0 0 3px #f4f6f9, 0 0 4px #f4f6f9, 0 0 6px #f4f6f9; }
