@@ -15,6 +15,16 @@ ARG DOCKER_VERSION=27.5.1
 RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
     | tar -xz -C /tmp && cp /tmp/docker/docker /usr/local/bin/docker && rm -rf /tmp/docker
 
+# buildx, so `docker build` uses BuildKit. vrnetlab Dockerfiles rely on it:
+# e.g. cat9kv's `COPY vswitch.xm[l] …` (an optional file) fails on the
+# legacy builder with "COPY failed: no source files were specified".
+ARG BUILDX_VERSION=0.19.3
+RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+      "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-amd64" && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+ENV DOCKER_BUILDKIT=1
+
 # containerlab >= 0.83 is required: Phanero Labs relies on `deploy` reconciling
 # a running lab in place (add/remove nodes + links without a full redeploy).
 ARG CLAB_VERSION=0.83.0

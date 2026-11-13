@@ -32,7 +32,64 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 const json = (method: string, body?: unknown): RequestInit =>
   ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
 
+/** One event from the lab agent's stream (see backend routes/agent.py). */
+export type AgentEvent =
+  | { type: 'conversation'; id: string; model: string }
+  | { type: 'text'; delta: string }
+  | { type: 'status'; text: string }
+  | { type: 'tool'; id: string; name: string; label: string; state: 'running' | 'done' | 'error'; summary?: string }
+  | { type: 'lab_changed' }
+  | { type: 'error'; message: string }
+  | { type: 'done' };
+
+export interface AgentConversationSummary { id: string; title: string; model: string; updated_at: string | null }
+
+export interface AIStatus {
+  enabled: boolean; error: string | null; default_model: string;
+  models: { id: string; label: string; provider: string }[];
+}
+
+/** POST a chat message and read the server-sent events as they arrive. */
+export async function streamAgentChat(tid: number, body: { message: string; conversation_id?: string | null; model?: string },
+                                      onEvent: (e: AgentEvent) => void, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(`${BASE}/topologies/${tid}/agent/chat`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(body), signal,
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text();
+    let detail = text;
+    try { detail = JSON.parse(text).detail ?? text; } catch { /* raw */ }
+    throw new ApiError(res.status, detail || `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const frame = buf.slice(0, i);
+      buf = buf.slice(i + 2);
+      const line = frame.split('\n').find(l => l.startsWith('data: '));
+      if (line) {
+        try { onEvent(JSON.parse(line.slice(6))); } catch { /* ignore a malformed frame */ }
+      }
+    }
+  }
+}
+
 export const api = {
+  aiStatus: () => request<AIStatus>('/ai/status'),
+  listAgentConversations: (tid: number) =>
+    request<AgentConversationSummary[]>(`/topologies/${tid}/agent/conversations`),
+  getAgentConversation: (tid: number, cid: string) =>
+    request<{ id: string; title: string; model: string; messages: any[] }>(`/topologies/${tid}/agent/conversations/${cid}`),
+  deleteAgentConversation: (tid: number, cid: string) =>
+    request<{ ok: boolean }>(`/topologies/${tid}/agent/conversations/${cid}`, json('DELETE')),
+  stopAgent: (tid: number, cid: string) =>
+    request<{ ok: boolean }>(`/topologies/${tid}/agent/conversations/${cid}/stop`, json('POST')),
   getFeatures: () => request<{ ai_enabled: boolean; lab_telemetry_enabled: boolean }>('/features'),
 
   // Topologies

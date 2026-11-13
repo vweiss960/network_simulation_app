@@ -16,6 +16,8 @@ import { Terminal, type ITheme } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
 import { useLabStore } from '../stores/useLabStore';
+import { useAgentStore } from '../stores/useAgentStore';
+import { usePresence } from '../hooks/usePresence';
 
 export type ConsoleTab = {
   id: string;        // node-id + kind ("console:42" or "logs:42")
@@ -174,12 +176,19 @@ export default function LabConsoleDrawer({ tabs, activeId, onSetActive, onClose 
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   };
 
-  if (tabs.length === 0) return null;
+  // The lab assistant panel sits on the left of the canvas (16 + 560 + 16 px):
+  // the drawer starts to its right instead of covering it.
+  // It slides up from the bottom edge when the first console opens, back
+  // down when the last one closes, and sideways when the chat opens/closes.
+  const chatOpen = useAgentStore(s => s.open);
+  const { mounted, visible } = usePresence(tabs.length > 0);
+  if (!mounted) return null;
   const rects = RECTS[layout];
-  const style = full ? undefined : { height: height || '42vh' };
+  const style = full ? undefined : { height: height || '42vh', left: chatOpen ? 592 : 0,
+                                     transform: visible ? 'translateY(0)' : 'translateY(100%)' };
 
   return (
-    <div className={`${full ? 'fixed inset-0 z-[60]' : 'absolute bottom-0 left-0 right-0 z-40'} flex flex-col shadow-2xl`}
+    <div className={`${full ? 'fixed inset-0 z-[60]' : 'absolute bottom-0 left-0 right-0 z-40 plabs-motion'} flex flex-col shadow-2xl`}
       style={{ ...style, background: VSCODE.background, borderTop: `1px solid ${C.border}` }}>
       {!full && <div onMouseDown={startDrag} className="absolute -top-1 left-0 right-0 h-2 cursor-ns-resize z-10" title="Drag to resize" />}
       {/* Tab bar */}

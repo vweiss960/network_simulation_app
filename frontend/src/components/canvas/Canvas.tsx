@@ -13,6 +13,7 @@ import { GroupNode, NoteNode, TextNode, type AnnotationNodeData } from './Annota
 import CanvasToolbar from './CanvasToolbar';
 import AskAIBar from './AskAIBar';
 import AddDevicePicker from './AddDevicePicker';
+import AIChatPanel from '../agent/AIChatPanel';
 import type { Annotation } from '../../types';
 
 const nodeTypes = { device: DeviceNode, group: GroupNode, text: TextNode, note: NoteNode };
@@ -27,7 +28,7 @@ export default function Canvas() {
   const {
     nodes, links, lab, kinds, selection, select, addNode, moveNodes, connect, deleteNode, deleteLink,
     openConsole, nodeAction, currentTopologyId, annotations, tool, setTool, addAnnotation, updateAnnotations,
-    deleteAnnotation, topology, setCanvasReady,
+    deleteAnnotation, topology, setCanvasReady, setEditingNode,
   } = useLabStore();
   const rf = useRef<ReactFlowInstance | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
@@ -263,6 +264,8 @@ export default function Canvas() {
     select({ type: 'node', id });
     if (node?.kind === 'bridge') {
       setMenu({ x: e.clientX, y: e.clientY, items: [
+        { label: 'Edit network', onClick: () => setEditingNode(id) },
+        { label: '', onClick: () => {}, divider: true },
         { label: `Delete ${node.name}`, danger: true, onClick: () => {
           if (!deployed || confirm(`Delete ${node.name}? Devices cabled to it lose that connection.`)) deleteNode(id);
         } },
@@ -271,6 +274,8 @@ export default function Canvas() {
     }
     setMenu({
       x: e.clientX, y: e.clientY, items: [
+        { label: 'Edit node', onClick: () => setEditingNode(id) },
+        { label: '', onClick: () => {}, divider: true },
         { label: 'Open console', onClick: () => openConsole(id), disabled: !running },
         { label: 'Open shell (sh)', onClick: () => openConsole(id, 'console', 'sh'), disabled: !running || node?.kind === 'linux' },
         { label: 'View logs', onClick: () => openConsole(id, 'logs'), disabled: !live },
@@ -284,7 +289,8 @@ export default function Canvas() {
         } },
       ],
     });
-  }, [nodes, lab, deployed, select, openConsole, nodeAction, deleteNode, annotations, updateAnnotations, deleteAnnotation]);
+  }, [nodes, lab, deployed, select, openConsole, nodeAction, deleteNode, annotations, updateAnnotations, deleteAnnotation,
+      setEditingNode]);
 
   const onEdgeContextMenu = useCallback((e: React.MouseEvent, edge: Edge) => {
     e.preventDefault();
@@ -314,7 +320,7 @@ export default function Canvas() {
   }, [lab, select, openConsole]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') { setTool('select'); return; }
+    if (e.key === 'Escape') { setTool('select'); setEditingNode(null); return; }
     if ((e.key === 'Delete' || e.key === 'Backspace') && selection &&
         !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
       if (selection.type === 'annotation') {
@@ -326,7 +332,7 @@ export default function Canvas() {
         deleteLink(selection.id);
       }
     }
-  }, [selection, nodes, deployed, deleteNode, deleteLink, setTool, annotations, deleteAnnotation]);
+  }, [selection, nodes, deployed, deleteNode, deleteLink, setTool, annotations, deleteAnnotation, setEditingNode]);
 
   const netemLabel = (() => {
     const l = links.find(x => x.id === netemLink);
@@ -368,6 +374,7 @@ export default function Canvas() {
         <Controls showInteractive={false} className="plabs-controls" />
       </ReactFlow>
       <AskAIBar />
+      <AIChatPanel />
       <CanvasToolbar />
       {nodes.length === 0 && annotations.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

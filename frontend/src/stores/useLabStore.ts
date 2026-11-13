@@ -55,6 +55,9 @@ interface LabStore {
   refreshTopology: () => Promise<void>;
   pollLab: () => Promise<void>;
   select: (s: Selection) => void;
+  /** Device / Network node whose settings panel is open (right-click → Edit node). */
+  editingNode: number | null;
+  setEditingNode: (id: number | null) => void;
   setTool: (t: CanvasTool) => void;
   addAnnotation: (type: Annotation['type'], x: number, y: number) => void;
   updateAnnotations: (patches: Record<string, Partial<Annotation>>) => void;
@@ -94,6 +97,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
   selection: null,
   annotations: [],
   tool: 'select',
+  editingNode: null,
   enterFrom: null,
   clearEnter: () => set({ enterFrom: null }),
   canvasReady: false,
@@ -122,7 +126,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
           // Drop the previous visit's record: until this lab's data arrives the
           // canvas must not mistake "not loaded yet" for "empty lab".
           topology: null,
-          nodes: [], links: [], lab: null, annotations: [], tool: 'select' });
+          nodes: [], links: [], lab: null, annotations: [], tool: 'select', editingNode: null });
     await Promise.all([get().refreshTopology(), get().pollLab(), get().loadTemplates().catch(() => {})]);
   },
 
@@ -150,6 +154,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
   },
 
   select: (selection) => set({ selection }),
+  setEditingNode: (editingNode) => set({ editingNode }),
   setTool: (tool) => set({ tool }),
 
   addAnnotation: (type, x, y) => {
@@ -216,6 +221,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
         nodes: get().nodes.filter(n => n.id !== id),
         links: get().links.filter(l => l.source_node_id !== id && l.target_node_id !== id),
         selection: null,
+        editingNode: get().editingNode === id ? null : get().editingNode,
         consoleTabs: get().consoleTabs.filter(t => t.nodeId !== id),
       });
       get().pollLab();

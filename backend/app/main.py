@@ -13,7 +13,7 @@ from app.models.database import SessionLocal, init_db
 from app.models.node_template import NodeTemplate
 from app.models.user import User
 from app.routes import auth as auth_routes
-from app.routes import device, uploads, lab, lab_console, lab_network, links, node_templates, nodes, topologies
+from app.routes import agent, device, uploads, lab, lab_console, lab_network, links, node_templates, nodes, topologies
 
 class _RedactTokens(logging.Filter):
     """Console WebSockets carry the JWT as ?token=…; keep it out of access logs."""
@@ -52,6 +52,7 @@ app.include_router(lab.images_router, dependencies=auth_dep)
 app.include_router(lab_network.router, dependencies=auth_dep)
 app.include_router(device.router, dependencies=auth_dep)
 app.include_router(uploads.router, dependencies=auth_dep)
+app.include_router(agent.router, dependencies=auth_dep)
 # Console / log WebSockets authenticate via ?token=<jwt> (browsers can't set
 # headers on a WebSocket upgrade).
 app.include_router(lab_console.router)

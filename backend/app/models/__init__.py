@@ -10,3 +10,5 @@ from app.models.lab_gnmi_subscription import LabGnmiSubscription  # noqa: F401
 from app.models.app_setting import AppSetting  # noqa: F401
 from app.models.mgmt_lease import MgmtLease  # noqa: F401
 from app.models.config_snapshot import ConfigSnapshot  # noqa: F401
+from app.models.agent_action import AgentAction  # noqa: F401
+from app.models.agent_conversation import AgentConversation  # noqa: F401

@@ -10,6 +10,7 @@ import LabSummary from './LabSummary';
 import LabEnterTransition from './LabEnterTransition';
 import LabConsoleDrawer from '../LabConsoleDrawer';
 import type { LabStatus } from '../../types';
+import { useLast, usePresence } from '../../hooks/usePresence';
 
 const STATUS_STYLE: Record<LabStatus, string> = {
   idle: 'bg-surface-700 text-surface-300',
@@ -34,7 +35,16 @@ export default function Workspace() {
   // keeps the Labs page's light background.
   const entering = useLabStore(st => !!st.enterFrom);
 
-  const inspecting = selection?.type === 'node' || selection?.type === 'link';
+  const editingNode = useLabStore(st => st.editingNode);
+  // A device removed elsewhere (e.g. by the lab assistant) closes its panel.
+  const editingLive = editingNode !== null && nodes.some(n => n.id === editingNode);
+  const inspecting = editingLive || selection?.type === 'link';
+  // Right-hand panels slide in from the right edge and out again; a closing
+  // Inspector keeps showing what it showed until it's gone.
+  const info = usePresence(showInfo);
+  const inspector = usePresence(inspecting);
+  const target = useLast(editingLive ? `node:${editingNode}`
+    : selection?.type === 'link' ? `link:${selection.id}` : null);
   const offCount = nodes.filter(n => n.kind !== 'bridge' && n.enabled === false).length;
   const [editingName, setEditingName] = useState(false);
   const [name, setName] = useState('');
@@ -115,8 +125,9 @@ export default function Workspace() {
         <main className="flex-1 relative min-w-0">
           <LabEnterTransition />
           <ReactFlowProvider><Canvas /></ReactFlowProvider>
-          {showInfo && (
-            <div className="absolute top-0 right-0 bottom-0 z-30 w-80 border-l border-surface-700 bg-surface-800 shadow-2xl flex flex-col">
+          {info.mounted && (
+            <div className="absolute top-0 right-0 bottom-0 z-30 w-80 border-l border-surface-700 bg-surface-800 shadow-2xl flex flex-col plabs-motion"
+              style={{ transform: info.visible ? 'translateX(0)' : 'translateX(100%)' }}>
               <div className="h-10 shrink-0 flex items-center justify-between px-3 border-b border-surface-700">
                 <span className="text-sm font-semibold">Lab info</span>
                 <button onClick={() => setShowInfo(false)} className="p-1 rounded hover:bg-surface-700"><X size={15} /></button>
@@ -126,7 +137,17 @@ export default function Workspace() {
           )}
           <LabConsoleDrawer tabs={consoleTabs} activeId={activeConsoleId} onSetActive={setActiveConsole} onClose={closeConsole} />
         </main>
-        {inspecting && <aside className="w-80 shrink-0 border-l border-surface-700 bg-surface-800/40"><Inspector /></aside>}
+        {inspector.mounted && (
+          // The aside grows from 0 to its width (the canvas eases aside) while
+          // the fixed-width content slides in with it.
+          <aside className="shrink-0 overflow-hidden border-l border-surface-700 bg-surface-800/40 plabs-motion"
+            style={{ width: inspector.visible ? 320 : 0 }}>
+            <div className="w-80 h-full plabs-motion"
+              style={{ transform: inspector.visible ? 'translateX(0)' : 'translateX(40px)', opacity: inspector.visible ? 1 : 0 }}>
+              <Inspector target={target} />
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   );

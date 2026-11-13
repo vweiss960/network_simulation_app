@@ -175,6 +175,22 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
 - Console for a booting vrnetlab VM streams `docker logs` (vrnetlab owns the
   serial port while booting) and switches to SSH when it answers.
 
+### Lab agent (`services/lab_agent.py`, `services/llm.py`, `routes/agent.py`)
+- Chat on the canvas (Ask AI bar → `components/agent/AIChatPanel`), streamed as
+  SSE from `POST /api/topologies/{id}/agent/chat`; conversations live in memory
+  (`lab_agent._SESSIONS`, per lab + model). `GET /api/ai/status` lists the
+  models whose provider has a key.
+- Default model Claude Opus 5.5 (`claude-opus-5-5`, effort `high`, adaptive
+  thinking, prompt caching, server-side refusal `fallbacks: "default"`);
+  OpenAI models via `PLABS_AI_OPENAI_*` (any OpenAI-compatible endpoint).
+- Tools are the UI's own code paths: lab state (kinds, OS, cabling, state),
+  running config / show / ping (`device_exec`), apply config, add / cable /
+  remove devices, group boxes / notes, start + wait. Claude also gets
+  `web_search` / `web_fetch` restricted to Cisco doc sites; OpenAI models get
+  `fetch_cisco_doc`. Every change is logged in `agent_actions`
+  (`GET …/agent/actions`). The prompt is Cisco-centric; vendor specifics stay
+  in `device_exec` / `device_kinds`.
+
 ### Layout
 `backend/app/`: `config.py` (env + paths, defaults inside the repo),
 `routes/` (topologies, nodes, links, node_templates, lab, lab_console, auth),
@@ -198,8 +214,10 @@ is light, the panels dark),
 `panels/UserManagementPanel`. `utils/api.ts` wraps every endpoint.
 
 ### Env
-`PLABS_*` (see `.env.example`). AI: `services/llm.py` provider abstraction
-(`PLABS_AI_PROVIDER` anthropic | openai | litellm).
+`PLABS_*` (see `.env.example`). AI: `PLABS_AI_ENABLED`, `PLABS_AI_API_KEY`
+(Anthropic), `PLABS_AI_MODEL`, optional `PLABS_AI_OPENAI_API_KEY` /
+`PLABS_AI_OPENAI_BASE_URL` (any OpenAI-compatible endpoint, e.g. LiteLLM) /
+`PLABS_AI_OPENAI_MODELS`; the provider follows the chosen model.
 
 ### Host notes
 The server also runs the original Phanero (ports 80/3000/8000) and other apps

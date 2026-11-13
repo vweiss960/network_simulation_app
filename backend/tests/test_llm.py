@@ -1,165 +1,86 @@
-"""Provider translation in app.services.llm — fake SDK clients, no network."""
+"""Provider layer: model availability, and one streamed turn per provider
+against fake SDK clients (no network)."""
 from types import SimpleNamespace as NS
-
-import pytest
 
 from app.services import llm
 
-TOOLS = [{
-    "name": "add_node",
-    "description": "Add a node",
-    "input_schema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
-}]
+
+def test_models_follow_keys(monkeypatch):
+    monkeypatch.setattr(llm, "ANTHROPIC_KEY", "")
+    monkeypatch.setattr(llm, "OPENAI_KEY", "")
+    monkeypatch.setattr(llm, "OPENAI_BASE_URL", "")
+    assert llm.available_models() == []
+    assert "Anthropic" in llm.config_error("claude-opus-5-5")
+    monkeypatch.setattr(llm, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(llm, "OPENAI_MODELS", ["gpt-x"])
+    assert [m["id"] for m in llm.available_models()] == ["claude-opus-5-5", "claude-sonnet-5-5"]
+    assert llm.config_error("claude-opus-5-5") is None and "OpenAI" in llm.config_error("gpt-x")
+    monkeypatch.setattr(llm, "OPENAI_BASE_URL", "http://litellm:4000")
+    assert "gpt-x" in [m["id"] for m in llm.available_models()]
+    assert llm.provider_of("claude-sonnet-5-5") == "anthropic" and llm.provider_of("gpt-x") == "openai"
 
 
-class FakeCreate:
-    """Records each request and replays canned responses in order."""
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def create(self, **kwargs):
-        # Snapshot messages — the Conversation mutates its list after the call.
-        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
-        return self.responses.pop(0)
-
-
-def _conversation(monkeypatch, provider, responses):
-    monkeypatch.setattr(llm, "PROVIDER", provider)
-    monkeypatch.setattr(llm, "API_KEY", "test-key")
-    monkeypatch.setattr(llm, "BASE_URL", "")
-    monkeypatch.setattr(llm, "MODEL", "main-model")
-    conv = llm.Conversation([{"role": "user", "content": "add r1"}], TOOLS)
-    fake = FakeCreate(responses)
-    conv._client = NS(messages=fake, chat=NS(completions=fake))
-    return conv, fake
+class FakeStream:
+    def __init__(self, events, final):
+        self.events, self.final = events, final
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+    def __iter__(self):
+        return iter(self.events)
+    def get_final_message(self):
+        return self.final
 
 
-def _openai_resp(content=None, tool_calls=None):
-    return NS(choices=[NS(message=NS(content=content, tool_calls=tool_calls))])
+def _anthropic(monkeypatch, final, events=()):
+    seen = {}
+    def stream(**kw):
+        seen.update(kw)
+        return FakeStream(list(events), final)
+    c = llm.AgentConversation.__new__(llm.AgentConversation)
+    c.model, c.provider, c.messages = "claude-opus-5-5", "anthropic", []
+    c._tools = [{"name": "t", "input_schema": {}}]
+    c._client = NS(beta=NS(messages=NS(stream=stream)))
+    return c, seen
 
 
-def _openai_call(cid, name, arguments):
-    return NS(id=cid, function=NS(name=name, arguments=arguments))
+def test_anthropic_turn(monkeypatch):
+    final = NS(stop_reason="tool_use", content=[
+        NS(type="text", text="Checking."), NS(type="tool_use", id="tu1", name="get_lab_state", input={})])
+    c, seen = _anthropic(monkeypatch, final, [NS(type="text", text="Checking.")])
+    c.add_user("hi")
+    got = []
+    t = c.step("SYS", got.append, got.append)
+    assert got == ["Checking."] and t.stop == "tool_use" and t.tool_calls[0].name == "get_lab_state"
+    assert seen["model"] == "claude-opus-5-5" and seen["fallbacks"] == "default"
+    assert seen["betas"] == ["server-side-fallback-2026-07-01"] and seen["output_config"] == {"effort": "high"}
+    assert "thinking" not in seen and "temperature" not in seen
+    assert c.messages[-1]["content"] is final.content     # assistant turn kept verbatim
+    c.add_tool_results([("tu1", "ok", False)])
+    assert c.messages[-1]["content"][0]["tool_use_id"] == "tu1"
 
 
-def test_to_openai_tools():
-    out = llm.to_openai_tools(TOOLS)
-    assert out == [{
-        "type": "function",
-        "function": {"name": "add_node", "description": "Add a node", "parameters": TOOLS[0]["input_schema"]},
-    }]
+def test_anthropic_refusal_closes_calls(monkeypatch):
+    final = NS(stop_reason="refusal", stop_details=NS(category="cyber"),
+               content=[NS(type="tool_use", id="tu1", name="apply_config", input={"device": "R1"})])
+    c, _ = _anthropic(monkeypatch, final)
+    c.add_user("x")
+    t = c.step("SYS", lambda d: None, lambda d: None)
+    assert t.stop == "refusal" and "cyber" in t.note and not t.tool_calls
+    assert c.messages[-1]["content"][0]["is_error"] is True   # dangling tool_use answered
 
 
-@pytest.mark.parametrize("provider", ["openai", "litellm"])
-def test_openai_tool_round_trip(monkeypatch, provider):
-    conv, fake = _conversation(monkeypatch, provider, [
-        _openai_resp("Adding it.", [_openai_call("call_1", "add_node", '{"name": "r1"}')]),
-        _openai_resp("Done."),
-    ])
-
-    turn = conv.step("SYS", max_tokens=100)
-    assert turn.text == "Adding it."
-    assert [(c.id, c.name, c.input) for c in turn.tool_calls] == [("call_1", "add_node", {"name": "r1"})]
-    first = fake.calls[0]
-    assert first["model"] == "main-model"
-    assert first["max_completion_tokens"] == 100
-    assert first["tool_choice"] == "auto"
-    assert first["messages"][0] == {"role": "system", "content": "SYS"}
-    assert first["tools"][0]["function"]["name"] == "add_node"
-
-    conv.add_tool_results([("call_1", "Added node r1")])
-    turn = conv.step("SYS")
-    assert turn.text == "Done." and turn.tool_calls == []
-
-    history = fake.calls[1]["messages"]
-    assert history[2]["role"] == "assistant"
-    assert history[2]["tool_calls"][0]["id"] == "call_1"
-    assert history[2]["tool_calls"][0]["function"] == {"name": "add_node", "arguments": '{"name": "r1"}'}
-    assert history[3] == {"role": "tool", "tool_call_id": "call_1", "content": "Added node r1"}
-
-
-def test_openai_disallowed_tools_forces_text(monkeypatch):
-    conv, fake = _conversation(monkeypatch, "litellm", [
-        _openai_resp("Summary", [_openai_call("call_x", "add_node", "{}")]),
-    ])
-    turn = conv.step("SYS", model="other", allow_tools=False)
-    assert turn.text == "Summary" and turn.tool_calls == []
-    assert fake.calls[0]["tool_choice"] == "none"
-    assert fake.calls[0]["model"] == "other"
-    assert len(conv.messages) == 1  # nothing appended for a final answer
-
-
-@pytest.mark.parametrize("arguments", ["{not json", "[1]", '{"body": "trunc'])
-def test_openai_bad_arguments_are_not_run(monkeypatch, arguments):
-    conv, _ = _conversation(monkeypatch, "openai", [
-        _openai_resp(None, [_openai_call("c1", "add_node", '{"name": "r1"}'),
-                            _openai_call("c2", "add_node", arguments)]),
-    ])
-    turn = conv.step("SYS")
-    assert turn.tool_calls == []
-    assert "not run" in turn.text
-    assert len(conv.messages) == 1  # no dangling assistant tool_calls
-
-
-def test_openai_length_truncated_calls_are_not_run(monkeypatch):
-    resp = _openai_resp(None, [_openai_call("c1", "add_node", '{"name": "r1"}')])
-    resp.choices[0].finish_reason = "length"
-    conv, _ = _conversation(monkeypatch, "openai", [resp])
-    assert conv.step("SYS").tool_calls == []
-
-
-def test_anthropic_max_tokens_truncated_calls_are_not_run(monkeypatch):
-    conv, _ = _conversation(monkeypatch, "anthropic", [NS(stop_reason="max_tokens", content=[
-        NS(type="tool_use", id="tu_1", name="add_node", input={}),
-    ])])
-    turn = conv.step("SYS")
-    assert turn.tool_calls == [] and "not run" in turn.text
-    assert len(conv.messages) == 1
-
-
-def test_anthropic_tool_round_trip(monkeypatch):
-    content = [
-        NS(type="text", text="Adding it."),
-        NS(type="tool_use", id="tu_1", name="add_node", input={"name": "r1"}),
-    ]
-    conv, fake = _conversation(monkeypatch, "anthropic", [
-        NS(content=content),
-        NS(content=[NS(type="text", text="Done.")]),
-    ])
-
-    turn = conv.step("SYS")
-    assert turn.text == "Adding it."
-    assert [(c.id, c.name, c.input) for c in turn.tool_calls] == [("tu_1", "add_node", {"name": "r1"})]
-    assert fake.calls[0]["system"] == "SYS" and fake.calls[0]["tools"] == TOOLS
-
-    conv.add_tool_results([("tu_1", "Added node r1")])
-    turn = conv.step("SYS", allow_tools=False)
-    assert turn.text == "Done."
-    assert "tools" not in fake.calls[1]
-    history = fake.calls[1]["messages"]
-    assert history[1] == {"role": "assistant", "content": content}
-    assert history[2] == {"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": "tu_1", "content": "Added node r1"},
-    ]}
-
-
-@pytest.mark.parametrize("provider,key,base,model,expect", [
-    ("anthropic", "k", "", "m", None),
-    ("anthropic", "", "", "m", "No API key"),
-    ("openai", "k", "", "", "PLABS_AI_MODEL must be set"),
-    ("openai", "k", "", "gpt", None),
-    ("litellm", "", "", "alias", "requires PLABS_AI_BASE_URL"),
-    ("litellm", "", "http://localhost:4000", "alias", None),  # keyless proxy is fine
-    ("bogus", "k", "", "m", "Unknown PLABS_AI_PROVIDER"),
-])
-def test_config_error(monkeypatch, provider, key, base, model, expect):
-    monkeypatch.setattr(llm, "PROVIDER", provider)
-    monkeypatch.setattr(llm, "API_KEY", key)
-    monkeypatch.setattr(llm, "BASE_URL", base)
-    monkeypatch.setattr(llm, "MODEL", model)
-    err = llm.config_error()
-    if expect is None:
-        assert err is None
-    else:
-        assert expect in err
+def test_openai_turn_accumulates_tool_calls():
+    def chunk(content=None, calls=None, finish=None):
+        return NS(choices=[NS(delta=NS(content=content, tool_calls=calls), finish_reason=finish)])
+    tc = lambda i, id_=None, name=None, args="": NS(index=i, id=id_, function=NS(name=name, arguments=args))  # noqa: E731
+    chunks = [chunk("Look"), chunk("ing."), chunk(calls=[tc(0, "c1", "run_show", '{"device": "R1", ')]),
+              chunk(calls=[tc(0, args='"commands": ["show ver"]}')]), chunk(finish="tool_calls")]
+    c = llm.AgentConversation.__new__(llm.AgentConversation)
+    c.model, c.provider, c.messages, c._tools = "gpt-x", "openai", [], []
+    c._client = NS(chat=NS(completions=NS(create=lambda **kw: iter(chunks))))
+    got = []
+    t = c.step("SYS", got.append, got.append)
+    assert "".join(got) == "Looking." and t.tool_calls[0].input == {"device": "R1", "commands": ["show ver"]}
+    assert c.messages[-1]["tool_calls"][0]["function"]["name"] == "run_show"

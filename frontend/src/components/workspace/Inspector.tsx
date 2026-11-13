@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Play, RotateCw, Square, Terminal, Trash2, FileText, Zap } from 'lucide-react';
+import { Play, RotateCw, Square, Terminal, Trash2, FileText, Zap, X } from 'lucide-react';
 import { useLabStore } from '../../stores/useLabStore';
 import { api } from '../../utils/api';
 import type { Device, Link } from '../../types';
@@ -10,14 +10,38 @@ import DeviceTools from './DeviceTools';
 const field = 'w-full px-2 py-1.5 text-sm rounded bg-surface-900 border border-surface-700 focus:border-primary-500 outline-none';
 const label = 'block text-[11px] uppercase tracking-wider text-surface-500 mb-1';
 
-export default function Inspector() {
-  const { selection, nodes, links } = useLabStore();
-  if (selection?.type === 'node') {
-    const n = nodes.find(x => x.id === selection.id);
-    if (n) return n.kind === 'bridge' ? <NetworkInspector key={n.id} node={n} /> : <NodeInspector key={n.id} node={n} />;
+/** Right-hand panel: the device / Network node being edited (opened from its
+ *  right-click menu), otherwise the selected cable. `target` is "node:<id>" or
+ *  "link:<id>" (the Workspace keeps the last one while the panel closes). */
+export default function Inspector({ target }: { target: string | null }) {
+  const { nodes, links, setEditingNode } = useLabStore();
+  const [what, rawId] = (target ?? ':').split(':');
+  const id = Number(rawId);
+  const n = what === 'node' ? nodes.find(x => x.id === id) : undefined;
+  // Esc closes the edited device from anywhere except a console (where Esc
+  // belongs to the device CLI).
+  const editing = !!n;
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !(e.target instanceof Element && e.target.closest('.xterm'))) setEditingNode(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editing, setEditingNode]);
+  if (n) {
+    return (
+      <div className="relative h-full">
+        <button onClick={() => setEditingNode(null)} title="Close (Esc)"
+          className="absolute top-2.5 right-2.5 z-10 p-1 rounded text-surface-400 hover:text-surface-100 hover:bg-surface-700">
+          <X size={15} />
+        </button>
+        {n.kind === 'bridge' ? <NetworkInspector key={n.id} node={n} /> : <NodeInspector key={n.id} node={n} />}
+      </div>
+    );
   }
-  if (selection?.type === 'link') {
-    const l = links.find(x => x.id === selection.id);
+  if (what === 'link') {
+    const l = links.find(x => x.id === id);
     if (l) return <LinkInspector key={l.id} link={l} />;
   }
   return null;

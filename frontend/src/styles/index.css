@@ -83,3 +83,8 @@ body {
 /* While a lab opens, its dot grid fades in (the lifted card was plain). */
 .plabs-entering .react-flow__background { animation: plabs-fade 650ms ease both; }
 @media (prefers-reduced-motion: reduce) { .plabs-entering .react-flow__background { animation: none; } }
+
+/* Panel motion (console drawer, AI chat, right-hand panels). */
+.plabs-motion { transition: transform 300ms cubic-bezier(.2,.8,.2,1), opacity 220ms ease,
+  clip-path 320ms cubic-bezier(.2,.8,.2,1), left 300ms cubic-bezier(.2,.8,.2,1), width 300ms cubic-bezier(.2,.8,.2,1); }
+@media (prefers-reduced-motion: reduce) { .plabs-motion { transition: none !important; } }
