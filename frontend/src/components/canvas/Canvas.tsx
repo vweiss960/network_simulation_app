@@ -28,8 +28,9 @@ export default function Canvas() {
   const {
     nodes, links, lab, kinds, selection, select, addNode, moveNodes, connect, deleteNode, deleteLink,
     openConsole, nodeAction, currentTopologyId, annotations, tool, setTool, addAnnotation, updateAnnotations,
-    deleteAnnotation, topology, setCanvasReady, setEditingNode,
+    deleteAnnotation, topology, setCanvasReady, setEditingNode, openCapture, capturing,
   } = useLabStore();
+  const capturedLinks = useMemo(() => new Set(Object.values(capturing)), [capturing]);
   const rf = useRef<ReactFlowInstance | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState<Menu>(null);
@@ -159,6 +160,7 @@ export default function Canvas() {
       selected: selection?.type === 'link' && selection.id === l.id,
       data: {
         sourceIf: l.source_interface, targetIf: l.target_interface,
+        capturing: capturedLinks.has(l.id),
         inactive: deployed && [l.source_node_id, l.target_node_id].some(id => {
           const n = nodes.find(x => x.id === id);
           return n && n.kind !== 'bridge' && (lab?.nodes?.[String(id)]?.ready_state ?? 'absent') === 'absent';
@@ -176,7 +178,7 @@ export default function Canvas() {
       data: { sourceIf: kinds[n.kind]?.mgmt_iface ?? 'mgmt', targetIf: 'mgmt', mgmt: true },
     })) : [];
     return [...mgmt, ...cables];
-  }, [links, selection, nodes, mgmtNode, kinds, deployed, lab]);
+  }, [links, selection, nodes, mgmtNode, kinds, deployed, lab, capturedLinks]);
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes(TEMPLATE_DND)) {
@@ -299,11 +301,13 @@ export default function Canvas() {
     select({ type: 'link', id });
     setMenu({
       x: e.clientX, y: e.clientY, items: [
+        { label: 'Capture packets', onClick: () => openCapture(id), disabled: !deployed },
         { label: 'Impairments (delay / loss)…', onClick: () => setNetemLink(id), disabled: !deployed },
+        { label: '', onClick: () => {}, divider: true },
         { label: 'Delete link', danger: true, onClick: () => deleteLink(id) },
       ],
     });
-  }, [deployed, select, deleteLink]);
+  }, [deployed, select, deleteLink, openCapture]);
 
   // Double-click → console. Detected from click timing: the first click
   // re-renders the node as selected, which makes browsers drop the native

@@ -1369,6 +1369,11 @@ def _destroy_locked(db: Session, topology_id: int) -> dict:
     dep.status = "destroying"
     db.commit()
     try:
+        from app.services import packet_capture
+        packet_capture.stop_topology(topology_id)
+    except Exception:
+        pass
+    try:
         from app.services import lab_addons
         lab_addons.stop_lab_addons(dep.lab_name)
     except Exception:

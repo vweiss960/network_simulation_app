@@ -5,9 +5,10 @@ FROM python:3.12-slim
 
 WORKDIR /app/backend
 
+# tshark: packet capture on lab links (services/packet_capture.py).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl ca-certificates iproute2 iptables iputils-ping jq git make openssh-client telnet && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        curl ca-certificates iproute2 iptables iputils-ping jq git make openssh-client telnet tshark && \
     rm -rf /var/lib/apt/lists/*
 
 # Docker CLI only — talks to the host daemon through the mounted socket.

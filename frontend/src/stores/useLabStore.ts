@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import toast from 'react-hot-toast';
-import { api } from '../utils/api';
+import { api, type CaptureInfo } from '../utils/api';
 import type { Annotation, Device, DeviceKind, LabState, Link, NetworkSpec, NodeTemplate, Topology } from '../types';
 import type { ConsoleTab } from '../components/LabConsoleDrawer';
 
@@ -79,6 +79,11 @@ interface LabStore {
 
   openConsole: (nodeId: number, type?: 'console' | 'logs', cli?: string) => void;
   closeConsole: (id: string) => void;
+  /** Running packet captures: capture id → link id (drives the cable marker). */
+  capturing: Record<string, number>;
+  setCapturing: (captureId: string, linkId: number | null) => void;
+  openCapture: (linkId: number, filter?: string) => Promise<void>;
+  restoreCaptures: () => Promise<void>;
   setActiveConsole: (id: string) => void;
 }
 
@@ -103,6 +108,7 @@ export const useLabStore = create<LabStore>((set, get) => ({
   canvasReady: false,
   setCanvasReady: (canvasReady) => set({ canvasReady }),
   consoleTabs: [],
+  capturing: {},
   activeConsoleId: null,
 
   setPage: (page) => {
@@ -126,8 +132,9 @@ export const useLabStore = create<LabStore>((set, get) => ({
           // Drop the previous visit's record: until this lab's data arrives the
           // canvas must not mistake "not loaded yet" for "empty lab".
           topology: null,
-          nodes: [], links: [], lab: null, annotations: [], tool: 'select', editingNode: null });
+          nodes: [], links: [], lab: null, annotations: [], tool: 'select', editingNode: null, capturing: {} });
     await Promise.all([get().refreshTopology(), get().pollLab(), get().loadTemplates().catch(() => {})]);
+    get().restoreCaptures();
   },
 
   closeTopology: () => {
@@ -283,7 +290,9 @@ export const useLabStore = create<LabStore>((set, get) => ({
     try {
       const r = await api.destroyLab(tid);
       toast.success(`Lab destroyed (${r.removed_count} containers removed)`);
-      set({ consoleTabs: [], activeConsoleId: null });
+      // Captures stop with the lab but stay open to read and download.
+      const keep = get().consoleTabs.filter(t => t.type === 'capture');
+      set({ consoleTabs: keep, activeConsoleId: keep[keep.length - 1]?.id ?? null, capturing: {} });
     } catch (e) { toast.error(errMsg(e)); }
     finally { set({ busy: null }); get().pollLab(); }
   },
@@ -314,9 +323,57 @@ export const useLabStore = create<LabStore>((set, get) => ({
   },
 
   closeConsole: (id) => {
+    const closing = get().consoleTabs.find(t => t.id === id);
+    const tid = get().currentTopologyId;
+    if (closing?.type === 'capture' && closing.captureId && tid) {
+      // Closing a capture's tab ends it and discards its file.
+      api.deleteCapture(tid, closing.captureId).catch(() => {});
+      get().setCapturing(closing.captureId, null);
+    }
     const tabs = get().consoleTabs.filter(t => t.id !== id);
     set({ consoleTabs: tabs, activeConsoleId: get().activeConsoleId === id ? (tabs[tabs.length - 1]?.id ?? null) : get().activeConsoleId });
   },
 
   setActiveConsole: (id) => set({ activeConsoleId: id }),
+
+  setCapturing: (cid, linkId) => {
+    const cur = get().capturing;
+    if (linkId === null ? !(cid in cur) : cur[cid] === linkId) return;
+    const next = { ...cur };
+    if (linkId === null) delete next[cid]; else next[cid] = linkId;
+    set({ capturing: next });
+  },
+
+  openCapture: async (linkId, filter = '') => {
+    const tid = get().currentTopologyId;
+    if (!tid) return;
+    try {
+      const cap = await api.startCapture(tid, linkId, filter);
+      const id = `capture:${cap.id}`;
+      set({ consoleTabs: [...get().consoleTabs, captureTab(cap, get().links, get().nodes)], activeConsoleId: id });
+      get().setCapturing(cap.id, linkId);
+    } catch (e) { toast.error(`Couldn't start the capture: ${errMsg(e)}`); }
+  },
+
+  // Captures outlive the page: reopening a lab shows the ones still on the server.
+  restoreCaptures: async () => {
+    const tid = get().currentTopologyId;
+    if (!tid) return;
+    try {
+      const caps = await api.listCaptures(tid);
+      if (get().currentTopologyId !== tid || !caps.length) return;
+      const have = new Set(get().consoleTabs.map(t => t.id));
+      const add = caps.filter(c => !have.has(`capture:${c.id}`)).reverse().map(c => captureTab(c, get().links, get().nodes));
+      set({ consoleTabs: [...get().consoleTabs, ...add] });
+      caps.filter(c => c.state === 'running').forEach(c => get().setCapturing(c.id, c.link_id));
+    } catch { /* captures are optional */ }
+  },
 }));
+
+/** Tab for a capture, labelled with the two device names. */
+function captureTab(cap: CaptureInfo, links: Link[], nodes: Device[]): ConsoleTab {
+  const l = links.find(x => x.id === cap.link_id);
+  const name = (id?: number) => nodes.find(n => n.id === id)?.name ?? '?';
+  return { id: `capture:${cap.id}`, type: 'capture', nodeId: 0, captureId: cap.id, linkId: cap.link_id,
+           nodeName: l ? `${name(l.source_node_id)} ↔ ${name(l.target_node_id)}` : cap.title };
+}

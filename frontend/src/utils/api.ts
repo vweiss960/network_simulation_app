@@ -32,6 +32,27 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 const json = (method: string, body?: unknown): RequestInit =>
   ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
 
+/** A packet capture on a lab link (backend services/packet_capture.py). */
+export interface CaptureInfo {
+  id: string; topology_id: number; link_id: number; title: string; side: string; filter: string;
+  state: 'running' | 'stopped' | 'error'; note: string; packets: number; bytes: number;
+  started: number; ended: number | null; username: string;
+}
+/** [number, time (s), source, destination, protocol, length, info] */
+export type CaptureRow = [number, number, string, string, string, number, string];
+export interface PacketDetail { number: number; tree: string[]; hex: string }
+
+/** Save a capture's pcapng (authenticated fetch → browser download). */
+export async function downloadCapture(tid: number, cid: string): Promise<void> {
+  const res = await fetch(`${BASE}/topologies/${tid}/captures/${cid}/download`, { headers: authHeaders() });
+  if (!res.ok) throw new ApiError(res.status, (await res.text()) || `HTTP ${res.status}`);
+  const name = /filename="?([^";]+)"?/.exec(res.headers.get('content-disposition') || '')?.[1] || 'capture.pcapng';
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 /** One event from the lab agent's stream (see backend routes/agent.py). */
 export type AgentEvent =
   | { type: 'conversation'; id: string; model: string }
@@ -159,6 +180,14 @@ export const api = {
   startNode: (tid: number, nid: number) => request<any>(`/topologies/${tid}/lab/node/${nid}/start`, json('POST')),
   stopNode: (tid: number, nid: number) => request<any>(`/topologies/${tid}/lab/node/${nid}/stop`, json('POST')),
   restartNode: (tid: number, nid: number) => request<any>(`/topologies/${tid}/lab/node/${nid}/restart`, json('POST')),
+  startCapture: (tid: number, lid: number, filter = '') =>
+    request<CaptureInfo>(`/topologies/${tid}/links/${lid}/capture`, json('POST', { filter })),
+  listCaptures: (tid: number) => request<CaptureInfo[]>(`/topologies/${tid}/captures`),
+  stopCapture: (tid: number, cid: string) => request<CaptureInfo>(`/topologies/${tid}/captures/${cid}/stop`, json('POST')),
+  deleteCapture: (tid: number, cid: string) => request<{ ok: boolean }>(`/topologies/${tid}/captures/${cid}`, json('DELETE')),
+  capturePacket: (tid: number, cid: string, n: number) => request<PacketDetail>(`/topologies/${tid}/captures/${cid}/packets/${n}`),
+  captureMatch: (tid: number, cid: string, filter: string) =>
+    request<{ numbers: number[] }>(`/topologies/${tid}/captures/${cid}/match?filter=${encodeURIComponent(filter)}`),
   getLinkDegradation: (tid: number, lid: number) => request<any>(`/topologies/${tid}/lab/link/${lid}/netem`),
   setLinkDegradation: (tid: number, lid: number, data: { delay: string; jitter: string; loss: number; rate: number; corruption: number; direction?: 'both' | 'a' | 'b' }) =>
     request<any>(`/topologies/${tid}/lab/link/${lid}/netem`, json('POST', data)),

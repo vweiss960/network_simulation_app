@@ -8,6 +8,7 @@ export interface CableEdgeData {
   impaired?: boolean;
   mgmt?: boolean;          // management attachment (dashed, not editable)
   inactive?: boolean;      // an end isn't deployed yet (dashed)
+  capturing?: boolean;     // a packet capture is running on it (red marker mid-cable)
 }
 
 const ICON_CENTER_Y = SYMBOL_SIZE / 2;
@@ -55,6 +56,13 @@ function CableEdge({ id, source, target, data, selected }: EdgeProps<CableEdgeDa
             {shortIf(String(label ?? ''))}
           </div>
         ))}
+        {data?.capturing && (
+          <div title="Packet capture running"
+            style={{ transform: `translate(-50%, -50%) translate(${(x1 + x2) / 2}px, ${(y1 + y2) / 2}px)` }}
+            className="absolute pointer-events-none flex items-center gap-1 px-1.5 py-px rounded-full bg-white border border-red-300 shadow-sm text-[9px] font-semibold text-red-600">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />REC
+          </div>
+        )}
       </EdgeLabelRenderer>
     </>
   );

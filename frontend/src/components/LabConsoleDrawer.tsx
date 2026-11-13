@@ -1,7 +1,8 @@
 /**
  * Console drawer: device CLIs (SSH / docker exec) and container logs in
  * xterm.js, styled like VS Code's integrated terminal.
- *  - Full screen, resizable height, split into 1 / 2 / 4 panes.
+ *  - Full screen, resizable height, split into 1 / 2 / 4 panes. Each pane
+ *    has its own tabs (like VS Code editor groups); drag tabs between panes.
  *  - Shift+Tab rotates through sessions (plain Tab stays with the device:
  *    it's command completion on network CLIs).
  *  - Right-click pastes SecureCRT-style: a confirmation shows exactly what
@@ -18,13 +19,16 @@ import 'xterm/css/xterm.css';
 import { useLabStore } from '../stores/useLabStore';
 import { useAgentStore } from '../stores/useAgentStore';
 import { usePresence } from '../hooks/usePresence';
+import CaptureView from './CaptureView';
 
 export type ConsoleTab = {
-  id: string;        // node-id + kind ("console:42" or "logs:42")
-  type: 'console' | 'logs';
-  nodeId: number;
-  nodeName: string;
+  id: string;        // node-id + kind ("console:42", "logs:42") or "capture:<capture id>"
+  type: 'console' | 'logs' | 'capture';
+  nodeId: number;    // 0 for a capture
+  nodeName: string;  // tab label ("R1 ⇄ R2" for a capture)
   cli?: string;
+  captureId?: string;
+  linkId?: number;
 };
 
 type Props = {
@@ -56,105 +60,155 @@ const RECTS: Record<Layout, { l: number; t: number; w: number; h: number }[]> = 
 
 const HEIGHT_KEY = 'plabs.console.height';
 
+const STRIP = 36;   // px: a pane's tab strip
+
+/** Groups for a layout: tabs of dropped groups merge into the remaining ones;
+ *  new groups each take a spare tab from the fullest group. */
+function regroup(groups: string[][], active: (string | null)[], l: Layout) {
+  let g = groups.map(x => [...x]);
+  if (g.length > l) {
+    const keep = g.slice(0, l);
+    g.slice(l).forEach((tabs, i) => keep[i % l].push(...tabs));
+    g = keep;
+  }
+  while (g.length < l) {
+    const donor = g.reduce((best, x, i) => (x.length > g[best].length ? i : best), 0);
+    const spare = g[donor].length > 1 ? g[donor].filter(id => id !== active[donor]).pop() : undefined;
+    if (spare) g[donor] = g[donor].filter(id => id !== spare);
+    g.push(spare ? [spare] : []);
+  }
+  const a = g.map((tabs, i) => (active[i] && tabs.includes(active[i]!) ? active[i] : tabs[tabs.length - 1] ?? null));
+  return { groups: g, active: a };
+}
+
 export default function LabConsoleDrawer({ tabs, activeId, onSetActive, onClose }: Props) {
-  const [layout, setLayout] = useState<Layout>(1);
-  const [panes, setPanes] = useState<(string | null)[]>([null]);
-  const [activePane, setActivePane] = useState(0);
+  // Editor groups, VS Code style: each pane has its own tabs.
+  const [groups, setGroups] = useState<string[][]>([[]]);
+  const [groupActive, setGroupActive] = useState<(string | null)[]>([null]);
+  const [activeGroup, setActiveGroup] = useState(0);
+  const layout = (groups.length >= 3 ? 4 : groups.length) as Layout;
   const [full, setFull] = useState(false);
   const [height, setHeight] = useState<number>(() => {
     try { return Number(localStorage.getItem(HEIGHT_KEY)) || 0; } catch { return 0; }
   });
 
-  // Resize the pane list when the layout changes, filling new panes with
-  // sessions that aren't shown yet.
+  const apply = (g: string[][], a: (string | null)[]) => { setGroups(g); setGroupActive(a); };
+
   const changeLayout = (l: Layout) => {
-    setLayout(l);
-    setPanes(prev => {
-      const next = prev.slice(0, l);
-      const shown = new Set(next);
-      for (const t of tabs) {
-        if (next.length >= l) break;
-        if (!shown.has(t.id)) { next.push(t.id); shown.add(t.id); }
-      }
-      while (next.length < l) next.push(null);
-      return next;
-    });
-    setActivePane(p => Math.min(p, l - 1));
+    const r = regroup(groups, groupActive, l);
+    apply(r.groups, r.active);
+    setActiveGroup(i => Math.min(i, l - 1));
   };
 
-  // The store's active session is shown: focus its pane, or put it in the active pane.
-  useEffect(() => {
-    if (!activeId) return;
-    setPanes(prev => {
-      const at = prev.indexOf(activeId);
-      if (at >= 0) { setActivePane(at); return prev; }
-      const next = [...prev];
-      next[Math.min(activePane, next.length - 1)] = activeId;
-      return next;
-    });
-  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Closed sessions leave their panes.
+  // Keep the groups in step with the sessions: new ones open in the focused
+  // pane; closed ones leave (a split whose pane empties collapses).
   useEffect(() => {
     const ids = new Set(tabs.map(t => t.id));
-    setPanes(prev => {
-      if (prev.every(p => p === null || ids.has(p))) return prev;
-      const shown = new Set(prev.filter(p => p && ids.has(p)));
-      const spare = tabs.map(t => t.id).filter(id => !shown.has(id));
-      return prev.map(p => (p && ids.has(p) ? p : spare.shift() ?? null));
-    });
-  }, [tabs]);
+    const placed = new Set(groups.flat());
+    const fresh = tabs.map(t => t.id).filter(id => !placed.has(id));
+    const gone = groups.some(g => g.some(id => !ids.has(id)));
+    if (!fresh.length && !gone) return;
+    let g = groups.map(x => x.filter(id => ids.has(id)));
+    let a: (string | null)[] = groupActive.map((id, i) => (id && ids.has(id) ? id : g[i][g[i].length - 1] ?? null));
+    const target = Math.min(activeGroup, g.length - 1);
+    g[target] = [...g[target], ...fresh];
+    if (fresh.length) a[target] = fresh[fresh.length - 1];
+    // A pane emptied by closing its last session goes away.
+    const emptied = groups.map((x, i) => x.length > 0 && g[i].length === 0);
+    if (g.length > 1 && emptied.some(Boolean)) {
+      const keep = g.map((_, i) => i).filter(i => !emptied[i]);
+      g = keep.map(i => g[i]); a = keep.map(i => a[i]);
+      if (!g.length) { g = [[]]; a = [null]; }
+      if (g.length === 3) { g.push([]); a.push(null); }
+      setActiveGroup(i => Math.min(i, g.length - 1));
+    }
+    apply(g, a);
+  }, [tabs]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const focusPane = (i: number) => {
-    setActivePane(i);
-    const id = panes[i];
+  // The store's active session: show it in its pane and focus that pane.
+  useEffect(() => {
+    if (!activeId) return;
+    const gi = groups.findIndex(g => g.includes(activeId));
+    if (gi < 0) return;
+    setActiveGroup(gi);
+    if (groupActive[gi] !== activeId) setGroupActive(a => a.map((x, i) => (i === gi ? activeId : x)));
+  }, [activeId, groups]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const show = (gi: number, id: string) => {
+    setActiveGroup(gi);
+    setGroupActive(a => a.map((x, i) => (i === gi ? id : x)));
+    if (id !== activeId) onSetActive(id);
+  };
+  const focusPane = (gi: number) => {
+    setActiveGroup(gi);
+    const id = groupActive[gi];
     if (id && id !== activeId) onSetActive(id);
   };
 
-  // Next / previous session (Shift+Tab, Alt+→/←, or Tab on the tab bar).
+  // Next / previous session across all panes (Shift+Tab, Alt+→/←, or Tab on a tab).
   const rotate = useCallback((dir: 1 | -1 = 1) => {
-    if (tabs.length < 2) return;
-    const i = tabs.findIndex(t => t.id === activeId);
-    onSetActive(tabs[(i + dir + tabs.length) % tabs.length].id);
-  }, [tabs, activeId, onSetActive]);
+    const order = groups.flat();
+    if (order.length < 2) return;
+    const i = order.indexOf(activeId ?? '');
+    onSetActive(order[(i + dir + order.length) % order.length]);
+  }, [groups, activeId, onSetActive]);
 
-  // Drag a tab onto the console area: near the left/right edge splits the
-  // view with it on that side; onto a pane shows it there.
+  // Drag a tab: onto another pane (or a position in its tab strip) moves it
+  // there; in a single pane, near the left/right edge splits with it on that side.
   const [dragId, setDragId] = useState<string | null>(null);
-  const [drop, setDrop] = useState<{ pane: number; split?: 'left' | 'right' } | null>(null);
+  type Drop = { pane: number; split?: 'left' | 'right'; before?: string | null };
+  const [drop, setDrop] = useState<Drop | null>(null);
   const area = useRef<HTMLDivElement>(null);
-  const zoneAt = (e: React.DragEvent) => {
+  const rects = RECTS[layout];
+  const zoneAt = (e: React.DragEvent): Drop => {
     const b = area.current!.getBoundingClientRect();
     const fx = (e.clientX - b.left) / b.width, fy = (e.clientY - b.top) / b.height;
-    if (layout === 1) {
-      if (tabs.length > 1 && fx < 0.3) return { pane: 0, split: 'left' as const };
-      if (tabs.length > 1 && fx > 0.7) return { pane: 1, split: 'right' as const };
-      return { pane: 0 };
+    if (layout === 1 && tabs.length > 1 && e.clientY - b.top > STRIP) {
+      if (fx < 0.3) return { pane: 0, split: 'left' };
+      if (fx > 0.7) return { pane: 1, split: 'right' };
     }
-    if (layout === 2) return { pane: fx < 0.5 ? 0 : 1 };
-    return { pane: (fy < 0.5 ? 0 : 2) + (fx < 0.5 ? 0 : 1) };
+    const pane = Math.max(0, rects.findIndex(r => fx * 100 >= r.l && fx * 100 <= r.l + r.w && fy * 100 >= r.t && fy * 100 <= r.t + r.h));
+    // Over a tab strip: insert before the tab under the pointer.
+    const stripTop = b.top + (rects[pane].t / 100) * b.height;
+    if (e.clientY - stripTop <= STRIP) {
+      const els = Array.from(area.current!.querySelectorAll<HTMLElement>(`[data-tab-group="${pane}"]`));
+      const at = els.find(el => { const r = el.getBoundingClientRect(); return e.clientX < r.left + r.width / 2; });
+      return { pane, before: at?.dataset.tabId ?? null };
+    }
+    return { pane };
   };
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
     const id = dragId, z = zoneAt(e);
     setDragId(null); setDrop(null);
     if (!id) return;
+    const rest = groups.map(g => g.filter(x => x !== id));
+    const restActive = groupActive.map((x, i) => (x === id ? rest[i][rest[i].length - 1] ?? null : x));
     if (z.split) {
-      // One pane → two: the dragged session on the chosen side, the one
-      // that was showing (or the next session) on the other.
-      const other = (panes[0] && panes[0] !== id ? panes[0] : tabs.find(t => t.id !== id)?.id) ?? null;
-      setLayout(2);
-      setPanes(z.split === 'left' ? [id, other] : [other, id]);
-      setActivePane(z.split === 'left' ? 0 : 1);
+      const others = rest[0];
+      if (!others.length) return;
+      const g = z.split === 'left' ? [[id], others] : [others, [id]];
+      const a = z.split === 'left' ? [id, restActive[0]] : [restActive[0], id];
+      apply(g, a);
+      setActiveGroup(z.split === 'left' ? 0 : 1);
+      onSetActive(id);
+      return;
+    }
+    const target = [...rest[z.pane]];
+    const at = z.before ? target.indexOf(z.before) : -1;
+    if (at >= 0) target.splice(at, 0, id); else target.push(id);
+    let g = rest.map((x, i) => (i === z.pane ? target : x));
+    let a = restActive.map((x, i) => (i === z.pane ? id : x));
+    // Moving the last tab out of a pane closes that pane.
+    const from = groups.findIndex(x => x.includes(id));
+    if (from !== z.pane && g[from].length === 0 && g.length > 1) {
+      const keep = g.map((_, i) => i).filter(i => i !== from);
+      const newPane = keep.indexOf(z.pane);
+      g = keep.map(i => g[i]); a = keep.map(i => a[i]);
+      if (g.length === 3) { g.push([]); a.push(null); }
+      apply(g, a); setActiveGroup(newPane);
     } else {
-      setPanes(prev => {
-        const next = [...prev];
-        const from = next.indexOf(id);
-        if (from >= 0 && from !== z.pane) next[from] = next[z.pane];   // swap
-        next[z.pane] = id;
-        return next;
-      });
-      setActivePane(z.pane);
+      apply(g, a); setActiveGroup(z.pane);
     }
     onSetActive(id);
   };
@@ -181,109 +235,130 @@ export default function LabConsoleDrawer({ tabs, activeId, onSetActive, onClose 
   // It slides up from the bottom edge when the first console opens, back
   // down when the last one closes, and sideways when the chat opens/closes.
   const chatOpen = useAgentStore(s => s.open);
+  const capturing = useLabStore(s => s.capturing);
   const { mounted, visible } = usePresence(tabs.length > 0);
   if (!mounted) return null;
-  const rects = RECTS[layout];
   const style = full ? undefined : { height: height || '42vh', left: chatOpen ? 592 : 0,
                                      transform: visible ? 'translateY(0)' : 'translateY(100%)' };
+  const byId = new Map(tabs.map(t => [t.id, t]));
+  const groupOf = (id: string) => groups.findIndex(g => g.includes(id));
+  // The layout / full-screen / close-all buttons sit in the top-right pane's strip.
+  const toolsPane = layout === 1 ? 0 : 1;
+  const split = layout > 1;
+
+  const tools = (
+    <div className="flex items-center gap-0.5 px-2 shrink-0" style={{ color: '#c5c5c5' }}>
+      <span className="text-[10px] mr-2 hidden xl:inline" style={{ color: '#8b949e' }}
+        title="Plain Tab stays with the device (command completion)">
+        Shift+Tab next session · drag tabs between panes · right-click paste
+      </span>
+      <ToolBtn title="Single pane" on={layout === 1} onClick={() => changeLayout(1)}><Square size={14} /></ToolBtn>
+      <ToolBtn title="Split in two" on={layout === 2} onClick={() => changeLayout(2)}><Columns2 size={15} /></ToolBtn>
+      <ToolBtn title="Split in four" on={layout === 4} onClick={() => changeLayout(4)}><Grid2x2 size={15} /></ToolBtn>
+      <ToolBtn title={full ? 'Exit full screen' : 'Full screen'} onClick={() => setFull(f => !f)}>
+        {full ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+      </ToolBtn>
+      <ToolBtn title="Close all sessions" onClick={() => tabs.forEach(t => onClose(t.id))}><X size={15} /></ToolBtn>
+    </div>
+  );
 
   return (
-    <div className={`${full ? 'fixed inset-0 z-[60]' : 'absolute bottom-0 left-0 right-0 z-40 plabs-motion'} flex flex-col shadow-2xl`}
+    <div className={`plabs-console ${full ? 'fixed inset-0 z-[60]' : 'absolute bottom-0 left-0 right-0 z-40 plabs-motion'} flex flex-col shadow-2xl`}
       style={{ ...style, background: VSCODE.background, borderTop: `1px solid ${C.border}` }}>
       {!full && <div onMouseDown={startDrag} className="absolute -top-1 left-0 right-0 h-2 cursor-ns-resize z-10" title="Drag to resize" />}
-      {/* Tab bar */}
-      <div className="h-9 shrink-0 flex items-stretch" style={{ background: C.bar, borderBottom: `1px solid ${C.border}` }}>
-        <div className="flex-1 flex items-stretch overflow-x-auto">
-          {tabs.map(t => {
-            const on = t.id === activeId;
-            const pane = panes.indexOf(t.id);
-            return (
-              <div key={t.id} onClick={() => onSetActive(t.id)}
-                draggable onDragStart={e => { e.dataTransfer.setData('text/plain', t.id); e.dataTransfer.effectAllowed = 'move'; setDragId(t.id); }}
-                onDragEnd={() => { setDragId(null); setDrop(null); }}
-                tabIndex={0} title="Drag onto the console to split · Tab / Shift+Tab here switches sessions"
-                onKeyDown={e => { if (e.key === 'Tab') { e.preventDefault(); rotate(e.shiftKey ? -1 : 1); } }}
-                className="group flex items-center gap-2 pl-3 pr-2 cursor-pointer text-[12px] whitespace-nowrap select-none outline-none focus-visible:ring-1 focus-visible:ring-[#0078d4]"
-                style={{
-                  background: on ? VSCODE.background : C.tabIdle, color: on ? C.textOn : C.text,
-                  borderTop: `1px solid ${on ? C.accent : 'transparent'}`, borderRight: `1px solid ${C.bar}`,
-                }}>
-                <span className="w-2 h-2 rounded-full" style={{ background: t.type === 'console' ? '#23d18b' : '#3b8eea' }} />
-                <span>{t.nodeName}</span>
-                <span style={{ color: '#6e7681' }} className="text-[10px]">{t.type === 'console' ? (t.cli || 'cli') : 'logs'}</span>
-                {layout > 1 && pane >= 0 && <span className="text-[9px] px-1 rounded" style={{ background: '#3c3c3c', color: '#cccccc' }}>{pane + 1}</span>}
-                <button className={`ml-0.5 rounded p-0.5 hover:bg-[#ffffff1a] ${on ? '' : 'opacity-0 group-hover:opacity-100'}`}
-                  onClick={e => { e.stopPropagation(); onClose(t.id); }} title="Close session">
-                  <X size={13} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        <div className="flex items-center gap-0.5 px-2 shrink-0" style={{ color: '#c5c5c5' }}>
-          <span className="text-[10px] mr-2 hidden lg:inline" style={{ color: '#8b949e' }}
-            title="Plain Tab stays with the device (command completion)">
-            Shift+Tab / Alt+→ next session · drag a tab to split · right-click paste
-          </span>
-          <ToolBtn title="Single pane" on={layout === 1} onClick={() => changeLayout(1)}><Square size={14} /></ToolBtn>
-          <ToolBtn title="Split in two" on={layout === 2} onClick={() => changeLayout(2)}><Columns2 size={15} /></ToolBtn>
-          <ToolBtn title="Split in four" on={layout === 4} onClick={() => changeLayout(4)}><Grid2x2 size={15} /></ToolBtn>
-          <ToolBtn title={full ? 'Exit full screen' : 'Full screen'} onClick={() => setFull(f => !f)}>
-            {full ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-          </ToolBtn>
-          <ToolBtn title="Close all sessions" onClick={() => tabs.forEach(t => onClose(t.id))}><X size={15} /></ToolBtn>
-        </div>
-      </div>
-      {/* Panes — every session stays mounted so its connection stays open. */}
+      {/* Panes, each with its own tab strip. Sessions are rendered once below
+          (every one stays mounted so its connection stays open). */}
       <div ref={area} className="flex-1 relative min-h-0">
-        {rects.map((r, i) => (
-          <div key={`frame${i}`} onMouseDown={() => focusPane(i)} className="absolute"
-            style={{
-              left: `${r.l}%`, top: `${r.t}%`, width: `${r.w}%`, height: `${r.h}%`,
-              boxShadow: layout > 1 ? `inset 0 0 0 1px ${i === activePane ? C.accent : C.border}` : undefined,
-            }}>
-            {!panes[i] && (
-              <div className="w-full h-full flex items-center justify-center text-xs" style={{ color: '#6e7681' }}>
-                Empty pane — click it, then pick a session tab
+        {rects.map((r, gi) => {
+          const focused = split && gi === activeGroup;
+          return (
+            <div key={`pane${gi}`} onMouseDown={() => focusPane(gi)} className="absolute flex flex-col"
+              style={{ left: `${r.l}%`, top: `${r.t}%`, width: `${r.w}%`, height: `${r.h}%`,
+                       borderLeft: split && r.l > 0 ? `1px solid ${C.border}` : undefined,
+                       borderTop: split && r.t > 0 ? `1px solid ${C.border}` : undefined }}>
+              <div className="shrink-0 flex items-stretch" style={{ height: STRIP, background: C.bar, borderBottom: `1px solid ${C.border}` }}>
+                <div className="flex-1 min-w-0 flex items-stretch overflow-x-auto">
+                  {(groups[gi] ?? []).map(id => {
+                    const t = byId.get(id);
+                    if (!t) return null;
+                    const on = groupActive[gi] === id;
+                    const lit = on && (!split || gi === activeGroup);
+                    return (
+                      <div key={id} data-tab-group={gi} data-tab-id={id}
+                        onClick={e => { e.stopPropagation(); show(gi, id); }}
+                        draggable onDragStart={e => { e.dataTransfer.setData('text/plain', id); e.dataTransfer.effectAllowed = 'move'; setDragId(id); }}
+                        onDragEnd={() => { setDragId(null); setDrop(null); }}
+                        tabIndex={0} title="Drag to another pane, or to a side of the console to split · Tab here switches sessions"
+                        onKeyDown={e => { if (e.key === 'Tab') { e.preventDefault(); rotate(e.shiftKey ? -1 : 1); } }}
+                        className="group flex items-center gap-2 pl-3 pr-2 cursor-pointer text-[12px] whitespace-nowrap select-none outline-none focus-visible:ring-1 focus-visible:ring-[#0078d4]"
+                        style={{
+                          background: on ? VSCODE.background : C.tabIdle, color: on ? C.textOn : C.text,
+                          borderTop: `1px solid ${lit ? C.accent : 'transparent'}`, borderRight: `1px solid ${C.bar}`,
+                          opacity: dragId === id ? 0.5 : 1,
+                          boxShadow: drop && !drop.split && drop.pane === gi && drop.before === id ? `inset 2px 0 0 ${C.accent}` : undefined,
+                        }}>
+                        {t.type === 'capture'
+                          ? <span className={`w-2 h-2 rounded-full ${capturing[t.captureId!] ? 'animate-pulse' : ''}`}
+                              style={{ background: capturing[t.captureId!] ? '#f14c4c' : '#6e7681' }} />
+                          : <span className="w-2 h-2 rounded-full" style={{ background: t.type === 'console' ? '#23d18b' : '#3b8eea' }} />}
+                        <span>{t.nodeName}</span>
+                        <span style={{ color: '#6e7681' }} className="text-[10px]">{t.type === 'console' ? (t.cli || 'cli') : t.type}</span>
+                        <button className={`ml-0.5 rounded p-0.5 hover:bg-[#ffffff1a] ${on ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                          onClick={e => { e.stopPropagation(); onClose(id); }} title="Close session">
+                          <X size={13} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {gi === toolsPane && tools}
               </div>
-            )}
-          </div>
-        ))}
+              <div className="flex-1 min-h-0 relative"
+                style={{ boxShadow: focused ? `inset 0 0 0 1px ${C.accent}55` : undefined }}>
+                {!(groups[gi] ?? []).length && (
+                  <div className="absolute inset-0 flex items-center justify-center text-xs" style={{ color: '#6e7681' }}>
+                    Empty pane — drag a session tab here
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
         {dragId && (
           <div className="absolute inset-0 z-30"
             onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; const z = zoneAt(e);
-              if (z.pane !== drop?.pane || z.split !== drop?.split) setDrop(z); }}
+              if (z.pane !== drop?.pane || z.split !== drop?.split || z.before !== drop?.before) setDrop(z); }}
             onDragLeave={() => setDrop(null)} onDrop={onDrop}>
-            {drop && (() => {
+            {drop && drop.before === undefined && (() => {
               const r = drop.split ? RECTS[2][drop.split === 'left' ? 0 : 1] : rects[drop.pane];
+              const name = byId.get(dragId)?.nodeName;
+              const same = !drop.split && groupOf(dragId) === drop.pane;
+              if (same) return null;
               return (
                 <div className="absolute rounded flex items-center justify-center text-xs text-white pointer-events-none"
                   style={{ left: `${r.l}%`, top: `${r.t}%`, width: `${r.w}%`, height: `${r.h}%`,
                            background: '#0078d433', boxShadow: 'inset 0 0 0 2px #0078d4' }}>
-                  {drop.split ? `Split — ${tabs.find(t => t.id === dragId)?.nodeName} on the ${drop.split}`
-                              : `Show ${tabs.find(t => t.id === dragId)?.nodeName} here`}
+                  {drop.split ? `Split — ${name} on the ${drop.split}` : `Move ${name} to this pane`}
                 </div>
               );
             })()}
           </div>
         )}
         {tabs.map(t => {
-          const p = panes.indexOf(t.id);
-          const r = p >= 0 ? rects[p] : rects[0];
+          const gi = groupOf(t.id);
+          const r = rects[Math.max(0, gi)];
+          const shown = gi >= 0 && groupActive[gi] === t.id;
           return (
-            <div key={t.id} onMouseDown={() => p >= 0 && focusPane(p)} className="absolute"
+            <div key={t.id} onMouseDown={() => gi >= 0 && focusPane(gi)} className="absolute"
               style={{
-                left: `calc(${r.l}% + ${layout > 1 ? 1 : 0}px)`, top: `calc(${r.t}% + ${layout > 1 ? 1 : 0}px)`,
-                width: `calc(${r.w}% - ${layout > 1 ? 2 : 0}px)`, height: `calc(${r.h}% - ${layout > 1 ? 2 : 0}px)`,
-                visibility: p >= 0 ? 'visible' : 'hidden',
+                left: `calc(${r.l}% + ${split && r.l > 0 ? 1 : 0}px)`, top: `calc(${r.t}% + ${STRIP + (split && r.t > 0 ? 1 : 0)}px)`,
+                width: `calc(${r.w}% - ${split && r.l > 0 ? 1 : 0}px)`, height: `calc(${r.h}% - ${STRIP + (split && r.t > 0 ? 1 : 0)}px)`,
+                visibility: shown ? 'visible' : 'hidden',
               }}>
-              {layout > 1 && p >= 0 && (
-                <div className="absolute top-1 right-3 z-10 text-[10px] px-1.5 rounded pointer-events-none"
-                  style={{ background: '#00000080', color: '#cccccc' }}>{t.nodeName}</div>
-              )}
               {t.type === 'console'
                 ? <LabConsole nodeId={t.nodeId} nodeName={t.nodeName} cli={t.cli}
-                    focused={p >= 0 && p === activePane} onRotate={rotate} />
+                    focused={shown && (!split || gi === activeGroup)} onRotate={rotate} />
+                : t.type === 'capture' ? <CaptureView captureId={t.captureId!} />
                 : <LabLogs nodeId={t.nodeId} />}
             </div>
           );

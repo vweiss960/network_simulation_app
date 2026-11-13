@@ -175,6 +175,20 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
 - Console for a booting vrnetlab VM streams `docker logs` (vrnetlab owns the
   serial port while booting) and switches to SSH when it answers.
 
+### Packet capture (`services/packet_capture.py`, `routes/capture.py`)
+- Cable right-click → Capture packets (or the link panel, with a BPF capture
+  filter) opens a capture tab in the console drawer (`components/CaptureView`).
+  tshark runs on the host half of the cable's device port (the source end;
+  the device end when the other is a Network node): both directions, every
+  frame type, no device involvement.
+- One tshark per capture writes the pcapng (`-w`) and prints field rows
+  (`-P -T fields`) that the WebSocket `…/lab/captures/{id}/stream` relays.
+  Packet details (`-V -x`) and display filters (`-Y` → frame numbers) run
+  tshark over the file. Limits: 100 MB per capture, 8 running.
+- Captures are in memory; files live in `$PLABS_CAPTURE_DIR` or the temp dir
+  (not `lab_state`: tshark can't read back its own file on that bind mount),
+  are swept at startup, and stop on lab destroy. Closing the tab deletes one.
+
 ### Lab agent (`services/lab_agent.py`, `services/llm.py`, `routes/agent.py`)
 - Chat on the canvas (Ask AI bar → `components/agent/AIChatPanel`), streamed as
   SSE from `POST /api/topologies/{id}/agent/chat`; conversations live in memory

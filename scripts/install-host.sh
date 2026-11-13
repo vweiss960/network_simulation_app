@@ -29,7 +29,7 @@ apt-get update -qq
 had_policy=0; [ -e /usr/sbin/policy-rc.d ] && had_policy=1
 if [ $had_policy = 0 ]; then printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod +x /usr/sbin/policy-rc.d; fi
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  python3-venv python3-dev build-essential nginx iproute2 iptables git make jq telnet openssh-client curl ca-certificates
+  python3-venv python3-dev build-essential nginx iproute2 iptables git make jq telnet openssh-client curl ca-certificates tshark
 [ $had_policy = 0 ] && rm -f /usr/sbin/policy-rc.d
 # Drop the stock default site (it listens on :80) if it is the untouched symlink.
 if [ -L /etc/nginx/sites-enabled/default ] && [ "$(readlink -f /etc/nginx/sites-enabled/default)" = /etc/nginx/sites-available/default ]; then

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Play, RotateCw, Square, Terminal, Trash2, FileText, Zap, X } from 'lucide-react';
+import { Play, Radio, RotateCw, Square, Terminal, Trash2, FileText, Zap, X } from 'lucide-react';
 import { useLabStore } from '../../stores/useLabStore';
 import { api } from '../../utils/api';
 import type { Device, Link } from '../../types';
@@ -229,7 +229,9 @@ function NodeInspector({ node }: { node: Device }) {
 }
 
 function LinkInspector({ link }: { link: Link }) {
-  const { nodes, lab, updateLink, deleteLink, currentTopologyId } = useLabStore();
+  const { nodes, lab, updateLink, deleteLink, currentTopologyId, openCapture, capturing } = useLabStore();
+  const [capFilter, setCapFilter] = useState('');
+  const isCapturing = Object.values(capturing).includes(link.id);
   const a = nodes.find(n => n.id === link.source_node_id);
   const b = nodes.find(n => n.id === link.target_node_id);
   const [aFree, setAFree] = useState<{ name: string; used: boolean }[]>([]);
@@ -261,6 +263,20 @@ function LinkInspector({ link }: { link: Link }) {
         <label className={`${label} mt-2`}>{b.name}</label>
         {pick(bFree, link.target_interface, v => updateLink(link.id, { target_interface: v }))}
         {deployed && <div className="text-[11px] text-surface-500 mt-2">Changing the ports of a running cable re-patches it live — no device restarts.</div>}
+      </Section>
+      <Section title="Packet capture">
+        <input className={`${field} font-mono text-xs`} value={capFilter} onChange={e => setCapFilter(e.target.value)}
+          placeholder="Capture filter (optional) — e.g. not arp" spellCheck={false} disabled={!deployed}
+          title="BPF capture filter, as in tcpdump / Wireshark's capture options" />
+        <div className="flex items-center gap-2 mt-2">
+          <Btn icon={<Radio size={13} />} onClick={() => openCapture(link.id, capFilter.trim())} disabled={!deployed}>
+            Capture packets
+          </Btn>
+          {isCapturing && <span className="flex items-center gap-1 text-[11px] text-red-300"><span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />capturing</span>}
+        </div>
+        <div className="text-[11px] text-surface-500 mt-1">
+          {deployed ? 'Live in the console panel; stop and download a .pcapng for Wireshark.' : 'Available once the lab is deployed.'}
+        </div>
       </Section>
       <Section title="Impairments">
         <Btn icon={<Zap size={13} />} onClick={() => setNetem(true)} disabled={!deployed}>Delay / loss / rate…</Btn>
