@@ -192,6 +192,13 @@ function LabCard({ t, duplicate, index, exit, onOpen: open, onChanged }:
         <div className="flex items-center gap-2.5 min-w-0">
           <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${st.dot}`} />
           <span className="text-[15px] font-semibold text-slate-900 truncate">{t.name}</span>
+          {t.lesson_role && (
+            <span title={t.lesson_role === 'authoring' ? 'The topology of a lesson being edited' : 'A lesson lab'}
+              className={`shrink-0 px-1.5 py-px rounded text-[11px] font-medium border ${t.lesson_role === 'authoring'
+                ? 'bg-violet-50 text-violet-700 border-violet-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+              {t.lesson_role === 'authoring' ? 'Lesson draft' : 'Lesson'}
+            </span>
+          )}
           {duplicate && <span className="shrink-0 px-1.5 py-px rounded text-[11px] font-medium bg-amber-100 text-amber-800">Duplicate name</span>}
         </div>
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">

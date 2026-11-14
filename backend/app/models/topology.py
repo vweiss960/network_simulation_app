@@ -17,6 +17,10 @@ class Topology(Base):
     # Canvas annotations (group boxes, text, notes) — drawing only, never
     # deployed. [{id, type, x, y, w, h, text, color, locked}]
     annotations_json = Column(Text, default="[]")
+    # Labs made from a lesson: a learner's attempt, or the lesson's authoring
+    # lab (where its starting topology is edited).
+    lesson_id = Column(Integer, nullable=True, index=True)
+    lesson_role = Column(String, nullable=True)          # attempt | authoring
 
     @property
     def annotations(self) -> list[dict]:

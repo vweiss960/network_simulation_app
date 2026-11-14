@@ -196,10 +196,81 @@ _SESSIONS_LOCK = threading.Lock()
 _tool_ctx = threading.local()
 
 
-def _new_convo(model: str) -> llm.AgentConversation:
+def _new_convo(model: str, read_only: bool = False) -> llm.AgentConversation:
+    """read_only: a lesson lab with AI policy "hints" — the assistant can look
+    but not change anything (no CHANGES tools)."""
     anthropic = llm.provider_of(model) == "anthropic"
-    return llm.AgentConversation(model, TOOLS + ([] if anthropic else [FETCH_DOC_TOOL]),
+    tools = [t for t in TOOLS if not (read_only and t["name"] in CHANGES)]
+    return llm.AgentConversation(model, tools + ([] if anthropic else [FETCH_DOC_TOOL]),
                                  SERVER_TOOLS if anthropic else None)
+
+
+# --- lessons ---------------------------------------------------------------------
+
+def lesson_policy(topology_id: int) -> str | None:
+    """The AI policy of the lesson running in this lab (teach | hints | off),
+    or None for an ordinary lab."""
+    from app.models.lesson import Lesson
+    from app.models.topology import Topology
+    db = SessionLocal()
+    try:
+        t = db.get(Topology, topology_id)
+        if not t or not t.lesson_id or t.lesson_role != "attempt":
+            return None
+        l = db.get(Lesson, t.lesson_id)
+        return l.ai_policy if l else None
+    finally:
+        db.close()
+
+
+_POLICY_RULES = {
+    "teach": ("You are tutoring. Explain concepts and reasoning, show the commands and configuration, and you may "
+              "apply configuration when the learner asks — but explain what each part does so they learn it."),
+    "hints": ("You are a hint-giver, NOT a solver. You can read the lab (state, configs, show commands, pings) "
+              "but you cannot change it, and you must not write out the configuration that solves a task. Diagnose "
+              "with show commands, then nudge: point at the concept, the command family or the mistake (e.g. "
+              "'compare the area type on both ends of that link'). Give at most a short syntax fragment, never a "
+              "full working config. If the learner insists on the answer, tell them the lesson panel has a "
+              "Solution button."),
+}
+
+
+def lesson_prompt(topology_id: int) -> str:
+    """The lesson block appended to the system prompt in a lesson lab: the
+    lesson, every task with its pass state, the current task and the rules."""
+    from app.models.lesson import Lesson
+    from app.services import lessons as lesson_svc
+    db = SessionLocal()
+    try:
+        a = lesson_svc.attempt_for_topology(db, topology_id)
+        l = db.get(Lesson, a.lesson_id) if a else None
+        if not l:
+            return ""
+        res = a.results
+        lines = [f"\n\n# This lab is a lesson: {l.title}",
+                 f"Level: {l.level}. Track: {l.track.replace('_', ' ')}. {l.summary or ''}".strip(),
+                 _POLICY_RULES.get(l.ai_policy, ""), "", "Tasks (in order):"]
+        current = None
+        for i, t in enumerate(l.tasks, 1):
+            r = res.get(t["id"])
+            state = "passed" if r and r.get("passed") else ("checked, failing" if r else "not checked yet")
+            if current is None and not (r and r.get("passed")):
+                current = t
+            lines.append(f"{i}. {t['title']} [{state}]")
+        if current:
+            lines += ["", f"The learner is on: {current['title']}", current.get("body") or ""]
+            r = res.get(current["id"])
+            fails = [c for c in (r or {}).get("checks", []) if not c.get("ok")]
+            if fails:
+                lines.append("Its last check found: " + "; ".join(f"{c['describe']}: {c.get('detail')}" for c in fails))
+        else:
+            lines += ["", "Every task has passed: help the learner explore or review."]
+        lines.append("Answer in the context of this lesson and its devices.")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+    finally:
+        db.close()
 
 
 def get_session(conversation_id: str | None, topology_id: int, model: str) -> Session_:
@@ -216,7 +287,7 @@ def get_session(conversation_id: str | None, topology_id: int, model: str) -> Se
             try:
                 rec = db.get(AgentConversation, conversation_id)
                 if rec and rec.topology_id == topology_id and rec.model == model:
-                    convo = _new_convo(model)
+                    convo = _new_convo(model, read_only=lesson_policy(topology_id) == "hints")
                     convo.messages = json.loads(rec.native_json or "[]")
                     s = Session_(id=rec.id, topology_id=topology_id, model=model, convo=convo,
                                  owner=rec.username or "", title=rec.title or "",
@@ -225,7 +296,8 @@ def get_session(conversation_id: str | None, topology_id: int, model: str) -> Se
                     return s
             finally:
                 db.close()
-        s = Session_(id=secrets.token_hex(8), topology_id=topology_id, model=model, convo=_new_convo(model))
+        s = Session_(id=secrets.token_hex(8), topology_id=topology_id, model=model,
+                     convo=_new_convo(model, read_only=lesson_policy(topology_id) == "hints"))
         _SESSIONS[s.id] = s
         return s
 
@@ -333,11 +405,12 @@ def run(session: Session_, user_text: str, username: str, emit: Emit) -> None:
     text {delta} · status {text} · tool {id, name, label, state, summary} · lab_changed · error."""
     convo = session.convo
     convo.add_user(user_text)
+    system = SYSTEM_PROMPT + lesson_prompt(session.topology_id)
     for _ in range(MAX_STEPS):
         if session.cancel.is_set():
             emit({"type": "text", "delta": "\n\n_Stopped._"})
             return
-        turn = convo.step(SYSTEM_PROMPT, lambda d: emit({"type": "text", "delta": d}),
+        turn = convo.step(system, lambda d: emit({"type": "text", "delta": d}),
                           lambda t: emit({"type": "status", "text": t}))
         if turn.stop == "pause":
             continue
@@ -449,6 +522,8 @@ def _run_tool(session: Session_, call: llm.ToolCall, username: str, emit: Emit) 
         return False, f"Unknown tool {call.name}"
     if call.input is None:
         return False, "The tool input wasn't valid JSON; send it again."
+    if call.name in CHANGES and lesson_policy(session.topology_id) in ("hints", "off"):
+        return False, "Not allowed in this lesson: the assistant gives hints only and can't change the lab."
     err = _validate(spec["input_schema"], call.input)
     if err:
         return False, f"Invalid input: {err}"
@@ -589,13 +664,7 @@ def t_apply_config(db, tid, a, emit) -> str:
 def t_ping(db, tid, a, emit) -> str:
     t = _target(db, tid, a["device"])
     count = a.get("count") or 5
-    src = a.get("source")
-    if t.family == "iosxr":
-        cmd = f"ping {a['target']} count {count}" + (f" source {src}" if src else "")
-    elif t.family in ("iosxe", "ios"):
-        cmd = f"ping {a['target']} repeat {count}" + (f" source {src}" if src else "")
-    else:
-        cmd = f"ping -c {count} -W 1 {a['target']}" + (f" -I {src}" if src else "")
+    cmd = device_exec.ping_command(t.family, a["target"], count, a.get("source"))
     (r,) = asyncio.run(device_exec.run_cli(t, [cmd], timeout=60))
     return f"{t.name}# {cmd}\n{r['output']}"
 

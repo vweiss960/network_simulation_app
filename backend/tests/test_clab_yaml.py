@@ -79,7 +79,7 @@ def test_changed_startup_config_changes_yaml(db, tmp_path, monkeypatch):
     import app.services.clab_yaml as cy
     monkeypatch.setattr(cy, "LAB_STATE_DIR", tmp_path)
     t = make_topology(db)
-    n = make_node(db, t, name="A", startup_config="hostname a")
+    n = make_node(db, t, name="A", image="plabs/frr:latest", startup_config="hostname a")
     y1 = generate_clab_yaml(db, t.id)["yaml"]
     n.startup_config = "hostname b"
     db.flush()

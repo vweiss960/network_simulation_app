@@ -198,6 +198,35 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   (not `lab_state`: tshark can't read back its own file on that bind mount),
   are swept at startup, and stop on lab destroy. Closing the tab deletes one.
 
+### Lessons (`models/lesson.py`, `services/lessons.py`, `services/lesson_checks.py`, `routes/lessons.py`)
+- A lesson = starting topology (topology_io YAML: devices, cables, starting
+  configs, annotations, `enabled: false` devices) + tasks graded by checks +
+  markdown content, with level, track (enterprise / service_provider / …),
+  topic, tags, `ai_policy` (teach | hints | off) and `hints_mode` (open |
+  on_request | none). Modules / curricula don't exist yet.
+- Packs: a zip of `lesson.yaml`, `topology.yaml`, `tasks.yaml`, `content.md`
+  (`## ` sections = readings). Import validates everything (check devices
+  exist, regexes compile…); a duplicate slug → 409 unless `mode=replace|copy`.
+  Bundled packs in `curriculum/lessons/*/` (`PLABS_CURRICULUM_DIR`) are
+  imported at startup — newer `version`s too, unless edited in the app.
+- Checks (`lesson_checks`): `cli` (command + expect regex/contains…), `route`
+  (prefix + protocol code, present/absent; XR / XE / FRR table formats),
+  `ping` (`device_exec.ping_command` / `ping_success`), `config`. A run opens
+  ONE session per device with all its commands (XRd resets parallel SSH logins).
+- Start = `LessonAttempt` + its own Topology (`lesson_role="attempt"`, built
+  with `topology_io.build_into`); resume reuses it; reset wipes the lab and
+  rebuilds it. Authoring: `lesson_role="authoring"` lab edited on the normal
+  canvas, saved back (optionally capturing running configs, minus mgmt / clab
+  user / SSH bits — `starting_config_from_running`).
+- Plain Linux hosts (not FRR) run their startup config lines as clab `exec`
+  commands (`clab_yaml.linux_exec_commands`).
+- AI policy: the lab agent appends a lesson block (tasks + progress + rules)
+  to its system prompt; `hints` drops the change tools; `off` → 403 + no Ask
+  AI bar. Frontend: `pages/LessonsPage`, `LessonPage`, `LessonEditor`,
+  `workspace/LessonPanel` (+ `AuthoringBar`), `lesson/TopologyPreview`, `lesson/meta`.
+- Live check of a lesson's checks: `python3 scripts/lesson_solve_test.py <jwt> <slug>`
+  (starts the lesson, applies each task's reference solution, expects every check to pass).
+
 ### Lab agent (`services/lab_agent.py`, `services/llm.py`, `routes/agent.py`)
 - Chat on the canvas (Ask AI bar → `components/agent/AIChatPanel`), streamed as
   SSE from `POST /api/topologies/{id}/agent/chat`; conversations live in memory

@@ -261,6 +261,30 @@ async def configure(t: Target, config: str | list[str], timeout: float = 120, re
     return {"ok": not errors, "errors": errors, "output": "\n".join(x for x in transcript if x)}
 
 
+def ping_command(family: str, target: str, count: int = 5, source: str | None = None) -> str:
+    """The ping command for an OS family (count / source spelled its way)."""
+    if family == "iosxr":
+        return f"ping {target} count {count}" + (f" source {source}" if source else "")
+    if family in ("iosxe", "ios", "eos"):
+        return f"ping {target} repeat {count}" + (f" source {source}" if source else "")
+    return f"ping -c {count} -W 1 {target}" + (f" -I {source}" if source else "")
+
+
+_SUCCESS_RATE = re.compile(r"Success rate is (\d+) percent")
+_PKT_LOSS = re.compile(r"(\d+(?:\.\d+)?)% packet loss")
+
+
+def ping_success(output: str) -> int | None:
+    """Percent of pings answered, from Cisco or Linux ping output (None if unknown)."""
+    m = _SUCCESS_RATE.search(output)
+    if m:
+        return int(m.group(1))
+    m = _PKT_LOSS.search(output)
+    if m:
+        return round(100 - float(m.group(1)))
+    return None
+
+
 async def save_config(t: Target, timeout: float = 120) -> str:
     """Make the running config the device's own startup config, so it comes
     back after the device is stopped and started. Returns what was done."""

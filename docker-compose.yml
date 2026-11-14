@@ -32,6 +32,7 @@ services:
       - DATABASE_URL=sqlite:///${PWD}/backend/data/plabs.db
       - LAB_STATE_DIR=${PWD}/lab_state
       - DEVICE_IMAGES_DIR=${DEVICE_IMAGES_DIR:-${PWD}/device_images}
+      - PLABS_CURRICULUM_DIR=${PLABS_CURRICULUM_DIR:-${PWD}/curriculum}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-plabs-dev-secret-change-me}

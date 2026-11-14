@@ -82,6 +82,9 @@ class TopologyOut(BaseModel):
     node_count: int = 0
     link_count: int = 0
     lab_status: str = "idle"
+    lesson_id: Optional[int] = None
+    lesson_role: Optional[str] = None     # attempt | authoring
+    lesson_ai_policy: Optional[str] = None  # the lesson's AI policy (attempt labs)
 
 
 # --- Node --------------------------------------------------------------------

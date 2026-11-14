@@ -24,7 +24,17 @@ def _out(db: Session, t: Topology) -> dict:
         "node_count": db.query(func.count(NodeInstance.id)).filter(NodeInstance.topology_id == t.id).scalar(),
         "link_count": db.query(func.count(Link.id)).filter(Link.topology_id == t.id).scalar(),
         "lab_status": dep.status if dep else "idle",
+        "lesson_id": t.lesson_id, "lesson_role": t.lesson_role,
+        "lesson_ai_policy": _lesson_policy(db, t),
     }
+
+
+def _lesson_policy(db: Session, t: Topology):
+    if not t.lesson_id or t.lesson_role != "attempt":
+        return None
+    from app.models.lesson import Lesson
+    l = db.get(Lesson, t.lesson_id)
+    return l.ai_policy if l else None
 
 
 def _get(db: Session, topology_id: int) -> Topology:

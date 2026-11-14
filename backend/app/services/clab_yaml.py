@@ -25,10 +25,14 @@ def _first_host(subnet: str, default: str) -> str:
     return default
 
 
-def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str) -> str:
+def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str, mgmt_distance: int | None = None) -> str:
     """containerlab's own first-boot config for cisco_xrd. A user
     startup-config REPLACES clab's defaults on XRd, so we prepend this to keep
-    the clab user, SSH, NETCONF, gRPC and the mgmt default route."""
+    the clab user, SSH, NETCONF, gRPC and the mgmt default route.
+    mgmt_distance: make that default route a floating static (lesson labs),
+    so a default learned from a routing protocol (e.g. an OSPF stub area's
+    O*IA) wins — otherwise the mgmt default hides it and swallows lab traffic."""
+    ad = f" {mgmt_distance}" if mgmt_distance else ""
     return (
         "!\n"
         f"hostname {node_name}\n"
@@ -53,10 +57,10 @@ def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str) -> str:
         "!\n"
         "router static\n"
         " address-family ipv4 unicast\n"
-        f"  0.0.0.0/0 MgmtEth0/RP0/CPU0/0 {gw_v4}\n"
+        f"  0.0.0.0/0 MgmtEth0/RP0/CPU0/0 {gw_v4}{ad}\n"
         " !\n"
         " address-family ipv6 unicast\n"
-        f"  ::/0 MgmtEth0/RP0/CPU0/0 {gw_v6}\n"
+        f"  ::/0 MgmtEth0/RP0/CPU0/0 {gw_v6}{ad}\n"
         " !\n"
         "!\n"
         "ssh server v2\n"
@@ -110,6 +114,25 @@ def day0_config(family: str, text: str) -> str:
     return "\n".join(res + ["end"])     # without it IOS-XE logs PARSER-4-BADCFG
 
 
+def linux_exec_commands(kind: str, image: str, startup: str) -> list[str] | None:
+    """For a plain Linux host (not FRR / the workstation), the startup config
+    is a list of shell commands, one per line (# comments allowed). None for
+    every other device."""
+    img = (image or "").lower()
+    if kind != "linux" or "frr" in img:
+        return None
+    out = []
+    for line in (startup or "").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            out.append(line if line.startswith(("sh -c", "bash -c")) else "sh -c " + _sh_quote(line))
+    return out
+
+
+def _sh_quote(s: str) -> str:
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
 def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) -> dict:
     """assign_ips=True (deploy / reconcile only) sets up a bridged mgmt network
     and takes DHCP leases for devices; previews leave the host untouched."""
@@ -141,11 +164,25 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
         entry: dict = {"kind": n["lab_kind"], "image": n["lab_image"]}
         from app.services.device_kinds import get_kind as _gk
         body = day0_config(_gk(n["lab_kind"]).family, n.get("startup_config") or "").strip("\n")
-        if body:
+        cmds = linux_exec_commands(n["lab_kind"], n["lab_image"], body)
+        if cmds is not None:
+            # A plain Linux host has no config file: its startup config is
+            # commands containerlab runs once the container is up.
+            if cmds:
+                entry["exec"] = cmds
+            body = ""
+        # In a lesson lab every XRd gets our base config (floating mgmt
+        # default), even a blank one — clab's own default would shadow OSPF.
+        lesson_xrd = bool(topology.lesson_id) and n["lab_kind"] == "cisco_xrd"
+        if body or lesson_xrd:
             configs_dir.mkdir(parents=True, exist_ok=True)
-            text = body + "\n"
+            text = body + "\n" if body else ""
             if n["lab_kind"] == "cisco_xrd":
-                text = xrd_base_config(n["clab_name"], gw_v4, gw_v6) + text + "end\n"
+                # Lesson labs: the mgmt default must not shadow the lab's own
+                # routing (kept as-is for other labs: changing it would
+                # recreate their XRd devices).
+                text = xrd_base_config(n["clab_name"], gw_v4, gw_v6,
+                                       254 if topology.lesson_id else None) + text + "end\n"
             # Content hash in the file name: a changed startup config changes
             # the YAML, so a reconcile recreates exactly that device.
             digest = hashlib.sha1(text.encode()).hexdigest()[:8]

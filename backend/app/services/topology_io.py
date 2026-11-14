@@ -13,8 +13,11 @@ Native format (also the `topology:` block of curriculum lab files):
         position: [100, 200]
         startup_config: |
           interface Loopback0 ...
+        enabled: false        # optional: starts powered off
+        notes: ...            # optional
     links:
       - [P1, GigabitEthernet0/0/0/0, P2, GigabitEthernet0/0/0/0]
+      - [P1, GigabitEthernet0/0/0/1, P3, GigabitEthernet0/0/0/0, "optional label"]
 
 Plain containerlab files (`topology: {nodes, links}`) import too: kernel
 interface names in `endpoints` are mapped back to device-native names.
@@ -44,6 +47,10 @@ def export_topology(db: Session, topology_id: int) -> dict:
              "interfaces": len(n.interfaces), "position": [round(n.x or 0, 1), round(n.y or 0, 1)]}
         if n.startup_config:
             d["startup_config"] = n.startup_config
+        if n.enabled == 0:
+            d["enabled"] = False            # starts powered off
+        if n.notes:
+            d["notes"] = n.notes
         if n.kind == "bridge":
             d.pop("image")
             d["network"] = n.network
@@ -53,7 +60,7 @@ def export_topology(db: Session, topology_id: int) -> dict:
         "name": t.name, "description": t.description or "",
         "nodes": out_nodes,
         "links": [[names[l.source_node_id], l.source_interface, names[l.target_node_id], l.target_interface]
-                  for l in links],
+                  + ([l.label] if l.label else []) for l in links],
         **({"annotations": t.annotations} if t.annotations else {}),
     }
 
@@ -136,13 +143,19 @@ def build_into(db: Session, topology: Topology, spec: dict) -> None:
             x=float(pos[0]), y=float(pos[1]), startup_config=nd.get("startup_config") or "",
             network=nd.get("network"),
         )
+        if nd.get("enabled") is False:
+            n.enabled = 0
+        if nd.get("notes"):
+            n.notes = str(nd["notes"])[:4000]
         ids[n.name] = n.id
     for row in spec.get("links") or []:
         if isinstance(row, dict):
-            row = [row.get("a"), row.get("a_interface"), row.get("b"), row.get("b_interface")]
-        if len(row) != 4 or row[0] not in ids or row[2] not in ids:
+            row = [row.get("a"), row.get("a_interface"), row.get("b"), row.get("b_interface")] + \
+                  ([row["label"]] if row.get("label") else [])
+        if len(row) not in (4, 5) or row[0] not in ids or row[2] not in ids:
             raise TopologyError(f"Bad link entry {row!r}")
-        create_link(db, topology.id, ids[row[0]], ids[row[2]], row[1], row[3])
+        create_link(db, topology.id, ids[row[0]], ids[row[2]], row[1], row[3],
+                    label=str(row[4]) if len(row) == 5 else "")
 
 
 def import_topology(db: Session, text: str, name: str | None = None) -> Topology:

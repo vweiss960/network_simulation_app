@@ -39,6 +39,8 @@ class ChatIn(BaseModel):
 def agent_chat(topology_id: int, body: ChatIn, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if not db.get(Topology, topology_id):
         raise HTTPException(404, "Topology not found")
+    if lab_agent.lesson_policy(topology_id) == "off":
+        raise HTTPException(403, "AI assistance is off for this lesson")
     if not config.AI_ENABLED:
         raise HTTPException(400, "AI is turned off (PLABS_AI_ENABLED=0)")
     model = body.model or llm.DEFAULT_MODEL

@@ -6,7 +6,7 @@ import type { ConsoleTab } from '../components/LabConsoleDrawer';
 
 export type Selection = { type: 'node' | 'link'; id: number } | { type: 'annotation'; id: string } | null;
 export type CanvasTool = 'select' | 'group' | 'text' | 'note';
-export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users';
+export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users' | 'lessons' | 'lesson' | 'lessonEdit';
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -41,6 +41,10 @@ interface LabStore {
   activeConsoleId: string | null;
 
   setPage: (p: Page) => void;
+  /** The lesson shown on the 'lesson' / 'lessonEdit' pages (null = a new lesson in the editor). */
+  lessonId: number | null;
+  openLesson: (id: number) => void;
+  editLesson: (id: number | null) => void;
   bootstrap: () => Promise<void>;
   loadTemplates: () => Promise<void>;
   loadTopologies: () => Promise<void>;
@@ -113,6 +117,10 @@ export const useLabStore = create<LabStore>((set, get) => ({
   capturing: {},
   activeConsoleId: null,
 
+  lessonId: null,
+  openLesson: (lessonId) => set({ page: 'lesson', lessonId }),
+  editLesson: (lessonId) => set({ page: 'lessonEdit', lessonId }),
+
   setPage: (page) => {
     set({ page });
     // Images may have been built / loaded since the palette was fetched.
@@ -140,7 +148,12 @@ export const useLabStore = create<LabStore>((set, get) => ({
   },
 
   closeTopology: () => {
-    set({ currentTopologyId: null, topology: null, nodes: [], links: [], lab: null, page: 'labs',
+    // A lesson lab goes back to its lesson (the editor for an authoring lab).
+    const t = get().topology;
+    const back: Partial<LabStore> = t?.lesson_id && t.lesson_role
+      ? { page: t.lesson_role === 'authoring' ? 'lessonEdit' : 'lesson', lessonId: t.lesson_id }
+      : { page: 'labs' };
+    set({ currentTopologyId: null, topology: null, nodes: [], links: [], lab: null, ...back,
           consoleTabs: [], activeConsoleId: null, selection: null });
     get().loadTopologies();
   },

@@ -1,0 +1,288 @@
+- id: backbone
+  title: Bring up OSPF area 0 on R1, R2 and R3
+  body: |
+    Start OSPF process **1** on the three backbone routers. Use each router's
+    Loopback0 address as its router ID, put the links between them in
+    **area 0**, and advertise the loopbacks (they don't need neighbors, so make
+    them passive).
+
+    On IOS XR, OSPF is enabled per interface under the area — there is no
+    `network` statement. Point-to-point links between two routers form
+    adjacencies faster with `network point-to-point` (no DR/BDR election).
+  hints:
+    - "Configuration lives under `router ospf 1` → `area 0` → `interface …`. Each XR change needs a `commit`."
+    - "R2 has two backbone links: both Gi0/0/0/0 and Gi0/0/0/1 go in area 0. Add `Loopback0` with `passive enable` on every router."
+    - "Verify with `show ospf neighbor` (look for FULL) and `show route ospf`."
+  solution:
+    R1: |
+      router ospf 1
+       router-id 1.1.1.1
+       area 0
+        interface Loopback0
+         passive enable
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+       !
+      !
+    R2: |
+      router ospf 1
+       router-id 2.2.2.2
+       area 0
+        interface Loopback0
+         passive enable
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+        interface GigabitEthernet0/0/0/1
+         network point-to-point
+        !
+       !
+      !
+    R3: |
+      router ospf 1
+       router-id 3.3.3.3
+       area 0
+        interface Loopback0
+         passive enable
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show ospf neighbor
+      expect:
+        - regex: '^1\.1\.1\.1\s+\d+\s+FULL'
+        - regex: '^3\.3\.3\.3\s+\d+\s+FULL'
+      describe: "R2: show ospf neighbor → R1 and R3 FULL"
+    - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: O, describe: "R1 learns R3's loopback (O 3.3.3.3/32)"}
+    - {type: route, device: R3, prefix: 1.1.1.1/32, protocol: O, describe: "R3 learns R1's loopback (O 1.1.1.1/32)"}
+
+- id: areas
+  title: Attach area 1 and area 2 through R1 and R3
+  body: |
+    Extend OSPF to the edges:
+
+    - **Area 1:** the R1–R4 link, plus R4's Loopback0 and its LAN towards H1.
+    - **Area 2:** the R3–R5 link, plus R5's Loopback0 and its LAN towards H2.
+
+    R1 and R3 now have interfaces in area 0 *and* another area, which makes them
+    **area border routers (ABRs)**. They summarise each area into the others
+    with type 3 (summary) LSAs, so R4 should see R5's routes as **inter-area**
+    (`O IA`). Keep the host LANs passive — there are no OSPF routers there.
+  hints:
+    - "An ABR is just a router with interfaces in two areas: on R1, add `area 1` with Gi0/0/0/1 under the same `router ospf 1`."
+    - "R4 and R5 need their own `router ospf 1` with a router ID, every interface in their area, and `passive enable` on the loopback and LAN."
+    - "`show ospf` on R1 says whether it's an area border router; `show route ospf` on R4 should list `O IA` routes."
+  solution:
+    R1: |
+      router ospf 1
+       area 1
+        interface GigabitEthernet0/0/0/1
+         network point-to-point
+        !
+       !
+      !
+    R4: |
+      router ospf 1
+       router-id 4.4.4.4
+       area 1
+        interface Loopback0
+         passive enable
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+        interface GigabitEthernet0/0/0/1
+         passive enable
+        !
+       !
+      !
+    R3: |
+      router ospf 1
+       area 2
+        interface GigabitEthernet0/0/0/1
+         network point-to-point
+        !
+       !
+      !
+    R5: |
+      router ospf 1
+       router-id 5.5.5.5
+       area 2
+        interface Loopback0
+         passive enable
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+        interface GigabitEthernet0/0/0/1
+         passive enable
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show ospf
+      expect:
+        - {regex: 'area border router', ignore_case: true}
+      describe: "R1: show ospf → it is an area border router"
+    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: O IA, describe: "R4 learns R5's loopback as inter-area (O IA)"}
+    - {type: route, device: R5, prefix: 10.1.4.0/24, protocol: O IA, describe: "R5 learns H1's LAN as inter-area (O IA)"}
+
+- id: external
+  title: Inject an external route from R2
+  body: |
+    R2 connects to a "customer" network that isn't running OSPF. Model it with a
+    static route for **203.0.113.0/24** to Null0 on R2 and **redistribute** it
+    into OSPF. R2 becomes an **ASBR**: it floods a type 5 (external) LSA, and the
+    ABRs tell the other areas how to reach R2 with type 4 LSAs.
+
+    Every router — including R4 and R5 — should now learn the route as
+    `O E2` (external type 2, the default metric type).
+  hints:
+    - "Static routes on XR live under `router static` → `address-family ipv4 unicast`."
+    - "Under `router ospf 1` on R2, `redistribute static` turns the static route into a type 5 LSA."
+  solution:
+    R2: |
+      router static
+       address-family ipv4 unicast
+        203.0.113.0/24 Null0
+       !
+      !
+      router ospf 1
+       redistribute static
+      !
+  checks:
+    - {type: route, device: R4, prefix: 203.0.113.0/24, protocol: O E2, describe: "R4 learns 203.0.113.0/24 as O E2"}
+    - {type: route, device: R5, prefix: 203.0.113.0/24, protocol: O E2, describe: "R5 learns 203.0.113.0/24 as O E2"}
+
+- id: stub
+  title: Make area 1 a stub area
+  body: |
+    Area 1 only has one way out — through R1 — so it doesn't need every external
+    route. Configure area 1 as a **stub** area. In a stub area the ABR blocks
+    type 5 (and type 4) LSAs and injects a **default route** instead.
+
+    The stub flag is carried in every hello: **both** R1 and R4 must agree, or
+    their adjacency drops.
+  hints:
+    - "It's one command under the area: `area 1` → `stub`, on both ends."
+    - "On R4, `show route ospf` should no longer list 203.0.113.0/24, and should now have an `O*IA 0.0.0.0/0` default from R1."
+  solution:
+    R1: |
+      router ospf 1
+       area 1
+        stub
+       !
+      !
+    R4: |
+      router ospf 1
+       area 1
+        stub
+       !
+      !
+  checks:
+    - type: cli
+      device: R4
+      command: show ospf neighbor
+      expect:
+        - regex: '^1\.1\.1\.1\s+\d+\s+FULL'
+      describe: "R4: still FULL with R1"
+    - {type: route, device: R4, prefix: 203.0.113.0/24, protocol: O E2, present: false, describe: "R4 no longer has the external 203.0.113.0/24"}
+    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, describe: "R4 has a default route from the ABR (O*IA 0.0.0.0/0)"}
+    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: O IA, describe: "R4 still has inter-area routes (O IA 5.5.5.5/32)"}
+
+- id: totally-stubby
+  title: Make area 1 totally stubby
+  body: |
+    Go one step further: R4 can reach *everything* through the default route, so
+    it doesn't need the inter-area (type 3) routes either. Make area 1
+    **totally stubby** — the ABR stops sending type 3 summaries and sends only
+    the default.
+
+    Totally stubby is configured **only on the ABR**; R4 stays a plain stub.
+  hints:
+    - "On R1 only: `area 1` → `stub no-summary`."
+    - "R4's table should shrink to its own area's routes plus the default."
+  solution:
+    R1: |
+      router ospf 1
+       area 1
+        stub no-summary
+       !
+      !
+  checks:
+    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: O IA, present: false, describe: "R4 no longer has inter-area routes (5.5.5.5/32 gone)"}
+    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, describe: "R4 still has the default route"}
+    - type: config
+      device: R1
+      expect:
+        - regex: 'stub no-summary'
+      describe: "R1: area 1 is stub no-summary"
+
+- id: nssa
+  title: Make area 2 an NSSA with its own external route
+  body: |
+    Area 2 has a twist: R5 connects to a partner network, **198.51.100.0/24**,
+    which must be redistributed into OSPF — but area 2 should still keep the
+    backbone's external routes out. A stub area can't contain an ASBR, so use a
+    **not-so-stubby area (NSSA)**.
+
+    - Configure area 2 as an NSSA on R3 and R5.
+    - On R5, add a static route for 198.51.100.0/24 to Null0 and redistribute it.
+
+    Inside the NSSA the route travels as a **type 7** LSA (`O N2` on R3). The
+    ABR, R3, **translates** it into a type 5 for the rest of the network, where
+    it shows as `O E2`. R2's external 203.0.113.0/24 no longer enters area 2.
+  hints:
+    - "Both ends need `area 2` → `nssa`, just like the stub flag."
+    - "R5's static route and `redistribute static` follow the same pattern you used on R2."
+    - "Check R3's table for `O N2` and R2's table for `O E2` 198.51.100.0/24."
+  solution:
+    R3: |
+      router ospf 1
+       area 2
+        nssa
+       !
+      !
+    R5: |
+      router static
+       address-family ipv4 unicast
+        198.51.100.0/24 Null0
+       !
+      !
+      router ospf 1
+       redistribute static
+       area 2
+        nssa
+       !
+      !
+  checks:
+    - {type: route, device: R3, prefix: 198.51.100.0/24, protocol: O N2, describe: "R3 learns 198.51.100.0/24 as O N2 (type 7)"}
+    - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: O E2, describe: "R2 learns it as O E2 (translated to type 5)"}
+    - {type: route, device: R5, prefix: 203.0.113.0/24, protocol: O E2, present: false, describe: "R5 no longer has R2's external 203.0.113.0/24"}
+
+- id: end-to-end
+  title: Prove end-to-end reachability
+  body: |
+    With every area in place, traffic should still flow from one end to the
+    other: H1 sits in the totally stubby area 1 and reaches the rest of the
+    network through R4's default route; H2 sits in the NSSA.
+
+    Ping H2 (**10.2.5.10**) from H1. If it fails, follow the path hop by hop
+    with `show route` on each router.
+  hints:
+    - "Open H1's console and run `ping -c 3 10.2.5.10`."
+    - "R4 only has a default towards R1 — that's enough. Check that R5 has a route back to 10.1.4.0/24."
+  solution: {}
+  checks:
+    - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80, describe: "H1 pings H2 (10.2.5.10)"}
+    - {type: ping, from: R4, to: 5.5.5.5, source: 4.4.4.4, count: 5, min_success: 80, describe: "R4 (Lo0) pings R5's loopback across all three areas"}

@@ -9,11 +9,16 @@ import ImagesPage from './components/pages/ImagesPage';
 import TemplatesPage from './components/pages/TemplatesPage';
 import NetworkPage from './components/pages/NetworkPage';
 import Workspace from './components/workspace/Workspace';
+import LessonsPage from './components/pages/LessonsPage';
+import LessonPage from './components/pages/LessonPage';
+import LessonEditor from './components/pages/LessonEditor';
 import UserManagementPanel from './components/panels/UserManagementPanel';
 
-// Primary destinations on the left (Curricula joins Labs with the curriculum
-// work); configuration pages on the right.
-const NAV_MAIN: { page: Page; label: string }[] = [{ page: 'labs', label: 'Labs' }];
+// Primary destinations on the left; configuration pages on the right.
+const NAV_MAIN: { page: Page; label: string; also?: Page[] }[] = [
+  { page: 'labs', label: 'Labs' },
+  { page: 'lessons', label: 'Lessons', also: ['lesson', 'lessonEdit'] },
+];
 const NAV_SETUP: { page: Page; label: string }[] = [{ page: 'templates', label: 'Templates' }, { page: 'images', label: 'Images' }];
 
 export default function App() {
@@ -36,7 +41,7 @@ export default function App() {
             <PhaneroLogo />
             <span className="text-[15px] font-semibold tracking-[0.18em] uppercase text-white">Phanero <span className="text-emerald-400">Labs</span></span>
           </div>
-          {NAV_MAIN.map(n => <NavBtn key={n.page} on={page === n.page} onClick={() => setPage(n.page)}>{n.label}</NavBtn>)}
+          {NAV_MAIN.map(n => <NavBtn key={n.page} on={page === n.page || !!n.also?.includes(page)} onClick={() => setPage(n.page)}>{n.label}</NavBtn>)}
           <div className="flex-1" />
           {NAV_SETUP.map(n => <NavBtn key={n.page} on={page === n.page} onClick={() => setPage(n.page)}>{n.label}</NavBtn>)}
           <div className="w-px h-6 bg-surface-700 mx-2" />
@@ -53,6 +58,9 @@ export default function App() {
           : page === 'images' ? <ImagesPage />
           : page === 'network' ? <NetworkPage />
           : page === 'users' ? <div className="max-w-4xl mx-auto p-6"><UserManagementPanel /></div>
+          : page === 'lessons' ? <LessonsPage />
+          : page === 'lesson' ? <LessonPage />
+          : page === 'lessonEdit' ? <LessonEditor />
           : <LabsHome />}
       </div>
     </div>

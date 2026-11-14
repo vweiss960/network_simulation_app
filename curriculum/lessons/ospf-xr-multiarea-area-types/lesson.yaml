@@ -1,0 +1,16 @@
+slug: ospf-xr-multiarea-area-types
+title: OSPF multi-area and area types on IOS XR
+summary: >-
+  Build a three-area OSPF design on IOS XR: bring up the backbone, attach two
+  non-backbone areas through ABRs, inject an external route, then shape what
+  each area learns with stub, totally stubby and NSSA areas.
+level: intermediate
+track: service_provider
+topic: Routing
+tags: [ospf, iosxr, multi-area, stub, nssa, ccnp-spcor]
+minutes: 60
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

@@ -1,0 +1,135 @@
+name: OSPF multi-area and area types on IOS XR
+description: Five XRd routers in three OSPF areas, with a host at each end.
+nodes:
+  - name: H1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 260]
+    startup_config: |
+      ip addr add 10.1.4.10/24 dev eth1
+      ip link set eth1 up
+      ip route add 10.0.0.0/8 via 10.1.4.1
+  - name: R4
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [220, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 4.4.4.4 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R1 (area 1)
+       ipv4 address 10.1.14.2 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to H1
+       ipv4 address 10.1.4.1 255.255.255.0
+       no shutdown
+      !
+  - name: R1
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [440, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 1.1.1.1 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R2 (area 0)
+       ipv4 address 10.0.12.1 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R4 (area 1)
+       ipv4 address 10.1.14.1 255.255.255.252
+       no shutdown
+      !
+  - name: R2
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [640, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 2.2.2.2 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R1 (area 0)
+       ipv4 address 10.0.12.2 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R3 (area 0)
+       ipv4 address 10.0.23.1 255.255.255.252
+       no shutdown
+      !
+  - name: R3
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [840, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 3.3.3.3 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R2 (area 0)
+       ipv4 address 10.0.23.2 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R5 (area 2)
+       ipv4 address 10.2.35.1 255.255.255.252
+       no shutdown
+      !
+  - name: R5
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [1060, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 5.5.5.5 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R3 (area 2)
+       ipv4 address 10.2.35.2 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to H2
+       ipv4 address 10.2.5.1 255.255.255.0
+       no shutdown
+      !
+  - name: H2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1240, 260]
+    startup_config: |
+      ip addr add 10.2.5.10/24 dev eth1
+      ip link set eth1 up
+      ip route add 10.0.0.0/8 via 10.2.5.1
+links:
+  - [H1, eth1, R4, GigabitEthernet0/0/0/1]
+  - [R4, GigabitEthernet0/0/0/0, R1, GigabitEthernet0/0/0/1, "area 1"]
+  - [R1, GigabitEthernet0/0/0/0, R2, GigabitEthernet0/0/0/0, "area 0"]
+  - [R2, GigabitEthernet0/0/0/1, R3, GigabitEthernet0/0/0/0, "area 0"]
+  - [R3, GigabitEthernet0/0/0/1, R5, GigabitEthernet0/0/0/0, "area 2"]
+  - [R5, GigabitEthernet0/0/0/1, H2, eth1]
+annotations:
+  - {id: area1, type: group, x: 0, y: 150, w: 360, h: 270, text: "AREA 1 · stub → totally stubby", color: orange, locked: true}
+  - {id: area0, type: group, x: 390, y: 150, w: 540, h: 270, text: "AREA 0 · backbone", color: blue, locked: true}
+  - {id: area2, type: group, x: 960, y: 150, w: 360, h: 270, text: "AREA 2 · NSSA", color: teal, locked: true}
+  - {id: abrs, type: text, x: 400, y: 440, w: 520, h: 40, text: "R1 and R3 become the area border routers (ABRs)", color: gray, locked: true}

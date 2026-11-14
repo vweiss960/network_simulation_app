@@ -377,8 +377,8 @@ export default function Canvas() {
         <Background variant={BackgroundVariant.Dots} gap={22} size={1.6} color="#c3cad6" />
         <Controls showInteractive={false} className="plabs-controls" />
       </ReactFlow>
-      <AskAIBar />
-      <AIChatPanel />
+      {topology?.lesson_ai_policy !== 'off' && <AskAIBar />}
+      {topology?.lesson_ai_policy !== 'off' && <AIChatPanel />}
       <CanvasToolbar />
       {nodes.length === 0 && annotations.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">

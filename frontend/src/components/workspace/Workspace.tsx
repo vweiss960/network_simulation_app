@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ReactFlowProvider } from 'reactflow';
-import { Info, Loader2, Play, RefreshCcw, Square, Trash2, X } from 'lucide-react';
+import { BookOpen, Info, Loader2, Play, RefreshCcw, Square, Trash2, X } from 'lucide-react';
 import { PhaneroLogo } from '../LoginPage';
 import { useLabStore } from '../../stores/useLabStore';
 import { api, type StopResult } from '../../utils/api';
@@ -8,6 +8,7 @@ import { StopFailedDialog, WipeLabDialog } from './LabPowerDialogs';
 import Canvas from '../canvas/Canvas';
 import Inspector from './Inspector';
 import LabSummary from './LabSummary';
+import LessonPanel, { AuthoringBar } from './LessonPanel';
 import LabEnterTransition from './LabEnterTransition';
 import LabConsoleDrawer from '../LabConsoleDrawer';
 import type { LabStatus } from '../../types';
@@ -47,6 +48,10 @@ export default function Workspace() {
   // Right-hand panels slide in from the right edge and out again; a closing
   // Inspector keeps showing what it showed until it's gone.
   const info = usePresence(showInfo);
+  // A learner's lesson lab: the lesson panel docks on the right (open by default).
+  const isLesson = topology?.lesson_role === 'attempt';
+  const [showLesson, setShowLesson] = useState(true);
+  const lessonPanel = usePresence(isLesson && showLesson);
   const inspector = usePresence(inspecting);
   const target = useLast(editingLive ? `node:${editingNode}`
     : selection?.type === 'link' ? `link:${selection.id}` : null);
@@ -137,6 +142,12 @@ export default function Workspace() {
         )}
         {wiping && <WipeLabDialog onClose={() => setWiping(false)} />}
         {stopFailed && <StopFailedDialog result={stopFailed} onClose={() => setStopFailed(null)} />}
+        {isLesson && (
+          <button onClick={() => setShowLesson(v => !v)} title="The lesson: tasks, checks, hints, readings"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-sm ${showLesson ? 'bg-surface-600 text-white' : 'hover:bg-surface-700 text-surface-300'}`}>
+            <BookOpen size={16} /> Lesson
+          </button>
+        )}
         <button onClick={() => setShowInfo(v => !v)} title="This lab: resources, host checks, YAML, tips"
           className={`p-1.5 rounded ${showInfo ? 'bg-surface-600 text-white' : 'hover:bg-surface-700 text-surface-300'}`}>
           <Info size={18} />
@@ -146,6 +157,7 @@ export default function Workspace() {
         <main className="flex-1 relative min-w-0">
           <LabEnterTransition />
           <ReactFlowProvider><Canvas /></ReactFlowProvider>
+          {topology?.lesson_role === 'authoring' && <AuthoringBar />}
           {info.mounted && (
             <div className="absolute top-0 right-0 bottom-0 z-30 w-80 border-l border-surface-700 bg-surface-800 shadow-2xl flex flex-col plabs-motion"
               style={{ transform: info.visible ? 'translateX(0)' : 'translateX(100%)' }}>
@@ -166,6 +178,15 @@ export default function Workspace() {
             <div className="w-80 h-full plabs-motion"
               style={{ transform: inspector.visible ? 'translateX(0)' : 'translateX(40px)', opacity: inspector.visible ? 1 : 0 }}>
               <Inspector target={target} />
+            </div>
+          </aside>
+        )}
+        {lessonPanel.mounted && (
+          <aside className="shrink-0 overflow-hidden border-l border-surface-700 bg-surface-800 plabs-motion"
+            style={{ width: lessonPanel.visible ? 360 : 0 }}>
+            <div className="w-[360px] h-full plabs-motion"
+              style={{ transform: lessonPanel.visible ? 'translateX(0)' : 'translateX(40px)', opacity: lessonPanel.visible ? 1 : 0 }}>
+              <LessonPanel key={currentTopologyId ?? 0} onClose={() => setShowLesson(false)} />
             </div>
           </aside>
         )}

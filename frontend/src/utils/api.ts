@@ -1,4 +1,5 @@
-import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology, Annotation } from '../types';
+import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology, Annotation,
+  LessonAttempt, LessonDetail, LessonSection, LessonSummary, LessonTask, PublicTask, TaskResult } from '../types';
 
 const BASE = '/api';
 
@@ -31,6 +32,41 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 const json = (method: string, body?: unknown): RequestInit =>
   ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
+
+/** Download a lesson pack (.zip). */
+export async function downloadLesson(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/lessons/${id}/export`, { headers: authHeaders() });
+  if (!res.ok) throw new ApiError(res.status, (await res.text()) || `HTTP ${res.status}`);
+  const name = /filename="?([^";]+)"?/.exec(res.headers.get('content-disposition') || '')?.[1] || 'lesson.zip';
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Upload a lesson pack. mode: new (409 if the slug exists), replace, copy. */
+export async function importLesson(file: File, mode: 'new' | 'replace' | 'copy' = 'new'): Promise<LessonSummary> {
+  const fd = new FormData();
+  fd.append('file', file);
+  const token = localStorage.getItem('auth_token');
+  const res = await fetch(`${BASE}/lessons/import?mode=${mode}`, {
+    method: 'POST', body: fd, headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let detail: unknown = text;
+    try { detail = JSON.parse(text).detail; } catch { /* raw */ }
+    const msg = typeof detail === 'string' ? detail : (detail as { message?: string })?.message ?? text;
+    throw new ApiError(res.status, msg);
+  }
+  return res.json();
+}
+
+export type LessonPayload = { meta: Record<string, unknown>; topology_yaml: string; tasks: LessonTask[]; content_md: string };
+export type LessonPanelData = {
+  lesson: LessonSummary & { tasks: PublicTask[]; sections: LessonSection[] };
+  attempt: LessonAttempt; mine: boolean;
+};
 
 /** Stop lab: devices save their config on themselves, then stop (kept). */
 export interface StopResult {
@@ -195,6 +231,30 @@ export const api = {
   capturePacket: (tid: number, cid: string, n: number) => request<PacketDetail>(`/topologies/${tid}/captures/${cid}/packets/${n}`),
   captureMatch: (tid: number, cid: string, filter: string) =>
     request<{ numbers: number[] }>(`/topologies/${tid}/captures/${cid}/match?filter=${encodeURIComponent(filter)}`),
+  // Lessons
+  listLessons: () => request<LessonSummary[]>('/lessons'),
+  getLesson: (id: number, full = false) => request<LessonDetail>(`/lessons/${id}${full ? '?full=true' : ''}`),
+  createLesson: (body: LessonPayload) => request<LessonSummary>('/lessons', json('POST', body)),
+  updateLesson: (id: number, body: LessonPayload) => request<LessonSummary>(`/lessons/${id}`, json('PUT', body)),
+  validateLesson: (body: LessonPayload) => request<{ errors: string[] }>('/lessons/validate', json('POST', body)),
+  deleteLesson: (id: number) => request<{ ok: boolean }>(`/lessons/${id}`, json('DELETE')),
+  startLesson: (id: number) => request<{ attempt: LessonAttempt; created: boolean }>(`/lessons/${id}/start`, json('POST')),
+  lessonForTopology: (tid: number) => request<LessonPanelData>(`/lesson-attempts/by-topology/${tid}`),
+  checkLessonTask: (aid: number, task?: string) =>
+    request<{ ran: Record<string, TaskResult>; attempt: LessonAttempt }>(
+      `/lesson-attempts/${aid}/check${task ? `?task=${encodeURIComponent(task)}` : ''}`, json('POST')),
+  revealHint: (aid: number, task: string) =>
+    request<LessonAttempt>(`/lesson-attempts/${aid}/hint?task=${encodeURIComponent(task)}`, json('POST')),
+  lessonSolution: (aid: number, task: string) =>
+    request<{ task: string; solution: Record<string, string> }>(`/lesson-attempts/${aid}/solution?task=${encodeURIComponent(task)}`),
+  resetLessonAttempt: (aid: number) => request<LessonAttempt>(`/lesson-attempts/${aid}/reset`, json('POST')),
+  openLessonAuthoring: (id: number) => request<{ topology_id: number }>(`/lessons/${id}/authoring`, json('POST')),
+  saveLessonAuthoring: (id: number, capture_running: boolean) =>
+    request<{ captured: string[]; failed: { device: string; error: string }[]; warnings: string[]; topology_summary: string }>(
+      `/lessons/${id}/authoring/save`, json('POST', { capture_running })),
+  testLessonChecks: (id: number, task?: string) =>
+    request<Record<string, TaskResult>>(`/lessons/${id}/authoring/test-checks${task ? `?task=${encodeURIComponent(task)}` : ''}`, json('POST')),
+
   getLinkDegradation: (tid: number, lid: number) => request<any>(`/topologies/${tid}/lab/link/${lid}/netem`),
   setLinkDegradation: (tid: number, lid: number, data: { delay: string; jitter: string; loss: number; rate: number; corruption: number; direction?: 'both' | 'a' | 'b' }) =>
     request<any>(`/topologies/${tid}/lab/link/${lid}/netem`, json('POST', data)),

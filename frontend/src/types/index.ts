@@ -16,6 +16,69 @@ export interface NodeTemplate {
 
 export interface Topology {
   id: number; name: string; description: string; node_count: number; link_count: number; lab_status: LabStatus;
+  /** Labs made from a lesson: a learner's attempt, or the lesson's authoring lab. */
+  lesson_id?: number | null; lesson_role?: 'attempt' | 'authoring' | null;
+  lesson_ai_policy?: 'teach' | 'hints' | 'off' | null;
+}
+
+// --- Lessons -------------------------------------------------------------------
+export type LessonLevel = 'beginner' | 'intermediate' | 'advanced';
+export type LessonTrack = 'enterprise' | 'service_provider' | 'data_center' | 'automation' | 'security' | 'general';
+export type AIPolicy = 'teach' | 'hints' | 'off';
+export type HintsMode = 'open' | 'on_request' | 'none';
+
+export interface CheckResult { ok: boolean; describe: string; detail: string; output: string }
+export interface TaskResult {
+  passed: boolean; checked_at: number; checks: CheckResult[];
+  /** Passed earlier; later tasks have since changed what it checked (it stays passed). */
+  changed_since?: boolean; passed_at?: number;
+}
+
+export interface LessonAttempt {
+  id: number; topology_id: number | null; lesson_version: string;
+  results: Record<string, TaskResult>; passed: number; total: number;
+  /** Hints the learner may see now, per task. */
+  hints: Record<string, string[]>;
+  started_at: string | null; completed_at: string | null;
+}
+
+export interface LessonSummary {
+  id: number; slug: string; title: string; summary: string; level: LessonLevel; track: LessonTrack;
+  topic: string; tags: string[]; minutes: number; status: 'draft' | 'published'; ai_policy: AIPolicy;
+  hints_mode: HintsMode; version: string; author: string; topology_summary: string; task_count: number;
+  updated_at: string | null; attempt: LessonAttempt | null;
+}
+
+/** A task as the learner sees it before revealing anything. */
+export interface PublicTask {
+  id: string; title: string; body: string; hint_count: number; has_solution: boolean;
+  checks: { type: string; describe: string }[];
+}
+
+export type LessonCheck = {
+  type: 'cli' | 'route' | 'ping' | 'config'; describe?: string;
+  device?: string; command?: string; expect?: Record<string, string | number | boolean>[];
+  prefix?: string; protocol?: string; present?: boolean;
+  from?: string; to?: string; count?: number; source?: string; min_success?: number;
+};
+/** A task as authored (admin, ?full=true). */
+export interface LessonTask {
+  id: string; title: string; body: string; hints: string[]; solution: Record<string, string>; checks: LessonCheck[];
+}
+
+export interface LessonSection { title: string; body: string; minutes: number }
+
+export interface LessonTopology {
+  nodes: { name: string; kind: string; image?: string; icon?: string; position?: [number, number]; enabled?: boolean;
+           notes?: string; startup_config?: string; network?: NetworkSpec | null }[];
+  links: { a: string; a_interface: string; b: string; b_interface: string; label: string }[];
+  annotations: Annotation[];
+}
+
+export interface LessonDetail extends LessonSummary {
+  topology_yaml: string; topology: LessonTopology; tasks: (PublicTask | LessonTask)[]; content_md: string; sections: LessonSection[];
+  requires: { kind: string; label: string; image: string; devices: string[]; ready: boolean }[];
+  authoring_topology_id: number | null; can_edit: boolean;
 }
 
 export interface Device {
