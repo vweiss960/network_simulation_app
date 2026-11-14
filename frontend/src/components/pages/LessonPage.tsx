@@ -33,6 +33,21 @@ export default function LessonPage() {
   if (!l) return <Shell><div className="text-slate-400 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Loading…</div></Shell>;
 
   const a = l.attempt;
+  // An attempt built from an older version of the lesson: rebuild its lab
+  // from the current topology (wipes it) before opening it.
+  const upgrade = async () => {
+    const att = l.attempt;
+    if (!att) return;
+    if (!confirm(`Restart this lesson on v${l.version}? Your current lab (built from v${att.lesson_version}) is wiped and `
+      + 'rebuilt from the new topology, and your progress is cleared.')) return;
+    setStarting(true);
+    try {
+      const fresh = await api.resetLessonAttempt(att.id);
+      toast.success('Your lab was rebuilt — deploy it to start');
+      if (fresh.topology_id) openTopology(fresh.topology_id);
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setStarting(false); }
+  };
   const start = async () => {
     setStarting(true);
     try {
@@ -76,6 +91,13 @@ export default function LessonPage() {
                 <span className="text-[12.5px] text-slate-600">{a.completed_at ? 'Completed' : `${a.passed} of ${a.total} tasks passed`}</span>
               </div>
             )}
+            {a?.outdated && (
+              <div className="mt-2 text-[12.5px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5">
+                This lesson was updated to v{l.version} after you started (v{a.lesson_version}). Your lab still has the
+                old topology: <b>Restart on v{l.version}</b> rebuilds it, or <button onClick={start} className="underline">open
+                the old lab</button> as it is.
+              </div>
+            )}
           </div>
           <div className="flex gap-2">
             <button onClick={() => downloadLesson(l.id).catch(e => toast.error((e as Error).message))} title="Export as a lesson pack (.zip)"
@@ -84,10 +106,10 @@ export default function LessonPage() {
               <button onClick={() => editLesson(l.id)}
                 className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-white border border-slate-300 hover:bg-slate-50"><Pencil size={14} /> Edit lesson</button>
             )}
-            <button onClick={start} disabled={starting}
+            <button onClick={a?.outdated ? upgrade : start} disabled={starting}
               className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-blue-700 hover:bg-blue-600 text-white shadow-sm disabled:opacity-50">
               {starting ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
-              {a ? (a.completed_at ? 'Open my lab' : 'Resume lesson') : 'Start lesson'}
+              {a ? (a.outdated ? `Restart on v${l.version}` : a.completed_at ? 'Open my lab' : 'Resume lesson') : 'Start lesson'}
             </button>
           </div>
         </div>

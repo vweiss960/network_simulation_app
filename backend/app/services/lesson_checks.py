@@ -3,7 +3,9 @@
 Check types (one dict each, in a task's `checks` list):
 
   cli     {device, command, expect: [...]}           output of a command
-  route   {device, prefix, protocol?, present?}      a route in the table (protocol e.g. "O IA", "O E2")
+  route   {device, prefix, protocol?, present?,      a route in the table (protocol e.g. "O IA", "O E2");
+           metric?, via?}                            IPv4 or IPv6 (from the prefix); metric = the [AD/metric]
+                                                     cost, via = text in the entry (next hop / interface)
   ping    {from, to, count?, source?, min_success?}  percent of pings answered
   config  {device, expect: [...]}                    the running config
 
@@ -15,6 +17,7 @@ otherwise. Every device command goes through device_exec.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import re
 import time
 
@@ -53,6 +56,13 @@ def validate_check(c: dict, devices: set[str] | None = None) -> list[str]:
     if t == "route":
         if not c.get("prefix"):
             errs.append("route needs 'prefix'")
+        elif _net(str(c["prefix"])) is None:
+            errs.append(f"route prefix {c['prefix']!r} isn't an IPv4 / IPv6 prefix")
+        if c.get("metric") is not None:
+            try:
+                int(c["metric"])
+            except (TypeError, ValueError):
+                errs.append("route 'metric' must be a number")
     if t in ("cli", "config"):
         exp = c.get("expect")
         if not isinstance(exp, list) or not exp:
@@ -83,8 +93,7 @@ def describe(c: dict) -> str:
     if t == "cli":
         return f"{c.get('device')}: {c.get('command')}"
     if t == "route":
-        what = f"{c.get('protocol') + ' ' if c.get('protocol') else ''}{c.get('prefix')}"
-        return f"{c.get('device')}: route {what} {'present' if c.get('present', True) else 'absent'}"
+        return f"{c.get('device')}: route {_route_what(c)} {'present' if c.get('present', True) else 'absent'}"
     if t == "ping":
         return f"{c.get('from')}: ping {c.get('to')}"
     if t == "config":
@@ -118,35 +127,88 @@ def eval_expect(text: str, expect: list[dict]) -> tuple[bool, str]:
     return True, ""
 
 
-_ROUTE_LINE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9*> ]{0,10}?)\s+(\d{1,3}(?:\.\d{1,3}){3}/\d{1,2})\b")
+_ROUTE_LINE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9*> ]{0,10}?)\s+([0-9A-Fa-f.:]+/\d{1,3})(?=[\s,\[]|$)")
+_NO_MASK_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9*> ]{0,10}?)\s+(\d{1,3}(?:\.\d{1,3}){3})(?=\s|\[|,|$)")
+_SUBNETTED = re.compile(r"^\s+\d{1,3}(?:\.\d{1,3}){3}/(\d{1,2}) is subnetted")
+_METRIC = re.compile(r"\[(\d+)/(\d+)\]")
+
+
+def _net(prefix: str):
+    try:
+        return ipaddress.ip_network(prefix.strip(), strict=False)
+    except ValueError:
+        return None
 
 
 def _code(s: str) -> str:
-    return re.sub(r"[\s*>]", "", s).upper()
+    """Protocol code without spaces / selection marks; IOS-XE's IPv6 "OI"
+    (inter-area) is the same thing as "O IA"."""
+    c = re.sub(r"[\s*>]", "", s).upper()
+    return "OIA" if c == "OI" else c
 
 
-def find_routes(table: str, prefix: str, protocol: str | None = None) -> list[str]:
-    """Lines of a routing table (IOS-XR / IOS-XE / FRR style) for `prefix`,
-    whose protocol code matches (`O IA` matches "O IA", "O*IA", "O>* IA"…)."""
-    out = []
+def _route_what(c: dict) -> str:
+    what = f"{c.get('protocol') + ' ' if c.get('protocol') else ''}{c.get('prefix')}"
+    if c.get("metric") is not None:
+        what += f" metric {c['metric']}"
+    if c.get("via"):
+        what += f" via {c['via']}"
+    return what
+
+
+def route_entries(table: str) -> list[tuple[str, str, str]]:
+    """(code, prefix, entry text) per route of a routing table (IOS-XR /
+    IOS-XE / FRR, IPv4 or IPv6). The entry includes its continuation lines
+    ("[110/3] via …" on the next lines: IPv6 tables, ECMP paths)."""
+    out: list[list[str]] = []
+    mask = None             # IOS-XE: "3.0.0.0/32 is subnetted, 1 subnets" → its routes print no mask
     for line in table.splitlines():
+        h = _SUBNETTED.match(line)
+        if h:
+            mask = h.group(1)
+            continue
+        if re.match(r"^\s+\S+ is variably subnetted", line):
+            mask = None
+            continue
         m = _ROUTE_LINE.match(line)
-        if not m or m.group(2) != prefix:
+        if m and _net(m.group(2)) is not None:
+            out.append([m.group(1), m.group(2), line.strip()])
             continue
-        if protocol and _code(m.group(1)) != _code(protocol):
+        m = _NO_MASK_LINE.match(line)
+        if m and mask:
+            out.append([m.group(1), f"{m.group(2)}/{mask}", line.strip()])
+        elif out and re.match(r"^\s+(\[|via\b)", line):
+            out[-1][2] += "\n" + line.strip()
+    return [(a, b, c) for a, b, c in out]
+
+
+def find_routes(table: str, prefix: str, protocol: str | None = None,
+                metric: int | None = None, via: str | None = None) -> list[str]:
+    """Entries of a routing table for `prefix` whose protocol code matches
+    (`O IA` matches "O IA", "O*IA", "OI"…), with that metric and next hop."""
+    want = _net(prefix)
+    out = []
+    for code, pfx, entry in route_entries(table):
+        if want is None or _net(pfx) != want:
             continue
-        out.append(line.strip())
+        if protocol and _code(code) != _code(protocol):
+            continue
+        if metric is not None and int(metric) not in {int(m.group(2)) for m in _METRIC.finditer(entry)}:
+            continue
+        if via and str(via).lower() not in entry.lower():
+            continue
+        out.append(entry)
     return out
 
 
-def route_command(family: str, image: str = "") -> str:
+def route_command(family: str, image: str = "", ipv6: bool = False) -> str:
     if family == "iosxr":
-        return "show route ipv4"
+        return "show route ipv6" if ipv6 else "show route ipv4"
     if family in ("iosxe", "ios", "eos"):
-        return "show ip route"
+        return "show ipv6 route" if ipv6 else "show ip route"
     if "frr" in (image or "").lower():
-        return "show ip route"
-    return "ip route"
+        return "show ipv6 route" if ipv6 else "show ip route"
+    return "ip -6 route" if ipv6 else "ip route"
 
 
 def _excerpt(text: str) -> str:
@@ -160,7 +222,8 @@ def _command(c: dict, t) -> str:
     if kind == "cli":
         return str(c["command"])
     if kind == "route":
-        return route_command(t.family, t.image)
+        net = _net(str(c["prefix"]))
+        return route_command(t.family, t.image, ipv6=bool(net and net.version == 6))
     if kind == "ping":
         return device_exec.ping_command(t.family, str(c["to"]), int(c.get("count") or 5), c.get("source"))
     if kind == "config":
@@ -185,11 +248,16 @@ def _evaluate(c: dict, t, output: str) -> dict:
         res["output"] = _excerpt(cfg)
         res["ok"], res["detail"] = eval_expect(cfg, c.get("expect") or [])
     elif kind == "route":
-        lines = find_routes(output, str(c["prefix"]), c.get("protocol"))
+        metric = int(c["metric"]) if c.get("metric") is not None else None
+        lines = find_routes(output, str(c["prefix"]), c.get("protocol"), metric, c.get("via"))
         want = c.get("present", True) is not False
-        what = f"{c.get('protocol') + ' ' if c.get('protocol') else ''}{c['prefix']}"
+        what = _route_what(c)
         res["ok"] = bool(lines) == want
-        res["output"] = "\n".join(lines) if lines else _excerpt(output)
+        if lines:
+            res["output"] = "\n".join(lines)
+        else:   # show what IS there for that prefix, if anything
+            near = find_routes(output, str(c["prefix"]))
+            res["output"] = "\n".join(near) if near else _excerpt(output)
         if not res["ok"]:
             res["detail"] = f"no {what} route in the table" if want else f"{what} is still in the table"
     elif kind == "ping":

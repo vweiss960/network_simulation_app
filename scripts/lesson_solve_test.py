@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Solve a lesson end to end on real devices, to prove its checks are right.
 
-    python3 scripts/lesson_solve_test.py <jwt> <lesson-slug> [--keep]
+    python3 scripts/lesson_solve_test.py <jwt> <lesson-slug> [--keep] [--authoring]
 
 Starts the lesson (a fresh attempt lab for the token's user), deploys it,
 waits for every device, then for each task in order:
@@ -11,6 +11,10 @@ waits for every device, then for each task in order:
   - re-runs the checks until they pass (OSPF needs a moment to converge).
 Finally every task is checked again. The lab is wiped and its topology
 deleted unless --keep.
+
+--authoring runs on the lesson's authoring lab (admin) instead of an attempt,
+so the token user's own attempt lab is left alone. Its checks aren't sticky:
+the final report shows which earlier tasks later tasks changed.
 """
 import json
 import sys
@@ -41,18 +45,31 @@ def show(task_id, ran):
 def main():
     if len(sys.argv) < 3:
         raise SystemExit(__doc__)
-    tok, slug, keep = sys.argv[1], sys.argv[2], "--keep" in sys.argv
+    tok, slug, keep, authoring = sys.argv[1], sys.argv[2], "--keep" in sys.argv, "--authoring" in sys.argv
     lesson = next((l for l in api(tok, "GET", "/lessons") if l["slug"] == slug), None)
     if not lesson:
         raise SystemExit(f"No lesson {slug!r}")
-    full = api(tok, "GET", f"/lessons/{lesson['id']}?full=true")
-    start = api(tok, "POST", f"/lessons/{lesson['id']}/start")
-    att = start["attempt"]
-    tid = att["topology_id"]
-    if not start["created"]:
-        print("Resetting the existing attempt…")
-        att = api(tok, "POST", f"/lesson-attempts/{att['id']}/reset")
-    print(f"Lesson {full['title']!r}: attempt {att['id']}, lab {tid}")
+    lid = lesson["id"]
+    full = api(tok, "GET", f"/lessons/{lid}?full=true")
+    if authoring:
+        if full.get("authoring_topology_id"):
+            raise SystemExit("The lesson already has an authoring lab; finish or delete it first.")
+        tid = api(tok, "POST", f"/lessons/{lid}/authoring")["topology_id"]
+        print(f"Lesson {full['title']!r}: authoring lab {tid}")
+
+        def check(task_id):
+            return api(tok, "POST", f"/lessons/{lid}/authoring/test-checks?task={task_id}")[task_id]
+    else:
+        start = api(tok, "POST", f"/lessons/{lid}/start")
+        att = start["attempt"]
+        tid = att["topology_id"]
+        if not start["created"]:
+            print("Resetting the existing attempt…")
+            att = api(tok, "POST", f"/lesson-attempts/{att['id']}/reset")
+        print(f"Lesson {full['title']!r}: attempt {att['id']}, lab {tid}")
+
+        def check(task_id):
+            return api(tok, "POST", f"/lesson-attempts/{att['id']}/check?task={task_id}")["ran"][task_id]
     ok_all = True
     t0 = time.time()
     try:
@@ -72,7 +89,7 @@ def main():
 
         for i, task in enumerate(full["tasks"]):
             print(f"\n[{i + 1}] {task['title']}")
-            before = api(tok, "POST", f"/lesson-attempts/{att['id']}/check?task={task['id']}")["ran"][task["id"]]
+            before = check(task["id"])
             print(f"  before: {'PASS' if before['passed'] else 'fail'}")
             if i == 0 and before["passed"]:
                 print("  ✗ the first task passes on the starting state — its checks don't test anything")
@@ -82,7 +99,7 @@ def main():
                 print(f"  applied on {dev}: {'ok' if r.get('ok') else 'ERRORS ' + str(r.get('errors'))}")
             deadline, res = time.time() + 120, None
             while time.time() < deadline:
-                res = api(tok, "POST", f"/lesson-attempts/{att['id']}/check?task={task['id']}")["ran"][task["id"]]
+                res = check(task["id"])
                 if res["passed"]:
                     break
                 time.sleep(8)
@@ -94,13 +111,19 @@ def main():
                     if not c["ok"] and c.get("output"):
                         print("    output:\n      " + c["output"][:800].replace("\n", "\n      "))
 
-        print("\nFinal state (passes are kept; Check all re-runs only unpassed tasks):")
-        final = api(tok, "POST", f"/lesson-attempts/{att['id']}/check")
-        for t in full["tasks"]:
-            r = final["attempt"]["results"].get(t["id"], {})
-            print(f"  {'PASS' if r.get('passed') else 'FAIL'} {t['id']}{' (changed by later tasks)' if r.get('changed_since') else ''}")
-            ok_all &= bool(r.get("passed"))
-        print(f"Attempt complete: {bool(final['attempt']['completed_at'])}")
+        if authoring:
+            print("\nFinal state of every task's checks (not sticky — later tasks change earlier results):")
+            final = api(tok, "POST", f"/lessons/{lid}/authoring/test-checks")
+            for t in full["tasks"]:
+                print(f"  {'pass' if final[t['id']]['passed'] else 'changed'} {t['id']}")
+        else:
+            print("\nFinal state (passes are kept; Check all re-runs only unpassed tasks):")
+            final = api(tok, "POST", f"/lesson-attempts/{att['id']}/check")
+            for t in full["tasks"]:
+                r = final["attempt"]["results"].get(t["id"], {})
+                print(f"  {'PASS' if r.get('passed') else 'FAIL'} {t['id']}{' (changed by later tasks)' if r.get('changed_since') else ''}")
+                ok_all &= bool(r.get("passed"))
+            print(f"Attempt complete: {bool(final['attempt']['completed_at'])}")
     finally:
         if not keep:
             print("Wiping the lab…")

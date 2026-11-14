@@ -210,7 +210,9 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   Bundled packs in `curriculum/lessons/*/` (`PLABS_CURRICULUM_DIR`) are
   imported at startup — newer `version`s too, unless edited in the app.
 - Checks (`lesson_checks`): `cli` (command + expect regex/contains…), `route`
-  (prefix + protocol code, present/absent; XR / XE / FRR table formats),
+  (IPv4 or IPv6 prefix + protocol code, optional `metric` / `via`, present /
+  absent; XR / XE / FRR table formats incl. XE's maskless "is subnetted"
+  lines and IPv6 `OI`/`OE2`/`ON2` codes),
   `ping` (`device_exec.ping_command` / `ping_success`), `config`. A run opens
   ONE session per device with all its commands (XRd resets parallel SSH logins).
 - Start = `LessonAttempt` + its own Topology (`lesson_role="attempt"`, built
@@ -225,7 +227,10 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   AI bar. Frontend: `pages/LessonsPage`, `LessonPage`, `LessonEditor`,
   `workspace/LessonPanel` (+ `AuthoringBar`), `lesson/TopologyPreview`, `lesson/meta`.
 - Live check of a lesson's checks: `python3 scripts/lesson_solve_test.py <jwt> <slug>`
-  (starts the lesson, applies each task's reference solution, expects every check to pass).
+  (starts the lesson, applies each task's reference solution, expects every check to pass;
+  `--authoring` uses the lesson's authoring lab instead of the token user's attempt; `--keep`).
+- Attempts record `lesson_version`; when the bundled lesson gets a newer version the
+  attempt is `outdated` and the UI offers Restart (its lab was built from the old topology).
 
 ### Lab agent (`services/lab_agent.py`, `services/llm.py`, `routes/agent.py`)
 - Chat on the canvas (Ask AI bar → `components/agent/AIChatPanel`), streamed as

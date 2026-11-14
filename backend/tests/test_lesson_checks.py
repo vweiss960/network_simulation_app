@@ -43,6 +43,64 @@ def test_find_routes_codes():
     assert lc.find_routes(FRR_ROUTES, "10.2.5.0/24", "O")             # "O>*"
 
 
+XE_ROUTES = """
+Gateway of last resort is 10.1.14.1 to network 0.0.0.0
+
+O*IA  0.0.0.0/0 [110/101] via 10.1.14.1, 00:00:12, GigabitEthernet2
+      3.0.0.0/32 is subnetted, 1 subnets
+O        3.3.3.3 [110/3] via 10.0.13.2, 00:01:00, GigabitEthernet3
+      10.0.0.0/8 is variably subnetted, 7 subnets, 4 masks
+O IA     10.1.0.0/16 [110/201] via 10.0.12.2, 00:00:40, GigabitEthernet2
+                     [110/201] via 10.0.13.1, 00:00:40, GigabitEthernet3
+"""
+XR_V6_ROUTES = """
+L    2001:db8::1/128 is directly connected,
+      00:10:01, Loopback0
+O    2001:db8::3/128 
+      [110/201] via fe80::5054:ff:fe12:3456, 00:00:21, GigabitEthernet0/0/0/0
+O IA 2001:db8:1::/48 
+      [110/101] via fe80::5054:ff:fe12:3457, 00:00:21, GigabitEthernet0/0/0/1
+O E2 2001:db8:cafe::/48 
+      [110/20] via fe80::5054:ff:fe12:3456, 00:00:21, GigabitEthernet0/0/0/0
+"""
+XE_V6_ROUTES = """
+IPv6 Routing Table - default - 9 entries
+Codes: C - Connected, L - Local, S - Static, U - Per-user Static route
+       O - OSPF Intra, OI - OSPF Inter, OE1 - OSPF ext 1, OE2 - OSPF ext 2
+       ON1 - OSPF NSSA ext 1, ON2 - OSPF NSSA ext 2
+OI  ::/0 [110/101]
+     via FE80::5054:FF:FE12:3456, GigabitEthernet2
+LC  2001:DB8:1::4/128 [0/0]
+     via Loopback0, receive
+ON2 2001:DB8:BEEF::/48 [110/20]
+     via FE80::5054:FF:FE12:3458, GigabitEthernet4
+OE2 2001:DB8:CAFE::/48 [110/20], tag 0
+     via FE80::5054:FF:FE12:3456, GigabitEthernet2
+"""
+
+
+def test_find_routes_xe_ipv6_metric_via():
+    # IOS-XE classful headers / indented subnets, ECMP continuation lines
+    assert lc.find_routes(XE_ROUTES, "0.0.0.0/0", "O IA", metric=101)
+    assert lc.find_routes(XE_ROUTES, "3.3.3.3/32", "O", metric=3)     # mask from "3.0.0.0/32 is subnetted"
+    assert not lc.find_routes(XE_ROUTES, "3.3.3.3/32", "O IA")
+    assert lc.find_routes(XE_ROUTES, "10.1.0.0/16", "O IA", metric=201, via="10.0.13.1")
+    assert not lc.find_routes(XE_ROUTES, "10.1.0.0/16", "O IA", metric=200)
+    # IPv6: XR's entry spans two lines; XE's codes are OI / OE2 / ON2, hex in upper case
+    assert lc.find_routes(XR_V6_ROUTES, "2001:db8::3/128", "O", metric=201, via="Gi")
+    assert lc.find_routes(XR_V6_ROUTES, "2001:db8:1::/48", "O IA")
+    assert lc.find_routes(XR_V6_ROUTES, "2001:db8:cafe::/48", "O E2")
+    assert lc.find_routes(XE_V6_ROUTES, "::/0", "O IA")               # "OI"
+    assert lc.find_routes(XE_V6_ROUTES, "2001:db8:beef::/48", "O N2", metric=20)
+    assert lc.find_routes(XE_V6_ROUTES, "2001:DB8:CAFE:0::/48", "O E2", via="gigabitethernet2")
+    assert not lc.find_routes(XE_V6_ROUTES, "2001:db8:cafe::/48", "O N2")
+    assert lc.route_command("iosxe", ipv6=True) == "show ipv6 route"
+    assert lc.route_command("iosxr", ipv6=True) == "show route ipv6"
+    assert lc.validate_check({"type": "route", "device": "R1", "prefix": "nope"})
+    assert lc.validate_check({"type": "route", "device": "R1", "prefix": "::/0", "metric": "x"})
+    assert not lc.validate_check({"type": "route", "device": "R1", "prefix": "::/0", "metric": 5})
+
+
 def test_eval_expect():
     ok, _ = lc.eval_expect(XR_NEIGHBORS, [{"regex": r"^1\.1\.1\.1\s+\d+\s+FULL"}])
     assert ok

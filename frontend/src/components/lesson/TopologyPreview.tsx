@@ -3,7 +3,7 @@
  * symbols, cables and annotations in a non-interactive React Flow.
  */
 import { useMemo } from 'react';
-import ReactFlow, { Background, BackgroundVariant, ReactFlowProvider, type Edge, type Node } from 'reactflow';
+import ReactFlow, { Background, BackgroundVariant, ConnectionMode, ReactFlowProvider, type Edge, type Node } from 'reactflow';
 import 'reactflow/dist/style.css';
 import DeviceNode, { type DeviceNodeData } from '../canvas/DeviceNode';
 import CableEdge, { type CableEdgeData } from '../canvas/CableEdge';
@@ -50,7 +50,8 @@ export default function TopologyPreview({ topology, height = 340 }: { topology: 
   return (
     <div className="rounded-lg border border-slate-200 bg-[#f6f7fa] overflow-hidden" style={{ height }}>
       <ReactFlowProvider>
-        <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+        {/* Loose: a device's single handle serves both cable ends, as on the canvas. */}
+        <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} connectionMode={ConnectionMode.Loose}
           fitView fitViewOptions={{ padding: 0.12, maxZoom: 1 }} proOptions={{ hideAttribution: true }}
           nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}
           panOnDrag zoomOnScroll={false} zoomOnPinch preventScrolling={false}>

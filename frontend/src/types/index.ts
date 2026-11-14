@@ -35,7 +35,7 @@ export interface TaskResult {
 }
 
 export interface LessonAttempt {
-  id: number; topology_id: number | null; lesson_version: string;
+  id: number; topology_id: number | null; lesson_version: string; outdated?: boolean;
   results: Record<string, TaskResult>; passed: number; total: number;
   /** Hints the learner may see now, per task. */
   hints: Record<string, string[]>;

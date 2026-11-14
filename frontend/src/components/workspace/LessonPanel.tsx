@@ -98,6 +98,13 @@ export default function LessonPanel({ onClose }: { onClose: () => void }) {
           </div>
           <span className="text-[11.5px] text-surface-300 tabular-nums">{attempt.passed}/{attempt.total}</span>
         </div>
+        {attempt.outdated && (
+          <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[12px] text-amber-200">
+            This lesson was updated to v{lesson.version} after this lab was built (v{attempt.lesson_version}); its devices
+            and tasks may not match.
+            <button onClick={restart} disabled={resetting} className="ml-1 underline font-semibold hover:text-amber-100">Restart with the new version</button>
+          </div>
+        )}
         <div className="mt-2 flex gap-1">
           <Tab on={view === 'tasks'} onClick={() => setView('tasks')}><ListChecks size={13} /> Tasks</Tab>
           {lesson.sections.length > 0 && <Tab on={view === 'readings'} onClick={() => setView('readings')}><BookOpen size={13} /> Readings</Tab>}

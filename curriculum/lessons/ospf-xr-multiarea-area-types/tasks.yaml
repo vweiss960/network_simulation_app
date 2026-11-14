@@ -1,18 +1,26 @@
-- id: backbone
-  title: Bring up OSPF area 0 on R1, R2 and R3
+- id: backbone-v2
+  title: Bring up the OSPFv2 backbone (and fix the adjacency that won't form)
   body: |
-    Start OSPF process **1** on the three backbone routers. Use each router's
-    Loopback0 address as its router ID, put the links between them in
-    **area 0**, and advertise the loopbacks (they don't need neighbors, so make
-    them passive).
+    Start **OSPFv2 process 1** on the three backbone routers — R1 and R2 run
+    **IOS XR**, R3 runs **IOS XE** — and put every link of the triangle in
+    **area 0**. Use each router's Loopback0 address as its router ID and
+    advertise the loopbacks passively.
 
-    On IOS XR, OSPF is enabled per interface under the area — there is no
-    `network` statement. Point-to-point links between two routers form
-    adjacencies faster with `network point-to-point` (no DR/BDR election).
+    - IOS XR enables OSPF **per interface, under the area** (`router ospf 1` →
+      `area 0` → `interface …`), and nothing happens until you `commit`.
+    - IOS XE can do the same per interface (`ip ospf 1 area 0`) or with
+      `network` statements under `router ospf 1`.
+    - Make every router-to-router link **point-to-point** on *both* ends: the
+      network type is not negotiated, and a mismatch breaks route calculation.
+
+    One adjacency won't come up on its own: someone left a non-default
+    setting on R3's link to R2. Find it — the two ends of an adjacency must
+    agree on area, timers, MTU, authentication and area type.
   hints:
-    - "Configuration lives under `router ospf 1` → `area 0` → `interface …`. Each XR change needs a `commit`."
-    - "R2 has two backbone links: both Gi0/0/0/0 and Gi0/0/0/1 go in area 0. Add `Loopback0` with `passive enable` on every router."
-    - "Verify with `show ospf neighbor` (look for FULL) and `show route ospf`."
+    - "On XR: `router ospf 1` → `router-id 1.1.1.1` → `area 0` → `interface GigabitEthernet0/0/0/0` → `network point-to-point`. Loopback0 gets `passive enable`. Then `commit`."
+    - "On XE: `router ospf 1` → `router-id 3.3.3.3` → `passive-interface Loopback0`, then under each interface `ip ospf 1 area 0` and `ip ospf network point-to-point`."
+    - "R2 sees R1 but not R3? Compare `show ospf interface GigabitEthernet0/0/0/1` on R2 with `show ip ospf interface GigabitEthernet2` on R3 — look at the Hello and Dead timers."
+    - "R3's Gi2 has `ip ospf hello-interval 5` (which also makes the dead interval 20). `no ip ospf hello-interval` puts it back to 10/40, matching XR's defaults."
   solution:
     R1: |
       router ospf 1
@@ -22,6 +30,9 @@
          passive enable
         !
         interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+        interface GigabitEthernet0/0/0/2
          network point-to-point
         !
        !
@@ -44,14 +55,19 @@
     R3: |
       router ospf 1
        router-id 3.3.3.3
-       area 0
-        interface Loopback0
-         passive enable
-        !
-        interface GigabitEthernet0/0/0/0
-         network point-to-point
-        !
-       !
+       passive-interface Loopback0
+      !
+      interface Loopback0
+       ip ospf 1 area 0
+      !
+      interface GigabitEthernet2
+       no ip ospf hello-interval
+       ip ospf network point-to-point
+       ip ospf 1 area 0
+      !
+      interface GigabitEthernet3
+       ip ospf network point-to-point
+       ip ospf 1 area 0
       !
   checks:
     - type: cli
@@ -60,26 +76,123 @@
       expect:
         - regex: '^1\.1\.1\.1\s+\d+\s+FULL'
         - regex: '^3\.3\.3\.3\s+\d+\s+FULL'
-      describe: "R2: show ospf neighbor → R1 and R3 FULL"
+      describe: "R2 (XR): show ospf neighbor → R1 and R3 FULL"
+    - type: cli
+      device: R3
+      command: show ip ospf neighbor
+      expect:
+        - regex: '^1\.1\.1\.1\s+\d+\s+FULL'
+        - regex: '^2\.2\.2\.2\s+\d+\s+FULL'
+      describe: "R3 (XE): show ip ospf neighbor → R1 and R2 FULL"
     - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: O, describe: "R1 learns R3's loopback (O 3.3.3.3/32)"}
-    - {type: route, device: R3, prefix: 1.1.1.1/32, protocol: O, describe: "R3 learns R1's loopback (O 1.1.1.1/32)"}
+    - {type: route, device: R3, prefix: 2.2.2.2/32, protocol: O, describe: "R3 learns R2's loopback (O 2.2.2.2/32)"}
+
+- id: backbone-v3
+  title: Bring up the OSPFv3 backbone
+  body: |
+    Every link is dual-stacked. Now run **OSPFv3 process 1** for IPv6 across
+    the same backbone triangle, with the same router IDs.
+
+    OSPFv3 is a separate process with its own adjacencies and its own LSDB:
+    hellos are sent from the interfaces' **link-local** addresses, neighbors
+    are identified by router ID only, and prefixes travel in their own LSAs
+    (types 8 and 9) instead of inside the router and network LSAs.
+
+    - IOS XR: `router ospfv3 1` mirrors `router ospf 1` — areas, then
+      interfaces under them (`passive` instead of `passive enable`).
+    - IOS XE: `router ospfv3 1` with an `address-family ipv6 unicast` block,
+      and `ospfv3 1 ipv6 area 0` on each interface. IPv6 routing
+      (`ipv6 unicast-routing`) is already on.
+  hints:
+    - "XR: `router ospfv3 1` → `router-id 1.1.1.1` → `area 0` → `interface GigabitEthernet0/0/0/0` → `network point-to-point`; Loopback0 gets `passive`."
+    - "XE: `router ospfv3 1` → `router-id 3.3.3.3` → `address-family ipv6 unicast` → `passive-interface Loopback0`. On each interface: `ospfv3 1 ipv6 area 0` and `ospfv3 network point-to-point`."
+    - "Verify with `show ospfv3 neighbor` (both OSes), `show route ipv6 ospf` (XR) and `show ipv6 route ospf` (XE)."
+  solution:
+    R1: |
+      router ospfv3 1
+       router-id 1.1.1.1
+       area 0
+        interface Loopback0
+         passive
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+        interface GigabitEthernet0/0/0/2
+         network point-to-point
+        !
+       !
+      !
+    R2: |
+      router ospfv3 1
+       router-id 2.2.2.2
+       area 0
+        interface Loopback0
+         passive
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+        interface GigabitEthernet0/0/0/1
+         network point-to-point
+        !
+       !
+      !
+    R3: |
+      router ospfv3 1
+       router-id 3.3.3.3
+       address-family ipv6 unicast
+        passive-interface Loopback0
+       exit-address-family
+      !
+      interface Loopback0
+       ospfv3 1 ipv6 area 0
+      !
+      interface GigabitEthernet2
+       ospfv3 network point-to-point
+       ospfv3 1 ipv6 area 0
+      !
+      interface GigabitEthernet3
+       ospfv3 network point-to-point
+       ospfv3 1 ipv6 area 0
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show ospfv3 neighbor
+      expect:
+        - regex: '^1\.1\.1\.1\s+\d+\s+FULL'
+        - regex: '^3\.3\.3\.3\s+\d+\s+FULL'
+      describe: "R2 (XR): show ospfv3 neighbor → R1 and R3 FULL"
+    - type: cli
+      device: R3
+      command: show ospfv3 neighbor
+      expect:
+        - regex: '^1\.1\.1\.1\s+\d+\s+FULL'
+        - regex: '^2\.2\.2\.2\s+\d+\s+FULL'
+      describe: "R3 (XE): show ospfv3 neighbor → R1 and R2 FULL"
+    - {type: route, device: R1, prefix: "2001:db8::3/128", protocol: O, describe: "R1 learns R3's IPv6 loopback (O 2001:db8::3/128)"}
+    - {type: route, device: R3, prefix: "2001:db8::2/128", protocol: O, describe: "R3 learns R2's IPv6 loopback (O 2001:db8::2/128)"}
 
 - id: areas
-  title: Attach area 1 and area 2 through R1 and R3
+  title: Attach area 1 and area 2 (OSPFv2 and OSPFv3)
   body: |
-    Extend OSPF to the edges:
+    Extend both processes to the edges:
 
     - **Area 1:** the R1–R4 link, plus R4's Loopback0 and its LAN towards H1.
+      R4 runs IOS XE.
     - **Area 2:** the R3–R5 link, plus R5's Loopback0 and its LAN towards H2.
+      R5 runs IOS XR.
 
-    R1 and R3 now have interfaces in area 0 *and* another area, which makes them
-    **area border routers (ABRs)**. They summarise each area into the others
-    with type 3 (summary) LSAs, so R4 should see R5's routes as **inter-area**
-    (`O IA`). Keep the host LANs passive — there are no OSPF routers there.
+    R1 (XR) and R3 (XE) now have interfaces in area 0 *and* another area, which
+    makes them **area border routers (ABRs)**. ABRs summarise each area into
+    the others — type 3 LSAs in OSPFv2, *inter-area-prefix* (type 3) LSAs in
+    OSPFv3 — so R4 sees R5's prefixes as **inter-area** routes. Keep the host
+    LANs passive: there are no OSPF routers there.
   hints:
-    - "An ABR is just a router with interfaces in two areas: on R1, add `area 1` with Gi0/0/0/1 under the same `router ospf 1`."
-    - "R4 and R5 need their own `router ospf 1` with a router ID, every interface in their area, and `passive enable` on the loopback and LAN."
-    - "`show ospf` on R1 says whether it's an area border router; `show route ospf` on R4 should list `O IA` routes."
+    - "On R1 add `area 1` → `interface GigabitEthernet0/0/0/1` under *both* `router ospf 1` and `router ospfv3 1`. On R3, Gi4 gets `ip ospf 1 area 2` and `ospfv3 1 ipv6 area 2`."
+    - "R4 and R5 need both processes from scratch: router ID, every interface in their area, passive loopback and LAN."
+    - "XR shows inter-area routes as `O IA` in both tables; XE shows `O IA` for IPv4 but `OI` for IPv6."
   solution:
     R1: |
       router ospf 1
@@ -89,28 +202,46 @@
         !
        !
       !
-    R4: |
-      router ospf 1
-       router-id 4.4.4.4
+      router ospfv3 1
        area 1
-        interface Loopback0
-         passive enable
-        !
-        interface GigabitEthernet0/0/0/0
-         network point-to-point
-        !
         interface GigabitEthernet0/0/0/1
-         passive enable
+         network point-to-point
         !
        !
       !
-    R3: |
+    R4: |
       router ospf 1
-       area 2
-        interface GigabitEthernet0/0/0/1
-         network point-to-point
-        !
-       !
+       router-id 4.4.4.4
+       passive-interface Loopback0
+       passive-interface GigabitEthernet3
+      !
+      router ospfv3 1
+       router-id 4.4.4.4
+       address-family ipv6 unicast
+        passive-interface Loopback0
+        passive-interface GigabitEthernet3
+       exit-address-family
+      !
+      interface Loopback0
+       ip ospf 1 area 1
+       ospfv3 1 ipv6 area 1
+      !
+      interface GigabitEthernet2
+       ip ospf network point-to-point
+       ip ospf 1 area 1
+       ospfv3 network point-to-point
+       ospfv3 1 ipv6 area 1
+      !
+      interface GigabitEthernet3
+       ip ospf 1 area 1
+       ospfv3 1 ipv6 area 1
+      !
+    R3: |
+      interface GigabitEthernet4
+       ip ospf network point-to-point
+       ip ospf 1 area 2
+       ospfv3 network point-to-point
+       ospfv3 1 ipv6 area 2
       !
     R5: |
       router ospf 1
@@ -127,55 +258,141 @@
         !
        !
       !
+      router ospfv3 1
+       router-id 5.5.5.5
+       area 2
+        interface Loopback0
+         passive
+        !
+        interface GigabitEthernet0/0/0/0
+         network point-to-point
+        !
+        interface GigabitEthernet0/0/0/1
+         passive
+        !
+       !
+      !
   checks:
     - type: cli
       device: R1
       command: show ospf
       expect:
         - {regex: 'area border router', ignore_case: true}
-      describe: "R1: show ospf → it is an area border router"
-    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: O IA, describe: "R4 learns R5's loopback as inter-area (O IA)"}
-    - {type: route, device: R5, prefix: 10.1.4.0/24, protocol: O IA, describe: "R5 learns H1's LAN as inter-area (O IA)"}
+      describe: "R1 (XR): show ospf → area border router"
+    - type: cli
+      device: R3
+      command: show ip ospf
+      expect:
+        - {regex: 'area border router', ignore_case: true}
+      describe: "R3 (XE): show ip ospf → area border router"
+    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: O IA, describe: "R4 learns R5's loopback as O IA"}
+    - {type: route, device: R5, prefix: 10.1.4.0/24, protocol: O IA, describe: "R5 learns H1's LAN as O IA"}
+    - {type: route, device: R4, prefix: "2001:db8:2::5/128", protocol: O IA, describe: "R4 learns R5's IPv6 loopback as inter-area (OI)"}
+    - {type: route, device: R5, prefix: "2001:db8:1:4::/64", protocol: O IA, describe: "R5 learns H1's IPv6 LAN as O IA"}
 
 - id: external
-  title: Inject an external route from R2
+  title: Advertise external routes from R2
   body: |
-    R2 connects to a "customer" network that isn't running OSPF. Model it with a
-    static route for **203.0.113.0/24** to Null0 on R2 and **redistribute** it
-    into OSPF. R2 becomes an **ASBR**: it floods a type 5 (external) LSA, and the
-    ABRs tell the other areas how to reach R2 with type 4 LSAs.
+    R2 connects to a customer network that doesn't run OSPF. Model it with
+    static routes to Null0 on R2 — **203.0.113.0/24** and
+    **2001:db8:cafe::/48** — and **redistribute** them into OSPFv2 and OSPFv3.
 
-    Every router — including R4 and R5 — should now learn the route as
-    `O E2` (external type 2, the default metric type).
+    R2 becomes an **ASBR**: it floods a type 5 (OSPFv2) / AS-external
+    (OSPFv3) LSA, and the ABRs tell the other areas how to reach R2 with
+    type 4 LSAs. Every router should now learn both prefixes as `O E2`
+    (external type 2, the default: the metric stays at the value set at
+    redistribution, 20, however far the route travels).
   hints:
-    - "Static routes on XR live under `router static` → `address-family ipv4 unicast`."
-    - "Under `router ospf 1` on R2, `redistribute static` turns the static route into a type 5 LSA."
+    - "XR static routes live under `router static` → `address-family ipv4 unicast` / `address-family ipv6 unicast`: `203.0.113.0/24 Null0`."
+    - "`redistribute static` goes under `router ospf 1` *and* under `router ospfv3 1` — each process redistributes its own address family."
   solution:
     R2: |
       router static
        address-family ipv4 unicast
         203.0.113.0/24 Null0
        !
+       address-family ipv6 unicast
+        2001:db8:cafe::/48 Null0
+       !
       !
       router ospf 1
        redistribute static
       !
+      router ospfv3 1
+       redistribute static
+      !
   checks:
-    - {type: route, device: R4, prefix: 203.0.113.0/24, protocol: O E2, describe: "R4 learns 203.0.113.0/24 as O E2"}
-    - {type: route, device: R5, prefix: 203.0.113.0/24, protocol: O E2, describe: "R5 learns 203.0.113.0/24 as O E2"}
+    - {type: route, device: R4, prefix: 203.0.113.0/24, protocol: O E2, describe: "R4 (XE) learns 203.0.113.0/24 as O E2"}
+    - {type: route, device: R5, prefix: 203.0.113.0/24, protocol: O E2, describe: "R5 (XR) learns 203.0.113.0/24 as O E2"}
+    - {type: route, device: R4, prefix: "2001:db8:cafe::/48", protocol: O E2, describe: "R4 (XE) learns 2001:db8:cafe::/48 as OE2"}
+    - {type: route, device: R5, prefix: "2001:db8:cafe::/48", protocol: O E2, describe: "R5 (XR) learns 2001:db8:cafe::/48 as O E2"}
+
+- id: summarize
+  title: Summarise each area at its ABR
+  body: |
+    The addressing plan is hierarchical: everything in area 1 sits inside
+    **10.1.0.0/16** and **2001:db8:1::/48**, everything in area 2 inside
+    **10.2.0.0/16** and **2001:db8:2::/48**. That's what makes summarisation
+    possible: an ABR can advertise one inter-area summary for the whole area
+    instead of one per subnet, so a flap inside the area no longer ripples
+    through the backbone.
+
+    Configure **inter-area summaries** (`range`) on both ABRs, for both
+    address families:
+
+    - R1 (XR) summarises area 1.
+    - R3 (XE) summarises area 2.
+
+    The routers loopbacks 4.4.4.4 and 5.5.5.5 are outside the plan, so they
+    stay as individual routes — a good reminder of why addressing comes first.
+  hints:
+    - "XR: under the area — `router ospf 1` → `area 1` → `range 10.1.0.0/16`, and `router ospfv3 1` → `area 1` → `range 2001:db8:1::/48`."
+    - "XE: `router ospf 1` → `area 2 range 10.2.0.0 255.255.0.0`; for IPv6 it's under the address family: `router ospfv3 1` → `address-family ipv6 unicast` → `area 2 range 2001:DB8:2::/48`."
+    - "The ABR installs a discard route (Null0) for each summary to prevent loops — look for it in R1's table."
+  solution:
+    R1: |
+      router ospf 1
+       area 1
+        range 10.1.0.0/16
+       !
+      !
+      router ospfv3 1
+       area 1
+        range 2001:db8:1::/48
+       !
+      !
+    R3: |
+      router ospf 1
+       area 2 range 10.2.0.0 255.255.0.0
+      !
+      router ospfv3 1
+       address-family ipv6 unicast
+        area 2 range 2001:DB8:2::/48
+       exit-address-family
+      !
+  checks:
+    - {type: route, device: R5, prefix: 10.1.0.0/16, protocol: O IA, describe: "R5 learns area 1 as one summary (O IA 10.1.0.0/16)"}
+    - {type: route, device: R5, prefix: 10.1.4.0/24, present: false, describe: "R5 no longer has the specific 10.1.4.0/24"}
+    - {type: route, device: R4, prefix: 10.2.0.0/16, protocol: O IA, describe: "R4 learns area 2 as one summary (O IA 10.2.0.0/16)"}
+    - {type: route, device: R4, prefix: 10.2.5.0/24, present: false, describe: "R4 no longer has the specific 10.2.5.0/24"}
+    - {type: route, device: R2, prefix: "2001:db8:1::/48", protocol: O IA, describe: "R2 learns 2001:db8:1::/48 as O IA"}
+    - {type: route, device: R2, prefix: "2001:db8:2::/48", protocol: O IA, describe: "R2 learns 2001:db8:2::/48 as O IA"}
+    - {type: route, device: R2, prefix: "2001:db8:1:4::/64", present: false, describe: "R2 no longer has the specific 2001:db8:1:4::/64"}
 
 - id: stub
   title: Make area 1 a stub area
   body: |
-    Area 1 only has one way out — through R1 — so it doesn't need every external
-    route. Configure area 1 as a **stub** area. In a stub area the ABR blocks
-    type 5 (and type 4) LSAs and injects a **default route** instead.
+    Area 1 only has one way out — through R1 — so it doesn't need the
+    backbone's external routes. Configure area 1 as a **stub** area in both
+    processes. In a stub area the ABR blocks type 5 (and type 4) LSAs and
+    injects a **default route** instead.
 
-    The stub flag is carried in every hello: **both** R1 and R4 must agree, or
-    their adjacency drops.
+    The stub flag is carried in every hello, so **both** R1 and R4 must agree,
+    or their adjacency drops — XR and XE alike.
   hints:
-    - "It's one command under the area: `area 1` → `stub`, on both ends."
-    - "On R4, `show route ospf` should no longer list 203.0.113.0/24, and should now have an `O*IA 0.0.0.0/0` default from R1."
+    - "XR: `area 1` → `stub` under `router ospf 1` and `router ospfv3 1`."
+    - "XE: `router ospf 1` → `area 1 stub`, and `router ospfv3 1` → `area 1 stub`."
+    - "R4 should lose 203.0.113.0/24 and 2001:db8:cafe::/48 and gain `O*IA 0.0.0.0/0` and `OI ::/0`."
   solution:
     R1: |
       router ospf 1
@@ -183,35 +400,43 @@
         stub
        !
       !
-    R4: |
-      router ospf 1
+      router ospfv3 1
        area 1
         stub
        !
       !
+    R4: |
+      router ospf 1
+       area 1 stub
+      !
+      router ospfv3 1
+       area 1 stub
+      !
   checks:
     - type: cli
       device: R4
-      command: show ospf neighbor
+      command: show ip ospf neighbor
       expect:
         - regex: '^1\.1\.1\.1\s+\d+\s+FULL'
-      describe: "R4: still FULL with R1"
-    - {type: route, device: R4, prefix: 203.0.113.0/24, protocol: O E2, present: false, describe: "R4 no longer has the external 203.0.113.0/24"}
-    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, describe: "R4 has a default route from the ABR (O*IA 0.0.0.0/0)"}
-    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: O IA, describe: "R4 still has inter-area routes (O IA 5.5.5.5/32)"}
+      describe: "R4 (XE): still FULL with R1"
+    - {type: route, device: R4, prefix: 203.0.113.0/24, present: false, describe: "R4 no longer has the external 203.0.113.0/24"}
+    - {type: route, device: R4, prefix: "2001:db8:cafe::/48", present: false, describe: "R4 no longer has the external 2001:db8:cafe::/48"}
+    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, describe: "R4 has an IPv4 default from the ABR (O*IA 0.0.0.0/0)"}
+    - {type: route, device: R4, prefix: "::/0", protocol: O IA, describe: "R4 has an IPv6 default from the ABR (OI ::/0)"}
+    - {type: route, device: R4, prefix: 10.2.0.0/16, protocol: O IA, describe: "R4 still has inter-area routes (O IA 10.2.0.0/16)"}
 
 - id: totally-stubby
   title: Make area 1 totally stubby
   body: |
-    Go one step further: R4 can reach *everything* through the default route, so
-    it doesn't need the inter-area (type 3) routes either. Make area 1
-    **totally stubby** — the ABR stops sending type 3 summaries and sends only
-    the default.
+    R4 can reach *everything* through the default route, so it doesn't need
+    the inter-area routes either. Make area 1 **totally stubby** — the ABR
+    stops sending inter-area summaries and sends only the default.
 
-    Totally stubby is configured **only on the ABR**; R4 stays a plain stub.
+    Totally stubby is configured **only on the ABR** (R1); R4 stays a plain
+    stub. Do it for both OSPFv2 and OSPFv3.
   hints:
-    - "On R1 only: `area 1` → `stub no-summary`."
-    - "R4's table should shrink to its own area's routes plus the default."
+    - "On R1 only: `area 1` → `stub no-summary`, in both processes."
+    - "R4's tables shrink to its own area's prefixes plus the two defaults."
   solution:
     R1: |
       router ospf 1
@@ -219,44 +444,56 @@
         stub no-summary
        !
       !
+      router ospfv3 1
+       area 1
+        stub no-summary
+       !
+      !
   checks:
-    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: O IA, present: false, describe: "R4 no longer has inter-area routes (5.5.5.5/32 gone)"}
-    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, describe: "R4 still has the default route"}
+    - {type: route, device: R4, prefix: 10.2.0.0/16, present: false, describe: "R4 no longer has inter-area routes (10.2.0.0/16 gone)"}
+    - {type: route, device: R4, prefix: "2001:db8:2::/48", present: false, describe: "R4 no longer has IPv6 inter-area routes (2001:db8:2::/48 gone)"}
+    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, describe: "R4 still has the IPv4 default"}
+    - {type: route, device: R4, prefix: "::/0", protocol: O IA, describe: "R4 still has the IPv6 default"}
     - type: config
       device: R1
       expect:
-        - regex: 'stub no-summary'
-      describe: "R1: area 1 is stub no-summary"
+        - {regex: 'stub no-summary', count: 2}
+      describe: "R1: area 1 is stub no-summary in both processes"
 
 - id: nssa
-  title: Make area 2 an NSSA with its own external route
+  title: Make area 2 an NSSA with its own external routes
   body: |
-    Area 2 has a twist: R5 connects to a partner network, **198.51.100.0/24**,
-    which must be redistributed into OSPF — but area 2 should still keep the
-    backbone's external routes out. A stub area can't contain an ASBR, so use a
-    **not-so-stubby area (NSSA)**.
+    R5 connects to a partner network — **198.51.100.0/24** and
+    **2001:db8:beef::/48** — that must be redistributed into OSPF, but area 2
+    should still keep the backbone's external routes out. A stub area can't
+    contain an ASBR, so use a **not-so-stubby area (NSSA)**.
 
-    - Configure area 2 as an NSSA on R3 and R5.
-    - On R5, add a static route for 198.51.100.0/24 to Null0 and redistribute it.
+    - Configure area 2 as an NSSA on R3 (XE) and R5 (XR), both processes.
+    - On R5, add static routes for both prefixes to Null0 and redistribute
+      them.
 
-    Inside the NSSA the route travels as a **type 7** LSA (`O N2` on R3). The
-    ABR, R3, **translates** it into a type 5 for the rest of the network, where
-    it shows as `O E2`. R2's external 203.0.113.0/24 no longer enters area 2.
+    Inside the NSSA the routes travel as **type 7** LSAs (`O N2` / `ON2` on
+    R3). The ABR, R3, **translates** them into type 5 for the rest of the
+    network, where they show as `O E2`. R2's externals no longer enter area 2.
   hints:
-    - "Both ends need `area 2` → `nssa`, just like the stub flag."
-    - "R5's static route and `redistribute static` follow the same pattern you used on R2."
-    - "Check R3's table for `O N2` and R2's table for `O E2` 198.51.100.0/24."
+    - "Both ends need the NSSA flag: XR `area 2` → `nssa`; XE `area 2 nssa` under `router ospf 1` and `router ospfv3 1`."
+    - "R5's static routes and `redistribute static` follow the pattern you used on R2."
+    - "Check R3's tables for `O N2` / `ON2` and R2's for `O E2`."
   solution:
     R3: |
       router ospf 1
-       area 2
-        nssa
-       !
+       area 2 nssa
+      !
+      router ospfv3 1
+       area 2 nssa
       !
     R5: |
       router static
        address-family ipv4 unicast
         198.51.100.0/24 Null0
+       !
+       address-family ipv6 unicast
+        2001:db8:beef::/48 Null0
        !
       !
       router ospf 1
@@ -265,24 +502,122 @@
         nssa
        !
       !
+      router ospfv3 1
+       redistribute static
+       area 2
+        nssa
+       !
+      !
   checks:
-    - {type: route, device: R3, prefix: 198.51.100.0/24, protocol: O N2, describe: "R3 learns 198.51.100.0/24 as O N2 (type 7)"}
-    - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: O E2, describe: "R2 learns it as O E2 (translated to type 5)"}
-    - {type: route, device: R5, prefix: 203.0.113.0/24, protocol: O E2, present: false, describe: "R5 no longer has R2's external 203.0.113.0/24"}
+    - {type: route, device: R3, prefix: 198.51.100.0/24, protocol: O N2, describe: "R3 (XE) learns 198.51.100.0/24 as O N2 (type 7)"}
+    - {type: route, device: R3, prefix: "2001:db8:beef::/48", protocol: O N2, describe: "R3 (XE) learns 2001:db8:beef::/48 as ON2"}
+    - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: O E2, describe: "R2 learns 198.51.100.0/24 as O E2 (translated to type 5)"}
+    - {type: route, device: R2, prefix: "2001:db8:beef::/48", protocol: O E2, describe: "R2 learns 2001:db8:beef::/48 as O E2"}
+    - {type: route, device: R5, prefix: 203.0.113.0/24, present: false, describe: "R5 no longer has R2's external 203.0.113.0/24"}
+    - {type: route, device: R5, prefix: "2001:db8:cafe::/48", present: false, describe: "R5 no longer has R2's external 2001:db8:cafe::/48"}
+
+- id: metrics
+  title: Tune the metrics
+  body: |
+    OSPF's cost is *reference bandwidth ÷ interface bandwidth*, and both IOS XR
+    and IOS XE default to a reference of **100 Mb/s** — so every link of
+    100 Mb/s or faster costs 1, and a 1 G link looks the same as a 100 G one.
+    Service providers raise the reference on **every** router; a router left
+    at the old value silently skews every path through it.
+
+    1. Set the reference bandwidth to **100 Gb/s** (`100000` Mb/s) on all five
+       routers, in both processes. Each gigabit link now costs **100**.
+    2. The R1–R3 link is a low-capacity backup. Give it a cost of **1000** on
+       both ends, in both processes, so R1 ↔ R3 traffic goes through R2.
+  hints:
+    - "XR: `auto-cost reference-bandwidth 100000` directly under `router ospf 1` and `router ospfv3 1`. The cost is per interface under the area: `interface GigabitEthernet0/0/0/2` → `cost 1000`."
+    - "XE: `auto-cost reference-bandwidth 100000` under `router ospf 1` and under `router ospfv3 1`; on R3's Gi3, `ip ospf cost 1000` and `ospfv3 cost 1000`."
+    - "`show ospf interface` (XR) / `show ip ospf interface` (XE) show each interface's cost. Then compare `show route 3.3.3.3` on R1 before and after."
+  solution:
+    R1: |
+      router ospf 1
+       auto-cost reference-bandwidth 100000
+       area 0
+        interface GigabitEthernet0/0/0/2
+         cost 1000
+        !
+       !
+      !
+      router ospfv3 1
+       auto-cost reference-bandwidth 100000
+       area 0
+        interface GigabitEthernet0/0/0/2
+         cost 1000
+        !
+       !
+      !
+    R2: |
+      router ospf 1
+       auto-cost reference-bandwidth 100000
+      !
+      router ospfv3 1
+       auto-cost reference-bandwidth 100000
+      !
+    R3: |
+      router ospf 1
+       auto-cost reference-bandwidth 100000
+      !
+      router ospfv3 1
+       auto-cost reference-bandwidth 100000
+      !
+      interface GigabitEthernet3
+       ip ospf cost 1000
+       ospfv3 cost 1000
+      !
+    R4: |
+      router ospf 1
+       auto-cost reference-bandwidth 100000
+      !
+      router ospfv3 1
+       auto-cost reference-bandwidth 100000
+      !
+    R5: |
+      router ospf 1
+       auto-cost reference-bandwidth 100000
+      !
+      router ospfv3 1
+       auto-cost reference-bandwidth 100000
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show ospf interface GigabitEthernet0/0/0/0
+      expect:
+        - regex: 'Cost:?\s*100\b'
+      describe: "R2 (XR): gigabit links cost 100"
+    - type: cli
+      device: R4
+      command: show ip ospf interface GigabitEthernet2
+      expect:
+        - regex: 'Cost:?\s*100\b'
+      describe: "R4 (XE): gigabit links cost 100"
+    - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: O, metric: 201, via: 10.0.12.2, describe: "R1 reaches R3's loopback through R2 at cost 201 (100 + 100 + R3's loopback)"}
+    - {type: route, device: R3, prefix: 1.1.1.1/32, protocol: O, via: 10.0.23.1, describe: "R3 reaches R1's loopback through R2 (via 10.0.23.1)"}
+    - {type: route, device: R1, prefix: "2001:db8::3/128", protocol: O, via: GigabitEthernet0/0/0/0, describe: "IPv6 too: R1 reaches 2001:db8::3 through R2 (Gi0/0/0/0)"}
+    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, metric: 101, describe: "R4's default costs 101 (its 100 link + the ABR's default cost 1)"}
 
 - id: end-to-end
-  title: Prove end-to-end reachability
+  title: Prove end-to-end reachability over IPv4 and IPv6
   body: |
-    With every area in place, traffic should still flow from one end to the
-    other: H1 sits in the totally stubby area 1 and reaches the rest of the
-    network through R4's default route; H2 sits in the NSSA.
+    With every area in place, traffic should flow from one end to the other
+    over both address families: H1 sits in the totally stubby area 1 and
+    reaches everything through R4's default routes; H2 sits in the NSSA.
 
-    Ping H2 (**10.2.5.10**) from H1. If it fails, follow the path hop by hop
-    with `show route` on each router.
+    Ping H2 from H1 — **10.2.5.10** and **2001:db8:2:5::10** — and R5's
+    loopbacks from R4's. If something fails, follow the path hop by hop with
+    `show route` / `show ip route` / `show ipv6 route`.
   hints:
-    - "Open H1's console and run `ping -c 3 10.2.5.10`."
-    - "R4 only has a default towards R1 — that's enough. Check that R5 has a route back to 10.1.4.0/24."
+    - "H1's console: `ping -c 3 10.2.5.10` and `ping -c 3 2001:db8:2:5::10`."
+    - "On R4 (XE): `ping 5.5.5.5 source Loopback0` and `ping 2001:DB8:2::5 source Loopback0`."
+    - "R4 only has defaults towards R1 — that's enough. Check that R5 has a route back to 10.1.0.0/16 and 2001:db8:1::/48."
   solution: {}
   checks:
-    - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80, describe: "H1 pings H2 (10.2.5.10)"}
-    - {type: ping, from: R4, to: 5.5.5.5, source: 4.4.4.4, count: 5, min_success: 80, describe: "R4 (Lo0) pings R5's loopback across all three areas"}
+    - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80, describe: "H1 pings H2 over IPv4 (10.2.5.10)"}
+    - {type: ping, from: H1, to: "2001:db8:2:5::10", count: 5, min_success: 80, describe: "H1 pings H2 over IPv6 (2001:db8:2:5::10)"}
+    - {type: ping, from: R4, to: 5.5.5.5, source: Loopback0, count: 5, min_success: 80, describe: "R4 (Lo0) pings R5's loopback across all three areas"}
+    - {type: ping, from: R4, to: "2001:db8:2::5", source: Loopback0, count: 5, min_success: 80, describe: "R4 (Lo0) pings R5's IPv6 loopback"}

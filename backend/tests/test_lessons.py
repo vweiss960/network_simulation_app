@@ -38,10 +38,10 @@ def test_bundled_ospf_pack_is_valid(db):
     l = db.query(Lesson).one()
     assert l.track == "service_provider" and l.level == "intermediate" and "ospf" in l.tags
     assert svc.topology_summary(l.topology_yaml) == "5 routers · 2 hosts"
-    assert [t["id"] for t in l.tasks][:2] == ["backbone", "areas"]
-    assert {r["kind"] for r in svc.requirements(l)} == {"cisco_xrd", "linux"}
+    assert [t["id"] for t in l.tasks][:2] == ["backbone-v2", "backbone-v3"]
+    assert {r["kind"] for r in svc.requirements(l)} == {"cisco_xrd", "cisco_csr1000v", "linux"}
     titles = [s["title"] for s in svc.content_sections(l.content_md)]
-    assert titles[0] == "Why split OSPF into areas?" and len(titles) == 6
+    assert titles[0] == "Why split OSPF into areas?" and len(titles) == 10
 
 
 def test_seed_updates_newer_version_unless_edited(db, tmp_path):
@@ -123,8 +123,8 @@ def test_attempt_start_resume_check_reset(db, ospf, monkeypatch):
 
     monkeypatch.setattr(lesson_checks, "run_checks",
                         lambda db_, tid, checks: [{"ok": True, "describe": "x", "detail": "", "output": ""} for _ in checks])
-    svc.check_attempt(db, a, "backbone")
-    assert a.results["backbone"]["passed"] and a.completed_at is None
+    svc.check_attempt(db, a, "backbone-v2")
+    assert a.results["backbone-v2"]["passed"] and a.completed_at is None
     svc.check_attempt(db, a)
     assert a.completed_at is not None
 
@@ -150,17 +150,17 @@ def test_learner_view_and_hints(client, db, ospf, monkeypatch):
     from app.auth.dependencies import get_current_user
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=2, username="learner", is_admin=False)
     d = client.get(f"/api/lessons/{ospf.id}").json()
-    assert "solution" not in d["tasks"][0] and d["tasks"][0]["hint_count"] == 3
-    assert d["tasks"][0]["checks"][0]["describe"].startswith("R2: show ospf neighbor")
+    assert "solution" not in d["tasks"][0] and d["tasks"][0]["hint_count"] == 4
+    assert d["tasks"][0]["checks"][0]["describe"].startswith("R2 (XR): show ospf neighbor")
     assert client.get(f"/api/lessons/{ospf.id}?full=true").json()["tasks"][0].get("solution") is None
     assert client.post("/api/lessons", json={"meta": {"title": "x"}}).status_code == 403
 
     r = client.post(f"/api/lessons/{ospf.id}/start").json()
     aid = r["attempt"]["id"]
-    assert r["created"] and r["attempt"]["hints"]["backbone"] == []          # on request: none shown yet
-    h = client.post(f"/api/lesson-attempts/{aid}/hint?task=backbone").json()
-    assert len(h["hints"]["backbone"]) == 1
-    sol = client.get(f"/api/lesson-attempts/{aid}/solution?task=backbone").json()
+    assert r["created"] and r["attempt"]["hints"]["backbone-v2"] == []          # on request: none shown yet
+    h = client.post(f"/api/lesson-attempts/{aid}/hint?task=backbone-v2").json()
+    assert len(h["hints"]["backbone-v2"]) == 1
+    sol = client.get(f"/api/lesson-attempts/{aid}/solution?task=backbone-v2").json()
     assert "router ospf 1" in sol["solution"]["R1"]
     panel = client.get(f"/api/lesson-attempts/by-topology/{r['attempt']['topology_id']}").json()
     assert panel["lesson"]["title"] == ospf.title and panel["mine"]
@@ -177,8 +177,8 @@ def test_hints_mode_none_hides_hints_and_solution(client, db, ospf):
     from app.auth.dependencies import get_current_user
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=2, username="learner", is_admin=False)
     aid = client.post(f"/api/lessons/{ospf.id}/start").json()["attempt"]["id"]
-    assert client.post(f"/api/lesson-attempts/{aid}/hint?task=backbone").status_code == 400
-    assert client.get(f"/api/lesson-attempts/{aid}/solution?task=backbone").status_code == 403
+    assert client.post(f"/api/lesson-attempts/{aid}/hint?task=backbone-v2").status_code == 400
+    assert client.get(f"/api/lesson-attempts/{aid}/solution?task=backbone-v2").status_code == 403
 
 
 def test_authoring_open_save_and_capture(db, ospf, monkeypatch):
@@ -219,7 +219,7 @@ def test_ai_policy(client, db, ospf, monkeypatch):
     lab_agent._new_convo("claude-opus-5-5", read_only=True)
     assert "apply_config" not in seen["tools"] and "run_show" in seen["tools"]
     block = lab_agent.lesson_prompt(a.topology_id)
-    assert "hint-giver" in block and "Bring up OSPF area 0" in block and "The learner is on:" in block
+    assert "hint-giver" in block and "Bring up the OSPFv2 backbone" in block and "The learner is on:" in block
 
     ospf.ai_policy = "off"
     db.commit()

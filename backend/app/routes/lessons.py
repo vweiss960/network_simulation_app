@@ -39,6 +39,9 @@ def _attempt_out(db: Session, a: LessonAttempt | None, lesson: Lesson) -> Option
     tasks = lesson.tasks
     return {
         "id": a.id, "topology_id": a.topology_id, "lesson_version": a.lesson_version,
+        # The lesson got a new version since this lab was built (its topology
+        # and tasks may no longer match): the learner should restart.
+        "outdated": bool(a.lesson_version) and a.lesson_version != lesson.version,
         "results": res,
         "passed": sum(1 for t in tasks if res.get(t["id"], {}).get("passed")), "total": len(tasks),
         # Hints the learner may see: all of them when hints are open.
