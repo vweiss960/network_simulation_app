@@ -430,13 +430,31 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const qs = new URLSearchParams({ token });
     if (cli) qs.set('cli', cli);
-    const ws = new WebSocket(`${proto}//${window.location.host}/api/topologies/${currentTopologyId}/lab/console/${nodeId}?${qs}`);
-    wsRef.current = ws;
-    ws.onopen = () => { try { ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } })); } catch { /* closed */ } };
-    ws.onmessage = ev => { if (typeof ev.data === 'string') term.write(ev.data); };
-    ws.onclose = () => term.write('\r\n\x1b[31m[connection closed]\x1b[0m\r\n');
-    ws.onerror = () => term.write('\r\n\x1b[31m[websocket error]\x1b[0m\r\n');
-    term.onData(data => { if (ws.readyState === WebSocket.OPEN) ws.send(data); });
+    // The device can drop the session (idle exec-timeout, reload…): the
+    // terminal stays, and Enter opens a fresh session in the same tab.
+    let disposed = false;
+    let dead = false;
+    const connect = () => {
+      const ws = new WebSocket(`${proto}//${window.location.host}/api/topologies/${currentTopologyId}/lab/console/${nodeId}?${qs}`);
+      wsRef.current = ws;
+      ws.onopen = () => { try { ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } })); } catch { /* closed */ } };
+      ws.onmessage = ev => { if (typeof ev.data === 'string') term.write(ev.data); };
+      ws.onclose = () => {
+        if (disposed || wsRef.current !== ws) return;
+        dead = true;
+        term.write('\r\n\x1b[31m[connection closed]\x1b[0m \x1b[90mPress Enter to reconnect\x1b[0m\r\n');
+      };
+    };
+    connect();
+    term.onData(data => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) { ws.send(data); return; }
+      if (dead && /[\r\n]/.test(data)) {
+        dead = false;
+        term.write('\x1b[90m[reconnecting…]\x1b[0m\r\n');
+        connect();
+      }
+    });
 
     // Multi-line Ctrl+V → the same confirmation as right-click paste.
     const onPaste = (e: ClipboardEvent) => {
@@ -451,7 +469,8 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
     const onResize = () => {
       try {
         fit.fit();
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } }));
+        const ws = wsRef.current;
+        if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } }));
       } catch { /* hidden */ }
     };
     const el = containerRef.current;
@@ -462,7 +481,8 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
       window.removeEventListener('resize', onResize);
       el.removeEventListener('paste', onPaste, true);
       ro.disconnect();
-      try { ws.close(); } catch { /* already closed */ }
+      disposed = true;
+      try { wsRef.current?.close(); } catch { /* already closed */ }
       try { term.dispose(); } catch { /* disposed */ }
     };
   }, [nodeId, cli, currentTopologyId]);
@@ -492,7 +512,7 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
   const send = async (text: string) => {
     const ws = wsRef.current;
     setPaste(null);
-    if (!ws || ws.readyState !== WebSocket.OPEN) { flash('Not connected'); return; }
+    if (!ws || ws.readyState !== WebSocket.OPEN) { flash('Not connected — press Enter to reconnect'); return; }
     const lines = text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n');
     setSending({ done: 0, total: lines.length });
     for (let i = 0; i < lines.length; i++) {
