@@ -7,10 +7,10 @@
  */
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { ArrowDown, ArrowLeft, ArrowUp, Eye, Loader2, Plus, Save, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowUp, Eye, Loader2, Plus, Save, Siren, Trash2, X } from 'lucide-react';
 import { api, type ModulePayload } from '../../utils/api';
 import { useLabStore } from '../../stores/useLabStore';
-import type { LessonSummary, ModuleItem, ModuleMeta } from '../../types';
+import type { LessonSummary, ModuleItem, ModuleMeta, ScenarioSummary } from '../../types';
 import Markdown from '../agent/Markdown';
 import { LEVEL_LABEL, LEVELS, TRACK_LABEL, TRACKS } from '../lesson/meta';
 
@@ -36,12 +36,16 @@ export default function ModuleEditor() {
   const [preview, setPreview] = useState(false);
   const [loading, setLoading] = useState(!!moduleId);
 
-  useEffect(() => { api.listLessons().then(setLessons).catch(() => setLessons([])); }, []);
+  const [scenarios, setScenarios] = useState<ScenarioSummary[]>([]);
+  useEffect(() => {
+    api.listLessons().then(setLessons).catch(() => setLessons([]));
+    api.listScenarios().then(setScenarios).catch(() => setScenarios([]));
+  }, []);
   const load = async (id: number) => {
     const d = await api.getModule(id);
     setMeta({ slug: d.slug, title: d.title, summary: d.summary, level: d.level, track: d.track, blueprint: d.blueprint,
               tags: d.tags, status: d.status, version: d.version, author: d.author });
-    setItems(d.items.map(({ lesson, section, title, objectives }) => ({ lesson, section, title, objectives })));
+    setItems(d.items.map(({ kind, lesson, scenario, section, title, objectives }) => ({ kind, lesson, scenario, section, title, objectives })));
     setOverview(d.overview_md);
     setDirty(false);
   };
@@ -59,7 +63,18 @@ export default function ModuleEditor() {
     setDirty(true);
   };
   const byslug = new Map(lessons.map(l => [l.slug, l]));
-  const unused = lessons.filter(l => !items.some(i => i.lesson === l.slug));
+  const scBySlug = new Map(scenarios.map(x => [x.slug, x]));
+  const isScenario = (i: ModuleItem) => i.kind === 'scenario';
+  const unused = lessons.filter(l => !items.some(i => !isScenario(i) && i.lesson === l.slug));
+  const unusedSc = scenarios.filter(x => !items.some(i => isScenario(i) && i.scenario === x.slug));
+  const add = (value: string) => {
+    if (!value) return;
+    const [kind, slug] = value.split(':') as ['lesson' | 'scenario', string];
+    setItems(xs => [...xs, kind === 'scenario'
+      ? { kind, lesson: '', scenario: slug, section: '', title: '', objectives: [] }
+      : { kind, lesson: slug, section: '', title: '', objectives: [] }]);
+    setDirty(true);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -162,14 +177,18 @@ export default function ModuleEditor() {
         {tab === 'lessons' && (
           <div className="space-y-3">
             {items.map((it, i) => {
-              const l = byslug.get(it.lesson);
+              const sc = isScenario(it);
+              const slug = (sc ? it.scenario : it.lesson) || '';
+              const l = sc ? scBySlug.get(slug) : byslug.get(slug);
               return (
-                <div key={it.lesson + i} className="rounded-xl bg-white border border-slate-200 shadow-sm p-4">
+                <div key={slug + i} className="rounded-xl bg-white border border-slate-200 shadow-sm p-4">
                   <div className="flex items-start gap-3">
                     <span className="w-7 h-7 shrink-0 rounded-full bg-blue-50 text-blue-700 text-[12px] font-bold flex items-center justify-center">{i + 1}</span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[14px] font-semibold text-slate-900">{l?.title ?? it.lesson}</div>
-                      <div className="text-[12px] text-slate-500 font-mono">{it.lesson}{!l && ' — not installed here'}</div>
+                      <div className="text-[14px] font-semibold text-slate-900 flex items-center gap-1.5">
+                        {sc && <Siren size={14} className="text-rose-600" />}{l?.title ?? slug}
+                      </div>
+                      <div className="text-[12px] text-slate-500 font-mono">{sc ? 'scenario · ' : ''}{slug}{!l && ' — not installed here'}</div>
                       <div className="grid grid-cols-[100px_minmax(0,1fr)] gap-3 mt-3">
                         <div><label className={label}>Section</label>
                           <input className={field} value={it.section} onChange={e => setItem(i, { section: e.target.value })} placeholder="2.1" /></div>
@@ -194,10 +213,19 @@ export default function ModuleEditor() {
             })}
             <div className="rounded-xl border-2 border-dashed border-slate-300 p-4 flex items-center gap-3">
               <Plus size={16} className="text-slate-500" />
-              <select className={`${field} max-w-[520px]`} value="" disabled={!unused.length}
-                onChange={e => { if (e.target.value) { setItems(xs => [...xs, { lesson: e.target.value, section: '', title: '', objectives: [] }]); setDirty(true); } }}>
-                <option value="">{unused.length ? 'Add a lesson…' : 'Every lesson is already in the module'}</option>
-                {unused.map(l => <option key={l.slug} value={l.slug}>{l.title} ({TRACK_LABEL[l.track]}, {LEVEL_LABEL[l.level]})</option>)}
+              <select className={`${field} max-w-[520px]`} value="" disabled={!unused.length && !unusedSc.length}
+                onChange={e => add(e.target.value)}>
+                <option value="">{unused.length || unusedSc.length ? 'Add a lesson or troubleshooting scenario…' : 'Everything is already in the module'}</option>
+                {unused.length > 0 && (
+                  <optgroup label="Lessons">
+                    {unused.map(l => <option key={l.slug} value={`lesson:${l.slug}`}>{l.title} ({TRACK_LABEL[l.track]}, {LEVEL_LABEL[l.level]})</option>)}
+                  </optgroup>
+                )}
+                {unusedSc.length > 0 && (
+                  <optgroup label="Troubleshooting scenarios">
+                    {unusedSc.map(x => <option key={x.slug} value={`scenario:${x.slug}`}>{x.title} ({TRACK_LABEL[x.track]})</option>)}
+                  </optgroup>
+                )}
               </select>
             </div>
           </div>

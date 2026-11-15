@@ -9,6 +9,7 @@ from app.auth.dependencies import get_current_user, require_admin
 from app.models.database import get_db
 from app.models.lesson import Lesson
 from app.models.module import Module
+from app.models.scenario import Scenario
 from app.services import lessons as lesson_svc, modules as svc
 
 router = APIRouter(prefix="/api", tags=["modules"])
@@ -25,7 +26,7 @@ def _summary(db: Session, m: Module, username: str) -> dict:
     p = svc.progress(db, m, username)
     return {
         "id": m.id, **svc.module_meta(m), "lesson_count": p["total"], "completed": p["completed"],
-        "minutes": p["minutes"], "next_lesson_id": p["next_lesson_id"],
+        "minutes": p["minutes"], "next_lesson_id": p["next_lesson_id"], "next_item": p["next_item"],
         "updated_at": m.updated_at.isoformat() if m.updated_at else None,
     }
 
@@ -42,6 +43,17 @@ def get_module(module_id: int, user=Depends(get_current_user), db: Session = Dep
     p = svc.progress(db, m, user.username)
     items = []
     for it in p["items"]:
+        if it["kind"] == "scenario":
+            sc = db.get(Scenario, it["scenario_id"]) if it["scenario_id"] else None
+            if sc is not None and sc.status == "draft" and not user.is_admin:
+                sc = None
+                it = {**it, "scenario_id": None, "status": {"state": "not_installed"}}
+            items.append({**it, "lesson_title": sc.title if sc else "", "lesson_summary": sc.summary if sc else "",
+                          "level": sc.level if sc else None, "minutes": svc.SCENARIO_MINUTES if sc else None,
+                          "task_count": 0, "protocols": sc.protocols if sc else [],
+                          "fault_count": sum(len(f.get("variants") or []) for f in sc.faults) if sc else 0,
+                          "topology_summary": lesson_svc.topology_summary(sc.topology_yaml) if sc else ""})
+            continue
         l = db.get(Lesson, it["lesson_id"]) if it["lesson_id"] else None
         if l is not None and l.status == "draft" and not user.is_admin:
             l = None
@@ -100,8 +112,8 @@ async def import_module(file: UploadFile = File(...), mode: str = Query("new", p
                         user=Depends(require_admin), db: Session = Depends(get_db)):
     data = await file.read(svc.MAX_PACK_BYTES + 1)
     try:
-        meta, items, overview, packs = svc.read_zip(data)
-        m, report = svc.import_pack(db, meta, items, overview, packs, mode=mode)
+        meta, items, overview, packs, spacks = svc.read_zip(data)
+        m, report = svc.import_pack(db, meta, items, overview, packs, spacks, mode=mode)
     except svc.ModuleExists as e:
         db.rollback()
         raise HTTPException(409, {"message": str(e), "slug": e.slug})
@@ -115,5 +127,6 @@ async def import_module(file: UploadFile = File(...), mode: str = Query("new", p
 @router.get("/modules/{module_id}/export")
 def export_module(module_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
     m = _module(db, module_id, user)
-    return Response(svc.export_zip(db, m), media_type="application/zip",
+    # Scenario packs carry their faults (the answer key): admins only.
+    return Response(svc.export_zip(db, m, include_scenarios=bool(user.is_admin)), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="{m.slug}-{m.version}.zip"'})

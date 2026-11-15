@@ -126,16 +126,16 @@ def startup():
             seeded = lesson_svc.seed_bundled(_db, config.CURRICULUM_DIR)
             if seeded:
                 print(f"[startup] lessons imported: {', '.join(seeded)}", flush=True)
-            # Then modules (curriculum/modules/*/), which reference lessons.
-            from app.services import modules as module_svc
-            seeded = module_svc.seed_bundled(_db, config.CURRICULUM_DIR)
-            if seeded:
-                print(f"[startup] modules imported: {', '.join(seeded)}", flush=True)
             # Troubleshooting scenarios (curriculum/troubleshooting/*/).
             from app.services import troubleshooting as ts_svc
             seeded = ts_svc.seed_bundled(_db, config.CURRICULUM_DIR)
             if seeded:
                 print(f"[startup] troubleshooting scenarios imported: {', '.join(seeded)}", flush=True)
+            # Then modules (curriculum/modules/*/), which reference lessons and scenarios.
+            from app.services import modules as module_svc
+            seeded = module_svc.seed_bundled(_db, config.CURRICULUM_DIR)
+            if seeded:
+                print(f"[startup] modules imported: {', '.join(seeded)}", flush=True)
         finally:
             _db.close()
     except Exception as e:

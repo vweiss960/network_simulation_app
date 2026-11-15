@@ -55,7 +55,9 @@ def get_scenario(sid: int, full: bool = False, user=Depends(get_current_user), d
     for n in view["nodes"]:
         n["notes"] = None
         n["startup_config"] = None           # the baseline configs are the answer key
-    out = {**_summary(db, s, user), "topology": view, "difficulties": DIFFICULTY_INFO, "can_edit": bool(user.is_admin)}
+    from app.services import modules as module_svc
+    out = {**_summary(db, s, user), "topology": view, "difficulties": DIFFICULTY_INFO, "can_edit": bool(user.is_admin),
+           "modules": module_svc.modules_for(db, "scenario", s.slug)}
     if full and user.is_admin:
         out.update(faults=s.faults, health=s.health, docs_md=s.docs_md, topology_yaml=s.topology_yaml)
     return out

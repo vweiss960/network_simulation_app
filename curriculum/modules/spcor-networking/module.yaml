@@ -5,13 +5,14 @@ summary: >-
   (Networking) of the CCNP Service Provider Core (SPCOR) blueprint: IS-IS and
   OSPF as the IGP, then BGP — iBGP and eBGP, path selection and routing
   policy, additional paths and PIC — for IPv4 and IPv6, built and verified on
-  IOS XR and IOS XE side by side.
+  IOS XR and IOS XE side by side. It ends with troubleshooting: Chaos breaks a
+  working network and you put it right.
 level: intermediate
 track: service_provider
 blueprint: "CCNP SPCOR 350-501 · 2.0 Networking"
-tags: [ccnp-spcor, isis, ospf, bgp, ipv6, iosxr, iosxe]
+tags: [ccnp-spcor, isis, ospf, bgp, troubleshooting, ipv6, iosxr, iosxe]
 status: published
-version: "1.1"
+version: "1.2"
 author: Phanero Labs
 lessons:
   - lesson: isis-sp-levels-multitopology
@@ -52,3 +53,15 @@ lessons:
     objectives:
       - 2.4.g Additional Paths
       - 2.4.h PIC
+  - scenario: sp-core-isis-bgp
+    section: "2.6"
+    title: Troubleshoot routing protocols — IS-IS and BGP
+    objectives:
+      - 2.6.a Neighbor adjacency (BGP, IS-IS)
+      - 2.6.b Route advertisement (BGP, IS-IS)
+  - scenario: ospf-multiarea
+    section: "2.6"
+    title: Troubleshoot routing protocols — OSPF
+    objectives:
+      - 2.6.a Neighbor adjacency (OSPF)
+      - 2.6.b Route advertisement (OSPF)

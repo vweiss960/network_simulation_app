@@ -22,8 +22,14 @@ This module follows the CCNP SPCOR blueprint's Networking section:
 5. **Additional paths and PIC (2.4 g, h)** — getting backup paths past the
    route reflector and pre-installing them for fast failover.
 
+6. **Troubleshooting (2.6)** — two scenarios, IS-IS + BGP and OSPF: Chaos
+   breaks a working network with faults from each protocol's usual suspects,
+   and you work the tickets with show commands until it's healthy again. A
+   scenario counts as done once you've solved a round; play as many as you like.
+
 The BGP lessons build on each other: lessons 4 and 5 start from the network
-lesson 3 builds.
+lesson 3 builds. The troubleshooting scenarios use the same networks, fully
+built.
 
 ## How to work through it
 

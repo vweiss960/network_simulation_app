@@ -84,7 +84,10 @@ export interface LessonDetail extends LessonSummary {
 }
 
 // --- Modules: ordered lessons around one topic (e.g. a blueprint section) ---------
-export interface ModuleItem { lesson: string; section: string; title: string; objectives: string[] }
+/** A module item: a lesson or a troubleshooting scenario (by slug). */
+export interface ModuleItem {
+  kind?: 'lesson' | 'scenario'; lesson: string; scenario?: string; section: string; title: string; objectives: string[];
+}
 export type ModuleItemState = 'not_installed' | 'not_started' | 'in_progress' | 'completed';
 export interface ModuleMeta {
   slug: string; title: string; summary: string; level: LessonLevel; track: LessonTrack; blueprint: string;
@@ -92,14 +95,15 @@ export interface ModuleMeta {
 }
 export interface ModuleSummary extends ModuleMeta {
   id: number; lesson_count: number; completed: number; minutes: number; next_lesson_id: number | null;
+  next_item: { kind: 'lesson' | 'scenario'; id: number } | null;
   updated_at: string | null;
 }
 export interface ModuleDetail extends ModuleSummary {
   overview_md: string; sections: LessonSection[]; can_edit: boolean;
   items: (ModuleItem & {
-    lesson_id: number | null; lesson_title: string; lesson_summary: string; level: LessonLevel | null;
-    minutes: number | null; task_count: number; topology_summary: string;
-    status: { state: ModuleItemState; passed?: number; total?: number; outdated?: boolean };
+    lesson_id: number | null; scenario_id?: number | null; lesson_title: string; lesson_summary: string; level: LessonLevel | null;
+    minutes: number | null; task_count: number; topology_summary: string; protocols?: string[]; fault_count?: number;
+    status: { state: ModuleItemState; passed?: number; total?: number; outdated?: boolean; solved?: number };
   })[];
 }
 
@@ -180,6 +184,7 @@ export interface ScenarioSummary {
 }
 export interface ScenarioDetail extends ScenarioSummary {
   topology: LessonTopology; difficulties: Record<Difficulty, string>; can_edit: boolean;
+  modules: { id: number; slug: string; title: string; section: string }[];
 }
 export interface TicketDebrief {
   title: string; protocol: string; category: string; explanation: string; find: string;

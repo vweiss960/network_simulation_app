@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Loader2, Play, Siren } from 'lucide-react';
+import { ArrowLeft, Layers, Loader2, Play, Siren } from 'lucide-react';
 import { api } from '../../utils/api';
 import { useLabStore } from '../../stores/useLabStore';
 import type { Difficulty, ScenarioDetail } from '../../types';
@@ -16,7 +16,7 @@ import { PROTOCOL_LABEL } from './TroubleshootingPage';
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = { guided: 'Guided', standard: 'Standard', expert: 'Expert' };
 
 export default function ScenarioPage() {
-  const { scenarioId, setPage, openTopology } = useLabStore();
+  const { scenarioId, setPage, openTopology, openModule } = useLabStore();
   const [s, setS] = useState<ScenarioDetail | null>(null);
   const [error, setError] = useState('');
   const [difficulty, setDifficulty] = useState<Difficulty>('standard');
@@ -105,6 +105,21 @@ export default function ScenarioPage() {
           <p className="text-[11.5px] text-slate-500 mt-2">
             You get your own copy of the network. Deploy it, and once every device is up you let Chaos loose from the lab.
           </p>
+          {s.modules?.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-slate-100">
+              <div className="text-[12px] font-semibold text-slate-600 mb-1">Part of</div>
+              {s.modules.map(m => (
+                <button key={m.id} onClick={() => openModule(m.id)}
+                  className="w-full flex items-start gap-2 text-left px-2 py-1.5 -mx-2 rounded-md hover:bg-slate-50">
+                  <Layers size={15} className="text-indigo-600 shrink-0 mt-0.5" />
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-blue-700 leading-snug">{m.title}</span>
+                    {m.section && <span className="block text-[11.5px] text-slate-500">Section {m.section}</span>}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </Shell>

@@ -1,11 +1,11 @@
 /**
  * One module: its overview, the lessons in order (with the blueprint section
  * and objectives each one covers, and the learner's state in it), progress
- * and "Continue" to the next lesson to do.
+ * and "Continue" to the next lesson or troubleshooting scenario to do.
  */
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, Layers, Loader2, Pencil, Play } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Download, Layers, Loader2, Pencil, Play, Siren } from 'lucide-react';
 import { api, downloadModule } from '../../utils/api';
 import { useLabStore } from '../../stores/useLabStore';
 import type { ModuleDetail } from '../../types';
@@ -16,7 +16,7 @@ import { hours } from './ModulesPage';
 type Item = ModuleDetail['items'][number];
 
 export default function ModulePage() {
-  const { moduleId, setPage, editModule, openLesson } = useLabStore();
+  const { moduleId, setPage, editModule, openLesson, openScenario } = useLabStore();
   const [m, setM] = useState<ModuleDetail | null>(null);
   const [error, setError] = useState('');
   const [openSec, setOpenSec] = useState<number | null>(0);
@@ -31,7 +31,10 @@ export default function ModulePage() {
   if (!m) return <Shell><div className="text-slate-400 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Loading…</div></Shell>;
 
   const pct = m.lesson_count ? Math.round((100 * m.completed) / m.lesson_count) : 0;
-  const next = m.items.find(i => i.lesson_id === m.next_lesson_id);
+  const idOf = (i: Item) => (i.kind === 'scenario' ? i.scenario_id : i.lesson_id) ?? null;
+  const isNext = (i: Item) => !!m.next_item && (i.kind ?? 'lesson') === m.next_item.kind && idOf(i) === m.next_item.id;
+  const next = m.items.find(isNext);
+  const open = (i: Item) => { const id = idOf(i); if (id != null) (i.kind === 'scenario' ? openScenario : openLesson)(id); };
   const started = m.items.some(i => i.status.state !== 'not_started' && i.status.state !== 'not_installed');
 
   return (
@@ -74,7 +77,7 @@ export default function ModulePage() {
                 className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-white border border-slate-300 hover:bg-slate-50"><Pencil size={14} /> Edit module</button>
             )}
             {next && (
-              <button onClick={() => openLesson(next.lesson_id!)}
+              <button onClick={() => open(next)}
                 className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg bg-blue-700 hover:bg-blue-600 text-white shadow-sm">
                 <Play size={15} /> {started ? 'Continue' : 'Start module'}: {next.section || next.lesson_title}
               </button>
@@ -88,8 +91,8 @@ export default function ModulePage() {
           <section className="rounded-xl bg-white border border-slate-200 shadow-sm p-5">
             <h2 className="text-[16px] font-semibold text-slate-900 mb-3">Lessons</h2>
             <ol className="relative">
-              {m.items.map((it, i) => <LessonRow key={it.lesson + i} it={it} n={i + 1} last={i === m.items.length - 1}
-                current={it.lesson_id != null && it.lesson_id === m.next_lesson_id} onOpen={openLesson} />)}
+              {m.items.map((it, i) => <LessonRow key={(it.lesson || it.scenario || '') + i} it={it} n={i + 1} last={i === m.items.length - 1}
+                current={isNext(it)} onOpen={() => open(it)} />)}
               {m.items.length === 0 && <li className="text-sm text-slate-500">No lessons in this module yet.</li>}
             </ol>
           </section>
@@ -120,8 +123,8 @@ export default function ModulePage() {
             <div className="rounded-xl bg-white border border-slate-200 shadow-sm p-4">
               <div className="text-[14px] font-semibold text-slate-900 mb-2">Blueprint coverage</div>
               {m.blueprint && <div className="text-[12px] text-indigo-700 font-medium mb-2">{m.blueprint}</div>}
-              {m.items.filter(i => i.section).map(i => (
-                <div key={i.lesson} className="flex items-start gap-2 mb-1.5 text-[12.5px]">
+              {m.items.filter(i => i.section).map((i, idx) => (
+                <div key={(i.lesson || i.scenario || '') + idx} className="flex items-start gap-2 mb-1.5 text-[12.5px]">
                   <span className={`mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full flex items-center justify-center ${i.status.state === 'completed' ? 'bg-emerald-500 text-white' : 'border border-slate-300'}`}>
                     {i.status.state === 'completed' && <Check size={10} strokeWidth={3} />}
                   </span>
@@ -146,10 +149,11 @@ export default function ModulePage() {
   );
 }
 
-function LessonRow({ it, n, last, current, onOpen }: { it: Item; n: number; last: boolean; current: boolean; onOpen: (id: number) => void }) {
+function LessonRow({ it, n, last, current, onOpen }: { it: Item; n: number; last: boolean; current: boolean; onOpen: () => void }) {
   const st = it.status;
   const done = st.state === 'completed';
   const missing = st.state === 'not_installed';
+  const scenario = it.kind === 'scenario';
   return (
     <li className="relative flex gap-3.5 pb-5 last:pb-0">
       {!last && <span className={`absolute left-[15px] top-8 bottom-0 w-0.5 ${done ? 'bg-emerald-300' : 'bg-slate-200'}`} />}
@@ -161,7 +165,10 @@ function LessonRow({ it, n, last, current, onOpen }: { it: Item; n: number; last
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
             {it.title && <div className="text-[12px] font-semibold uppercase tracking-wide text-indigo-700">{it.section} {it.title}</div>}
-            <div className="text-[15px] font-semibold text-slate-900 leading-snug">{missing ? it.lesson : it.lesson_title}</div>
+            <div className="text-[15px] font-semibold text-slate-900 leading-snug flex items-center gap-1.5">
+              {scenario && <Siren size={15} className="text-rose-600 shrink-0" />}
+              {missing ? (it.lesson || it.scenario) : it.lesson_title}
+            </div>
           </div>
           <StateChip st={st} />
         </div>
@@ -175,14 +182,16 @@ function LessonRow({ it, n, last, current, onOpen }: { it: Item; n: number; last
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-slate-500">
             {it.level && <LevelBadge level={it.level} />}
             {it.topology_summary && <span>{it.topology_summary}</span>}
-            {!missing && <span>{it.task_count} tasks</span>}
+            {scenario && !missing && <span className="px-1.5 py-px rounded border border-rose-200 bg-rose-50 text-rose-700 text-[11px] font-medium">Troubleshooting</span>}
+            {!missing && (scenario ? <span>{it.fault_count} faults in the catalog</span> : <span>{it.task_count} tasks</span>)}
             {it.minutes != null && <span>{it.minutes} min</span>}
           </div>
           {missing
-            ? <span className="text-[12.5px] text-amber-700">This lesson isn't installed — import the module pack that includes it.</span>
-            : <button onClick={() => onOpen(it.lesson_id!)}
+            ? <span className="text-[12.5px] text-amber-700">This {scenario ? 'scenario' : 'lesson'} isn't installed — import the module pack that includes it.</span>
+            : <button onClick={onOpen}
                 className={`px-3 py-1.5 text-[13px] font-semibold rounded-lg ${current ? 'bg-blue-700 hover:bg-blue-600 text-white' : 'bg-white border border-slate-300 hover:bg-slate-50 text-slate-800'}`}>
-                {done ? 'Review' : st.state === 'in_progress' ? 'Resume' : 'Open lesson'}
+                {scenario ? (done ? 'Play again' : st.state === 'in_progress' ? 'Resume' : 'Open scenario')
+                  : done ? 'Review' : st.state === 'in_progress' ? 'Resume' : 'Open lesson'}
               </button>}
         </div>
       </div>
@@ -193,7 +202,7 @@ function LessonRow({ it, n, last, current, onOpen }: { it: Item; n: number; last
 function StateChip({ st }: { st: Item['status'] }) {
   const map = {
     completed: ['Completed', 'bg-emerald-50 text-emerald-700 border-emerald-200'],
-    in_progress: [`In progress · ${st.passed ?? 0}/${st.total ?? 0}`, 'bg-blue-50 text-blue-700 border-blue-200'],
+    in_progress: [st.total != null ? `In progress · ${st.passed ?? 0}/${st.total}` : 'In progress', 'bg-blue-50 text-blue-700 border-blue-200'],
     not_started: ['Not started', 'bg-slate-50 text-slate-600 border-slate-200'],
     not_installed: ['Not installed', 'bg-amber-50 text-amber-700 border-amber-200'],
   } as const;
