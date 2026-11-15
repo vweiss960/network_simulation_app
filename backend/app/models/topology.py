@@ -20,7 +20,9 @@ class Topology(Base):
     # Labs made from a lesson: a learner's attempt, or the lesson's authoring
     # lab (where its starting topology is edited).
     lesson_id = Column(Integer, nullable=True, index=True)
-    lesson_role = Column(String, nullable=True)          # attempt | authoring
+    lesson_role = Column(String, nullable=True)          # attempt | authoring | troubleshoot | troubleshoot_test
+    # Troubleshooting labs (lesson_role troubleshoot / troubleshoot_test).
+    scenario_id = Column(Integer, nullable=True, index=True)
 
     @property
     def annotations(self) -> list[dict]:

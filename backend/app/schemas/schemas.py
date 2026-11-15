@@ -83,7 +83,8 @@ class TopologyOut(BaseModel):
     link_count: int = 0
     lab_status: str = "idle"
     lesson_id: Optional[int] = None
-    lesson_role: Optional[str] = None     # attempt | authoring
+    lesson_role: Optional[str] = None     # attempt | authoring | troubleshoot | troubleshoot_test
+    scenario_id: Optional[int] = None
     lesson_ai_policy: Optional[str] = None  # the lesson's AI policy (attempt labs)
 
 

@@ -173,7 +173,8 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
             body = ""
         # In a lesson lab every XRd gets our base config (floating mgmt
         # default), even a blank one — clab's own default would shadow OSPF.
-        lesson_xrd = bool(topology.lesson_id) and n["lab_kind"] == "cisco_xrd"
+        learning_lab = bool(topology.lesson_id or getattr(topology, "scenario_id", None))
+        lesson_xrd = learning_lab and n["lab_kind"] == "cisco_xrd"
         if body or lesson_xrd:
             configs_dir.mkdir(parents=True, exist_ok=True)
             text = body + "\n" if body else ""
@@ -182,7 +183,7 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
                 # routing (kept as-is for other labs: changing it would
                 # recreate their XRd devices).
                 text = xrd_base_config(n["clab_name"], gw_v4, gw_v6,
-                                       254 if topology.lesson_id else None) + text + "end\n"
+                                       254 if learning_lab else None) + text + "end\n"
             # Content hash in the file name: a changed startup config changes
             # the YAML, so a reconcile recreates exactly that device.
             digest = hashlib.sha1(text.encode()).hexdigest()[:8]

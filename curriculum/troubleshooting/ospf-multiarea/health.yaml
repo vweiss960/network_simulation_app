@@ -1,0 +1,59 @@
+# Every check passes on the healthy network. scope: service = what users
+# would notice (shown at Standard difficulty); the rest is internal.
+- {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80, scope: service, describe: "Site 1 (H1) reaches site 2 (H2, 10.2.5.10)"}
+- {type: ping, from: H1, to: "2001:db8:2:5::10", count: 5, min_success: 80, scope: service, describe: "Site 1 reaches site 2 over IPv6"}
+- {type: ping, from: R4, to: 5.5.5.5, source: Loopback0, count: 5, min_success: 80, scope: service, describe: "R4's loopback reaches R5's (management plane)"}
+- {type: ping, from: R4, to: "2001:db8:2::5", source: Loopback0, count: 5, min_success: 80, scope: service, describe: "R4's IPv6 loopback reaches R5's"}
+- {type: route, device: R2, prefix: 198.51.100.0/24, protocol: O E2, scope: service, describe: "The partner network 198.51.100.0/24 is reachable from the backbone"}
+- {type: route, device: R1, prefix: 203.0.113.0/24, protocol: O E2, scope: service, describe: "The customer network 203.0.113.0/24 is reachable from R1"}
+- type: cli
+  device: R2
+  command: show ospf neighbor
+  expect:
+    - {regex: '^1\.1\.1\.1\s+\d+\s+FULL'}
+    - {regex: '^3\.3\.3\.3\s+\d+\s+FULL'}
+  describe: "R2: OSPF neighbors R1 and R3 FULL"
+- type: cli
+  device: R2
+  command: show ospfv3 neighbor
+  expect:
+    - {regex: '^1\.1\.1\.1\s+\d+\s+FULL'}
+    - {regex: '^3\.3\.3\.3\s+\d+\s+FULL'}
+  describe: "R2: OSPFv3 neighbors R1 and R3 FULL"
+- type: cli
+  device: R1
+  command: show ospf neighbor
+  expect:
+    - {regex: '^3\.3\.3\.3\s+\d+\s+FULL'}
+    - {regex: '^4\.4\.4\.4\s+\d+\s+FULL'}
+  describe: "R1: OSPF neighbors R3 (backup link) and R4 FULL"
+- type: cli
+  device: R4
+  command: show ospfv3 neighbor
+  expect:
+    - {regex: '^1\.1\.1\.1\s+\d+\s+FULL'}
+  describe: "R4: OSPFv3 neighbor R1 FULL"
+- type: cli
+  device: R3
+  command: show ip ospf neighbor
+  expect:
+    - {regex: '^5\.5\.5\.5\s+\d+\s+FULL'}
+  describe: "R3: OSPF neighbor R5 FULL"
+- type: cli
+  device: R3
+  command: show ospfv3 neighbor
+  expect:
+    - {regex: '^5\.5\.5\.5\s+\d+\s+FULL'}
+  describe: "R3: OSPFv3 neighbor R5 FULL"
+- {type: route, device: R4, prefix: 0.0.0.0/0, protocol: O IA, describe: "R4 has the default route from its ABR"}
+- {type: route, device: R4, prefix: "::/0", protocol: O IA, describe: "R4 has the IPv6 default route from its ABR"}
+- {type: route, device: R1, prefix: 10.1.4.0/24, protocol: O, describe: "R1 knows site 1's LAN 10.1.4.0/24"}
+- {type: route, device: R3, prefix: 10.2.5.0/24, protocol: O, describe: "R3 knows site 2's LAN 10.2.5.0/24"}
+- {type: route, device: R2, prefix: 10.1.0.0/16, protocol: O IA, describe: "R2 learns area 1 as the summary 10.1.0.0/16"}
+- {type: route, device: R2, prefix: 10.2.0.0/16, protocol: O IA, describe: "R2 learns area 2 as the summary 10.2.0.0/16"}
+- {type: route, device: R3, prefix: 10.1.0.0/16, protocol: O IA, describe: "R3 learns area 1's summary 10.1.0.0/16"}
+- {type: route, device: R2, prefix: "2001:db8:1::/48", protocol: O IA, describe: "R2 learns area 1's IPv6 summary"}
+- {type: route, device: R2, prefix: "2001:db8:2::/48", protocol: O IA, describe: "R2 learns area 2's IPv6 summary"}
+- {type: route, device: R3, prefix: 198.51.100.0/24, protocol: O N2, describe: "R3 learns the partner network as NSSA external (O N2)"}
+- {type: route, device: R2, prefix: "2001:db8:beef::/48", protocol: O E2, describe: "R2 learns the partner's IPv6 network (O E2)"}
+- {type: route, device: R1, prefix: 3.3.3.3/32, protocol: O, via: 10.0.12.2, describe: "R1 reaches R3 through R2 (the R1–R3 link is the backup)"}

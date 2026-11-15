@@ -13,7 +13,7 @@ from app.models.database import SessionLocal, init_db
 from app.models.node_template import NodeTemplate
 from app.models.user import User
 from app.routes import auth as auth_routes
-from app.routes import agent, capture, device, lessons, modules, uploads, lab, lab_console, lab_network, links, node_templates, nodes, topologies
+from app.routes import agent, capture, device, lessons, modules, troubleshooting, uploads, lab, lab_console, lab_network, links, node_templates, nodes, topologies
 
 class _RedactTokens(logging.Filter):
     """Console WebSockets carry the JWT as ?token=…; keep it out of access logs."""
@@ -63,6 +63,7 @@ def _learning_on():
 
 app.include_router(lessons.router, dependencies=auth_dep + [Depends(_learning_on)])
 app.include_router(modules.router, dependencies=auth_dep + [Depends(_learning_on)])
+app.include_router(troubleshooting.router, dependencies=auth_dep + [Depends(_learning_on)])
 app.include_router(capture.ws_router)   # ?token= auth, like the consoles
 # Console / log WebSockets authenticate via ?token=<jwt> (browsers can't set
 # headers on a WebSocket upgrade).
@@ -130,6 +131,11 @@ def startup():
             seeded = module_svc.seed_bundled(_db, config.CURRICULUM_DIR)
             if seeded:
                 print(f"[startup] modules imported: {', '.join(seeded)}", flush=True)
+            # Troubleshooting scenarios (curriculum/troubleshooting/*/).
+            from app.services import troubleshooting as ts_svc
+            seeded = ts_svc.seed_bundled(_db, config.CURRICULUM_DIR)
+            if seeded:
+                print(f"[startup] troubleshooting scenarios imported: {', '.join(seeded)}", flush=True)
         finally:
             _db.close()
     except Exception as e:

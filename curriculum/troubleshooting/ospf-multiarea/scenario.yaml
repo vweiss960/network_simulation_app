@@ -1,0 +1,16 @@
+slug: ospf-multiarea
+title: "Chaos in multi-area OSPF"
+summary: >-
+  A working OSPFv2 and OSPFv3 network — a three-router backbone, a totally
+  stubby area and an NSSA, summarised at the ABRs, on IOS XR and IOS XE.
+  Chaos has been in it. Work the tickets with show commands, find what broke
+  and fix it without breaking anything else. Covers CCNP SPCOR 2.6 a and b
+  for OSPF.
+level: advanced
+track: service_provider
+tags: [troubleshooting, ospf, ospfv3, ipv6, iosxr, iosxe, ccnp-spcor]
+protocols: [ospf]
+max_faults: 4
+status: published
+version: "1.0"
+author: Phanero Labs

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { BookOpen, ChevronDown, GraduationCap, Layers, LogOut, Network, Route, Users } from 'lucide-react';
+import { BookOpen, ChevronDown, GraduationCap, Layers, LogOut, Network, Route, Siren, Users } from 'lucide-react';
 import { useAuthStore } from './stores/useAuthStore';
 import { useLabStore, type Page } from './stores/useLabStore';
 import LoginPage, { PhaneroLogo } from './components/LoginPage';
@@ -15,6 +15,8 @@ import LessonEditor from './components/pages/LessonEditor';
 import ModulesPage from './components/pages/ModulesPage';
 import ModulePage from './components/pages/ModulePage';
 import ModuleEditor from './components/pages/ModuleEditor';
+import TroubleshootingPage from './components/pages/TroubleshootingPage';
+import ScenarioPage from './components/pages/ScenarioPage';
 import UserManagementPanel from './components/panels/UserManagementPanel';
 
 // Primary destinations on the left; configuration pages on the right.
@@ -25,6 +27,7 @@ const LEARNING: { page: Page | null; label: string; hint: string; icon: React.Re
   { page: null, label: 'Curricula', hint: 'Coming soon: modules in a path to a goal', icon: <Route size={16} />, also: [] },
   { page: 'modules', label: 'Modules', hint: 'Lessons grouped by topic or blueprint section', icon: <Layers size={16} />, also: ['module', 'moduleEdit'] },
   { page: 'lessons', label: 'Lessons', hint: 'Single labs with graded tasks', icon: <BookOpen size={16} />, also: ['lesson', 'lessonEdit'] },
+  { page: 'troubleshooting', label: 'Troubleshooting', hint: 'Chaos breaks a working network — you find and fix it', icon: <Siren size={16} />, also: ['scenario'] },
 ];
 const LEARNING_PAGES = LEARNING.flatMap(l => (l.page ? [l.page, ...l.also] : []));
 const NAV_SETUP: { page: Page; label: string }[] = [{ page: 'templates', label: 'Templates' }, { page: 'images', label: 'Images' }];
@@ -76,6 +79,8 @@ export default function App() {
           : shown === 'modules' ? <ModulesPage />
           : shown === 'module' ? <ModulePage />
           : shown === 'moduleEdit' ? <ModuleEditor />
+          : shown === 'troubleshooting' ? <TroubleshootingPage />
+          : shown === 'scenario' ? <ScenarioPage />
           : <LabsHome />}
       </div>
     </div>

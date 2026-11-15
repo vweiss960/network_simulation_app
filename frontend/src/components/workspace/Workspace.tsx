@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ReactFlowProvider } from 'reactflow';
-import { BookOpen, Info, Loader2, Play, RefreshCcw, Square, Trash2, X } from 'lucide-react';
+import { BookOpen, Info, Loader2, Play, RefreshCcw, Siren, Square, Trash2, X } from 'lucide-react';
 import { PhaneroLogo } from '../LoginPage';
 import { useLabStore } from '../../stores/useLabStore';
 import { api, type StopResult } from '../../utils/api';
@@ -9,6 +9,7 @@ import Canvas from '../canvas/Canvas';
 import Inspector from './Inspector';
 import LabSummary from './LabSummary';
 import LessonPanel, { AuthoringBar } from './LessonPanel';
+import TroubleshootPanel from './TroubleshootPanel';
 import LabEnterTransition from './LabEnterTransition';
 import LabConsoleDrawer from '../LabConsoleDrawer';
 import type { LabStatus } from '../../types';
@@ -52,6 +53,10 @@ export default function Workspace() {
   const isLesson = topology?.lesson_role === 'attempt';
   const [showLesson, setShowLesson] = useState(true);
   const lessonPanel = usePresence(isLesson && showLesson);
+  // A troubleshooting lab: the Chaos panel docks on the right (open by default).
+  const isTroubleshoot = topology?.lesson_role === 'troubleshoot';
+  const [showChaos, setShowChaos] = useState(true);
+  const chaosPanel = usePresence(isTroubleshoot && showChaos);
   const inspector = usePresence(inspecting);
   const target = useLast(editingLive ? `node:${editingNode}`
     : selection?.type === 'link' ? `link:${selection.id}` : null);
@@ -148,6 +153,12 @@ export default function Workspace() {
             <BookOpen size={16} /> Lesson
           </button>
         )}
+        {isTroubleshoot && (
+          <button onClick={() => setShowChaos(v => !v)} title="Troubleshooting: Chaos, tickets, checks, debrief"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-sm ${showChaos ? 'bg-surface-600 text-white' : 'hover:bg-surface-700 text-surface-300'}`}>
+            <Siren size={16} /> Tickets
+          </button>
+        )}
         <button onClick={() => setShowInfo(v => !v)} title="This lab: resources, host checks, YAML, tips"
           className={`p-1.5 rounded ${showInfo ? 'bg-surface-600 text-white' : 'hover:bg-surface-700 text-surface-300'}`}>
           <Info size={18} />
@@ -187,6 +198,15 @@ export default function Workspace() {
             <div className="w-[360px] h-full plabs-motion"
               style={{ transform: lessonPanel.visible ? 'translateX(0)' : 'translateX(40px)', opacity: lessonPanel.visible ? 1 : 0 }}>
               <LessonPanel key={currentTopologyId ?? 0} onClose={() => setShowLesson(false)} />
+            </div>
+          </aside>
+        )}
+        {chaosPanel.mounted && (
+          <aside className="shrink-0 overflow-hidden border-l border-surface-700 bg-surface-800 plabs-motion"
+            style={{ width: chaosPanel.visible ? 360 : 0 }}>
+            <div className="w-[360px] h-full plabs-motion"
+              style={{ transform: chaosPanel.visible ? 'translateX(0)' : 'translateX(40px)', opacity: chaosPanel.visible ? 1 : 0 }}>
+              <TroubleshootPanel key={currentTopologyId ?? 0} onClose={() => setShowChaos(false)} />
             </div>
           </aside>
         )}

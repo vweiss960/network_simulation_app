@@ -1,0 +1,701 @@
+# Chaos's catalog for the multi-area OSPF network. Every variant: inject
+# breaks the healthy baseline, symptoms fail while it's in place, revert
+# restores it. Verified with scripts/chaos_catalog_test.py.
+
+# ============================== OSPF — neighbor adjacency ==============================
+- id: ospf-timers
+  protocol: ospf
+  category: adjacency
+  title: Hello / dead timers don't match
+  explanation: |
+    One end of the link changed its hello interval (and with it the dead interval). OSPF
+    neighbors must agree on both: hellos with different timers are ignored, the neighbor
+    times out, and the adjacency never comes back.
+  find: |
+    `show ospf neighbor` lacks the neighbor on both sides. `show ospf interface <if>` (XR) /
+    `show ip ospf interface <if>` (XE) shows "Hello 5, Dead 20" on one side and 10/40 on the
+    other; `debug ip ospf hello` reports "Mismatched hello parameters".
+  leak_terms: [hello, dead, timer, interval]
+  variants:
+    - id: r2-r3-xe
+      scope: [ospf:R2-R3]
+      reporter: Network monitoring
+      ticket: "Alarm: the OSPF adjacency between R2 and R3 went down and stays down. Traffic between the sites now crosses the backup link."
+      hints:
+        - "Which neighbors do R2 and R3 see? Is the link itself up (ping 10.0.23.1 from R3)?"
+        - "Compare `show ip ospf interface GigabitEthernet2` on R3 with `show ospf interface GigabitEthernet0/0/0/1` on R2."
+        - "R3's Gi2 has `ip ospf hello-interval 5`. Remove it to go back to 10/40."
+      inject:
+        R3: |
+          interface GigabitEthernet2
+           ip ospf hello-interval 5
+          !
+      revert:
+        R3: |
+          interface GigabitEthernet2
+           no ip ospf hello-interval
+          !
+      symptoms:
+        - type: cli
+          device: R2
+          command: show ospf neighbor
+          expect: [{regex: '^3\.3\.3\.3\s+\d+\s+FULL'}]
+    - id: r1-r4-xr
+      scope: [ospf:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "Site 1 is cut off: from H1 (10.1.4.10) we can't reach site 2 or anything else. The link to R1 shows up/up."
+      hints:
+        - "Does R4 have any OSPF neighbor? Any route at all?"
+        - "Compare the OSPF timers on both ends of the R1–R4 link."
+        - "R1's area 1 interface Gi0/0/0/1 has `hello-interval 3`. Remove it."
+      inject:
+        R1: |
+          router ospf 1
+           area 1
+            interface GigabitEthernet0/0/0/1
+             hello-interval 3
+            !
+           !
+          !
+      revert:
+        R1: |
+          router ospf 1
+           area 1
+            interface GigabitEthernet0/0/0/1
+             no hello-interval
+            !
+           !
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+
+- id: ospf-area-mismatch
+  protocol: ospf
+  category: adjacency
+  title: Interface in the wrong area
+  explanation: |
+    One end of the link was put in a different area. The area ID is in every hello, and two
+    routers only become neighbors on a link if they agree on it — the hellos are dropped with
+    an area mismatch and the site loses its connection.
+  find: |
+    `show ip ospf interface brief` (XE) / `show ospf interface brief` (XR) shows the area of
+    each interface; compare both ends. Debug/log messages report "mismatched area ID".
+  leak_terms: [area 0, area mismatch, wrong area, area id]
+  variants:
+    - id: r4-xe
+      scope: [ospf:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "H1 (10.1.4.10) can't reach site 2 at 10.2.5.10 since this morning. IPv6 to site 2 still works."
+      hints:
+        - "IPv6 works, IPv4 doesn't: OSPFv2 only. Is R4's OSPF adjacency to R1 up?"
+        - "`show ip ospf interface brief` on R4 — in which area is Gi2?"
+        - "R4's Gi2 runs `ip ospf 1 area 0`; the link is in area 1."
+      inject:
+        R4: |
+          interface GigabitEthernet2
+           ip ospf 1 area 0
+          !
+      revert:
+        R4: |
+          interface GigabitEthernet2
+           ip ospf 1 area 1
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+    - id: r5-xr
+      scope: [ospf:R3-R5]
+      reporter: Site 2 (10.2.5.0/24)
+      ticket: "Site 2 (H2, 10.2.5.10) is unreachable over IPv4 from site 1, and the partner network 198.51.100.0/24 is gone too. IPv6 is fine."
+      hints:
+        - "Does R3 see R5 as an OSPF neighbor?"
+        - "`show ospf interface brief` on R5 and `show ip ospf interface brief` on R3 — compare the areas."
+        - "R5's Gi0/0/0/0 was moved from area 2 to area 0. Put it back in area 2 (point-to-point)."
+      inject:
+        R5: |
+          router ospf 1
+           area 2
+            no interface GigabitEthernet0/0/0/0
+           !
+           area 0
+            interface GigabitEthernet0/0/0/0
+             network point-to-point
+            !
+           !
+          !
+      revert:
+        R5: |
+          router ospf 1
+           no area 0
+           area 2
+            interface GigabitEthernet0/0/0/0
+             network point-to-point
+            !
+           !
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+
+- id: ospf-area-type
+  protocol: ospf
+  category: adjacency
+  title: Area type disagreement (stub / NSSA flag)
+  explanation: |
+    The stub / NSSA flag is carried in every hello (the E and N bits). One router no longer
+    treats the area as stub (or NSSA) while its neighbor does, so their hellos disagree and
+    the adjacency is refused.
+  find: |
+    Neighbor missing on both ends; `show ip ospf` / `show ospf` list each area's type — compare
+    both routers. Debug shows "Mismatched stub/transit area option bit E".
+  leak_terms: [stub, nssa, area type, option bit]
+  variants:
+    - id: r4-v2-xe
+      scope: [ospf:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "From H1 (10.1.4.10) nothing works over IPv4 — not even reaching R1. IPv6 is fine."
+      hints:
+        - "Is R4's OSPFv2 adjacency to R1 up? OSPFv3 is fine, so the link works."
+        - "`show ip ospf` on R4: what type is area 1? And on R1?"
+        - "R4 lost `area 1 stub` under `router ospf 1`."
+      inject:
+        R4: |
+          router ospf 1
+           no area 1 stub
+          !
+      revert:
+        R4: |
+          router ospf 1
+           area 1 stub
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+    - id: r4-v3-xe
+      scope: [ospf6:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "IPv6 from site 1 is broken: H1 can't reach 2001:db8:2:5::10. IPv4 works normally."
+      hints:
+        - "IPv6 only: look at OSPFv3. `show ospfv3 neighbor` on R4."
+        - "`show ospfv3` on R4 and R1: does area 1 have the same type on both?"
+        - "R4 lost `area 1 stub` under `router ospfv3 1`."
+      inject:
+        R4: |
+          router ospfv3 1
+           no area 1 stub
+          !
+      revert:
+        R4: |
+          router ospfv3 1
+           area 1 stub
+          !
+      symptoms:
+        - {type: ping, from: H1, to: "2001:db8:2:5::10", count: 5, min_success: 80}
+    - id: r5-v2-xr
+      scope: [ospf:R3-R5]
+      reporter: Partner (198.51.100.0/24)
+      ticket: "Our network 198.51.100.0/24 is unreachable from your backbone, and so is your site 2 (10.2.5.10) from site 1."
+      hints:
+        - "Is R5's OSPF adjacency to R3 up?"
+        - "Compare the type of area 2 on R5 (`show ospf`) and R3 (`show ip ospf`)."
+        - "R5's area 2 lost `nssa` under `router ospf 1`."
+      inject:
+        R5: |
+          router ospf 1
+           area 2
+            no nssa
+           !
+          !
+      revert:
+        R5: |
+          router ospf 1
+           area 2
+            nssa
+           !
+          !
+      symptoms:
+        - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: O E2}
+
+- id: ospf-mtu
+  protocol: ospf
+  category: adjacency
+  title: MTU mismatch — stuck in EXSTART
+  explanation: |
+    One side's IP MTU was lowered — and nothing happened until the link flapped, because MTU
+    is only compared while an adjacency forms. Hellos still match, so the neighbors see each
+    other — but each database description packet carries the sender's interface MTU, and a router rejects
+    DBDs advertising a bigger MTU than its own. The adjacency hangs in EXSTART / EXCHANGE.
+  find: |
+    `show ospf neighbor` shows EXSTART or EXCHANGE that never progresses. Compare
+    `show ip interface <if>` (XE, IP MTU) / `show ipv4 interface <if>` (XR) on both ends.
+  leak_terms: [mtu, exstart, size]
+  variants:
+    - id: r4-xe
+      scope: [ospf:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "H1 (10.1.4.10) has lost IPv4 connectivity beyond R4. Our router's neighbor table shows R1, but it never seems to finish."
+      hints:
+        - "In which state is the R1–R4 adjacency, on each router?"
+        - "A neighbor stuck in EXSTART/EXCHANGE: compare the IP MTU on both ends of the link."
+        - "R4's Gi2 has `ip mtu 1400`. Remove it."
+      inject:
+        R4: |
+          interface GigabitEthernet2
+           ip mtu 1400
+           shutdown
+           no shutdown
+          !
+      revert:
+        R4: |
+          interface GigabitEthernet2
+           no ip mtu
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+    - id: r5-xr
+      scope: [ospf:R3-R5]
+      reporter: Site 2 (10.2.5.0/24)
+      ticket: "Site 2 (10.2.5.0/24) is unreachable from site 1. R3 lists R5 as a neighbor, but the state never reaches FULL."
+      hints:
+        - "Look at the R3–R5 neighbor state on both routers."
+        - "Compare `show ipv4 interface GigabitEthernet0/0/0/0` on R5 with `show ip interface GigabitEthernet4` on R3."
+        - "R5's Gi0/0/0/0 has a lowered `mtu`. Remove it."
+      inject:
+        R5: |
+          interface GigabitEthernet0/0/0/0
+           mtu 1400
+          !
+      revert:
+        R5: |
+          interface GigabitEthernet0/0/0/0
+           no mtu
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+
+- id: ospf-auth
+  protocol: ospf
+  category: adjacency
+  title: Authentication on one end only
+  explanation: |
+    One end of the link started authenticating its OSPF packets with MD5. The neighbor sends
+    plain packets, which are rejected (authentication type mismatch), and the adjacency drops.
+  find: |
+    Neighbor missing; `show ip ospf interface <if>` (XE) shows "Message digest authentication
+    enabled"; XR `show ospf interface <if>` likewise. Logs / debug report the mismatch.
+  leak_terms: [authentication, md5, password, key, digest]
+  variants:
+    - id: r3-r5-xe
+      scope: [ospf:R3-R5]
+      reporter: Site 2 (10.2.5.0/24)
+      ticket: "Site 2's IPv4 network 10.2.5.0/24 can't be reached from site 1 anymore. IPv6 still works."
+      hints:
+        - "OSPFv2 only. Is R3's adjacency to R5 up?"
+        - "Compare `show ip ospf interface GigabitEthernet4` on R3 with R5's interface."
+        - "R3's Gi4 uses MD5 authentication. Remove `ip ospf authentication message-digest` and the key."
+      inject:
+        R3: |
+          interface GigabitEthernet4
+           ip ospf authentication message-digest
+           ip ospf message-digest-key 1 md5 {SECRET1}
+          !
+      revert:
+        R3: |
+          interface GigabitEthernet4
+           no ip ospf authentication
+           no ip ospf message-digest-key 1
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+    - id: r1-r4-xr
+      scope: [ospf:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "Site 1 (10.1.4.0/24) has no IPv4 connectivity to site 2. IPv6 works."
+      hints:
+        - "Does R4 see R1 as an OSPF neighbor?"
+        - "`show ospf interface GigabitEthernet0/0/0/1` on R1: anything R4 doesn't have?"
+        - "R1's area 1 interface authenticates with MD5. Remove `authentication` and the `message-digest-key`."
+      inject:
+        R1: |
+          router ospf 1
+           area 1
+            interface GigabitEthernet0/0/0/1
+             authentication message-digest
+             message-digest-key 1 md5 clear {SECRET1}
+            !
+           !
+          !
+      revert:
+        R1: |
+          router ospf 1
+           area 1
+            interface GigabitEthernet0/0/0/1
+             no authentication
+             no message-digest-key 1
+            !
+           !
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+
+- id: ospf-passive
+  protocol: ospf
+  category: adjacency
+  title: Transit interface made passive
+  explanation: |
+    A router-to-router interface was made passive. A passive interface still advertises its
+    subnet but sends no hellos and accepts none — so the adjacency over it disappears, while
+    the subnet still looks fine in the routing tables.
+  find: |
+    The neighbor is missing; `show ip ospf interface <if>` (XE) says "No Hellos (Passive
+    interface)"; XR `show ospf interface <if>` shows "Passive". The link's subnet is still in OSPF.
+  leak_terms: [passive]
+  variants:
+    - id: r1-r4-xr
+      scope: [ospf:R1-R4, ospf6:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "Site 1 is isolated over IPv4: H1 can't reach 10.2.5.10. R4 still has a route to the R1 link."
+      hints:
+        - "Is the R1–R4 adjacency up? Which side stopped talking?"
+        - "`show ospf interface GigabitEthernet0/0/0/1` on R1."
+        - "R1's area 1 interface Gi0/0/0/1 is `passive enable`. Remove it."
+      inject:
+        R1: |
+          router ospf 1
+           area 1
+            interface GigabitEthernet0/0/0/1
+             passive enable
+            !
+           !
+          !
+      revert:
+        R1: |
+          router ospf 1
+           area 1
+            interface GigabitEthernet0/0/0/1
+             no passive
+            !
+           !
+          !
+      symptoms:
+        - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80}
+    - id: r3-r5-xe
+      scope: [ospf:R3-R5]
+      reporter: Partner (198.51.100.0/24)
+      ticket: "Our network 198.51.100.0/24 has disappeared from your backbone, and your site 2 is unreachable over IPv4."
+      hints:
+        - "Is the R3–R5 OSPF adjacency up?"
+        - "`show ip ospf interface GigabitEthernet4` on R3."
+        - "`passive-interface GigabitEthernet4` was added under `router ospf 1` on R3."
+      inject:
+        R3: |
+          router ospf 1
+           passive-interface GigabitEthernet4
+          !
+      revert:
+        R3: |
+          router ospf 1
+           no passive-interface GigabitEthernet4
+          !
+      symptoms:
+        - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: O E2}
+
+# ============================== OSPF — route advertisement ==============================
+- id: ospf-lan-missing
+  protocol: ospf
+  category: advertisement
+  title: Site LAN no longer in OSPF
+  explanation: |
+    The site LAN interface was taken out of OSPF, so its subnet isn't advertised anymore. The
+    ABR's summary for the area still covers it — so traffic is attracted to the area and then
+    dropped by the summary's discard route on the ABR (or there's no route at all).
+  find: |
+    `show ip ospf interface brief` / `show ospf interface brief` no longer lists the LAN;
+    `show route 10.1.4.0/24` on the ABR points to Null0 (the summary's discard route).
+  leak_terms: [interface brief, not in ospf, lan interface]
+  variants:
+    - id: r4-lan-xe
+      scope: [ospf:R4-LAN]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "H1 (10.1.4.10) can't reach site 2 (10.2.5.10) over IPv4. Pinging R4's other interfaces from site 2 still works."
+      hints:
+        - "Is 10.1.4.0/24 known on R1 (the ABR)? Where does R1's route for it point?"
+        - "Which of R4's interfaces run OSPFv2? `show ip ospf interface brief`."
+        - "R4's Gi3 lost `ip ospf 1 area 1`."
+      inject:
+        R4: |
+          interface GigabitEthernet3
+           no ip ospf 1 area 1
+          !
+      revert:
+        R4: |
+          interface GigabitEthernet3
+           ip ospf 1 area 1
+          !
+      symptoms:
+        - {type: route, device: R1, prefix: 10.1.4.0/24, protocol: O}
+    - id: r5-lan-xr
+      scope: [ospf:R5-LAN]
+      reporter: Site 2 (10.2.5.0/24)
+      ticket: "Nobody can reach site 2's LAN 10.2.5.0/24 (H2 is 10.2.5.10) over IPv4. R5 itself answers pings."
+      hints:
+        - "Does R3 know 10.2.5.0/24?"
+        - "`show ospf interface brief` on R5 — is the LAN interface there?"
+        - "R5's Gi0/0/0/1 was removed from area 2 in `router ospf 1`. Add it back, passive."
+      inject:
+        R5: |
+          router ospf 1
+           area 2
+            no interface GigabitEthernet0/0/0/1
+           !
+          !
+      revert:
+        R5: |
+          router ospf 1
+           area 2
+            interface GigabitEthernet0/0/0/1
+             passive enable
+            !
+           !
+          !
+      symptoms:
+        - {type: route, device: R3, prefix: 10.2.5.0/24, protocol: O}
+
+- id: ospf-range-hidden
+  protocol: ospf
+  category: advertisement
+  title: Area summary set to not-advertise
+  explanation: |
+    The ABR's area range was changed to `not-advertise`. That suppresses the summary *and*
+    every component route inside it — the whole area's addressing silently disappears from
+    the rest of the network. Inside the area everything still looks fine.
+  find: |
+    The summary is missing everywhere outside the area; the ABR itself still has the routes.
+    `show ospf` / `show ip ospf` on the ABR lists the area range with "DoNotAdvertise".
+  leak_terms: [not-advertise, range, summary]
+  variants:
+    - id: r1-area1-xr
+      scope: [ospf:area1-range]
+      reporter: Site 2 (10.2.5.0/24)
+      ticket: "From site 2 we can no longer reach anything in site 1 (10.1.0.0/16) over IPv4. IPv6 works."
+      hints:
+        - "Does R2 have a route to site 1's addresses? Does R1?"
+        - "How does area 1 get advertised into the backbone? `show ospf` on R1."
+        - "R1's `range 10.1.0.0/16` in area 1 is now `not-advertise`."
+      inject:
+        R1: |
+          router ospf 1
+           area 1
+            range 10.1.0.0/16 not-advertise
+           !
+          !
+      revert:
+        R1: |
+          router ospf 1
+           area 1
+            no range 10.1.0.0/16
+            range 10.1.0.0/16
+           !
+          !
+      symptoms:
+        - {type: route, device: R2, prefix: 10.1.0.0/16, protocol: O IA}
+    - id: r3-area2-xe
+      scope: [ospf:area2-range]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "Site 2's addresses (10.2.0.0/16) are unreachable from site 1 over IPv4, but the partner network 198.51.100.0/24 behind site 2 still works."
+      hints:
+        - "Is 10.2.0.0/16 known in the backbone? On R3?"
+        - "Check how R3 summarises area 2: `show ip ospf` on R3."
+        - "`area 2 range 10.2.0.0 255.255.0.0 not-advertise` on R3."
+      inject:
+        R3: |
+          router ospf 1
+           area 2 range 10.2.0.0 255.255.0.0 not-advertise
+          !
+      revert:
+        R3: |
+          router ospf 1
+           no area 2 range 10.2.0.0 255.255.0.0
+           area 2 range 10.2.0.0 255.255.0.0
+          !
+      symptoms:
+        - {type: route, device: R2, prefix: 10.2.0.0/16, protocol: O IA}
+
+- id: ospf-distribute-list
+  protocol: ospf
+  category: advertisement
+  title: Route filtered out of the routing table
+  explanation: |
+    An inbound distribute list now filters a prefix out of one router's routing table. OSPF
+    can't filter link-state advertisements inside an area — the LSA is still in the database
+    and still flooded — but that router no longer installs the route, so traffic through it
+    is dropped.
+  find: |
+    The LSDB has it (`show ospf database summary 10.x.0.0`), the routing table doesn't.
+    `show running-config router ospf 1` shows a `distribute-list … in`; check the referenced
+    prefix list / route policy.
+  leak_terms: [distribute-list, distribute list, prefix-list, route-policy, filter]
+  variants:
+    - id: r3-xe
+      scope: [ospf:R3-filter]
+      reporter: Site 2 (10.2.5.0/24)
+      ticket: "Since this afternoon H2 (10.2.5.10) can't reach anything in site 1 (10.1.0.0/16). Site 1 can still reach our router R5's loopback, oddly."
+      hints:
+        - "Follow H2's traffic: R5 → R3 → ? Does R3 have a route to 10.1.0.0/16?"
+        - "Is the summary in R3's OSPF database? If yes, why isn't it in the routing table?"
+        - "R3's `router ospf 1` has a `distribute-list prefix … in` that denies 10.1.0.0/16. Remove it (and the prefix list)."
+      inject:
+        R3: |
+          ip prefix-list {PREFIXLIST1} seq 5 deny 10.1.0.0/16
+          ip prefix-list {PREFIXLIST1} seq 10 permit 0.0.0.0/0 le 32
+          router ospf 1
+           distribute-list prefix {PREFIXLIST1} in
+          !
+      revert:
+        R3: |
+          router ospf 1
+           no distribute-list prefix {PREFIXLIST1} in
+          !
+          no ip prefix-list {PREFIXLIST1}
+      symptoms:
+        - {type: route, device: R3, prefix: 10.1.0.0/16, protocol: O IA}
+    - id: r2-xr
+      scope: [ospf:R2-filter]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "Site 1 can't reach site 2 (10.2.0.0/16) over IPv4. A traceroute from H1 stops after R1."
+      hints:
+        - "Traceroute stops after R1 — the next hop is R2. Does R2 have 10.2.0.0/16 in its routing table?"
+        - "Compare `show ospf database summary 10.2.0.0` with `show route 10.2.0.0/16` on R2."
+        - "R2's `router ospf 1` has `distribute-list route-policy … in` dropping 10.2.0.0/16."
+      inject:
+        R2: |
+          route-policy {POLICY1}
+            if destination in (10.2.0.0/16) then
+              drop
+            else
+              pass
+            endif
+          end-policy
+          !
+          router ospf 1
+           distribute-list route-policy {POLICY1} in
+          !
+      revert:
+        R2: |
+          no route-policy {POLICY1}
+          router ospf 1
+           no distribute-list route-policy {POLICY1} in
+          !
+      symptoms:
+        - {type: route, device: R2, prefix: 10.2.0.0/16, protocol: O IA}
+
+- id: ospf-redistribution
+  protocol: ospf
+  category: advertisement
+  title: External network no longer redistributed
+  explanation: |
+    `redistribute static` was removed on the ASBR, so the external network behind it is no
+    longer in OSPF at all. Inside an NSSA that means no type 7 LSA, so the ABR has nothing to
+    translate into type 5 either.
+  find: |
+    `show ospf database external` / `nssa-external` has no LSA for the prefix; the ASBR still
+    has the static route; `show ospf` no longer calls the router an ASBR.
+  leak_terms: [redistribut, static, asbr]
+  variants:
+    - id: r5-nssa-xr
+      scope: [ospf:R5-ext]
+      reporter: Partner (198.51.100.0/24)
+      ticket: "Our network 198.51.100.0/24 (connected behind your site 2) is no longer reachable from your network."
+      hints:
+        - "Is there a type 7 LSA for 198.51.100.0/24 in area 2? `show ip ospf database nssa-external` on R3."
+        - "R5 still has its static route — but is it still an ASBR? `show ospf` on R5."
+        - "R5 lost `redistribute static` under `router ospf 1`."
+      inject:
+        R5: |
+          router ospf 1
+           no redistribute static
+          !
+      revert:
+        R5: |
+          router ospf 1
+           redistribute static
+          !
+      symptoms:
+        - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: O E2}
+    - id: r2-xr
+      scope: [ospf:R2-ext]
+      reporter: Customer (203.0.113.0/24)
+      ticket: "Our network 203.0.113.0/24, which you route to us statically at R2, can't be reached from your other sites anymore."
+      hints:
+        - "Does R1 have 203.0.113.0/24? Is there a type 5 LSA for it?"
+        - "`show ospf` on R2: is it still an ASBR?"
+        - "R2 lost `redistribute static` under `router ospf 1`."
+      inject:
+        R2: |
+          router ospf 1
+           no redistribute static
+          !
+      revert:
+        R2: |
+          router ospf 1
+           redistribute static
+          !
+      symptoms:
+        - {type: route, device: R1, prefix: 203.0.113.0/24, protocol: O E2}
+
+- id: ospfv3-interface
+  protocol: ospf
+  category: advertisement
+  title: Link missing from OSPFv3 only
+  explanation: |
+    The link was removed from OSPFv3 while OSPFv2 still runs on it. IPv4 is completely fine;
+    IPv6 loses the adjacency and every IPv6 prefix behind it. Two protocols, two
+    configurations — a classic dual-stack trap.
+  find: |
+    IPv4 works, IPv6 doesn't. `show ospfv3 neighbor` lacks the neighbor; `show ospfv3
+    interface brief` doesn't list the interface on one side.
+  leak_terms: [ospfv3, ipv6 area, interface brief]
+  variants:
+    - id: r3-r5-xe
+      scope: [ospf6:R3-R5]
+      reporter: Site 2 (10.2.5.0/24)
+      ticket: "IPv6 to and from site 2 (2001:db8:2:5::/64) is broken. IPv4 to the same hosts works perfectly."
+      hints:
+        - "IPv6 only. Is R3's OSPFv3 adjacency to R5 up?"
+        - "`show ospfv3 interface brief` on R3."
+        - "R3's Gi4 lost `ospfv3 1 ipv6 area 2`."
+      inject:
+        R3: |
+          interface GigabitEthernet4
+           no ospfv3 1 ipv6 area 2
+          !
+      revert:
+        R3: |
+          interface GigabitEthernet4
+           ospfv3 1 ipv6 area 2
+          !
+      symptoms:
+        - {type: ping, from: H1, to: "2001:db8:2:5::10", count: 5, min_success: 80}
+    - id: r1-r4-xr
+      scope: [ospf6:R1-R4]
+      reporter: Site 1 (10.1.4.0/24)
+      ticket: "IPv6 from site 1 (2001:db8:1:4::/64) can't reach site 2. IPv4 is fine."
+      hints:
+        - "Is R4's OSPFv3 neighbor R1 there?"
+        - "`show ospfv3 interface brief` on R1 — is Gi0/0/0/1 in area 1?"
+        - "R1's `router ospfv3 1` → `area 1` lost interface Gi0/0/0/1. Add it back (point-to-point)."
+      inject:
+        R1: |
+          router ospfv3 1
+           area 1
+            no interface GigabitEthernet0/0/0/1
+           !
+          !
+      revert:
+        R1: |
+          router ospfv3 1
+           area 1
+            interface GigabitEthernet0/0/0/1
+             network point-to-point
+            !
+           !
+          !
+      symptoms:
+        - {type: ping, from: H1, to: "2001:db8:2:5::10", count: 5, min_success: 80}

@@ -17,7 +17,8 @@ export interface NodeTemplate {
 export interface Topology {
   id: number; name: string; description: string; node_count: number; link_count: number; lab_status: LabStatus;
   /** Labs made from a lesson: a learner's attempt, or the lesson's authoring lab. */
-  lesson_id?: number | null; lesson_role?: 'attempt' | 'authoring' | null;
+  lesson_id?: number | null; lesson_role?: 'attempt' | 'authoring' | 'troubleshoot' | 'troubleshoot_test' | null;
+  scenario_id?: number | null;
   lesson_ai_policy?: 'teach' | 'hints' | 'off' | null;
 }
 
@@ -166,4 +167,32 @@ export interface LabState {
 export interface Snapshot {
   id: number; node_id: number; node: string; label: string; family: string;
   created_by: string; created_at: string | null; lines: number;
+}
+
+// --- Troubleshooting scenarios (Chaos) -------------------------------------------
+export type Difficulty = 'guided' | 'standard' | 'expert';
+export type ScenarioState = 'idle' | 'preparing' | 'active' | 'solved' | 'revealed' | 'error';
+export interface ScenarioSummary {
+  id: number; slug: string; title: string; summary: string; level: LessonLevel; track: LessonTrack; tags: string[];
+  protocols: string[]; max_faults: number; version: string; author: string; status: string; topology_summary: string;
+  coverage: Record<string, Record<string, number>>;
+  attempt: { id: number; state: ScenarioState; topology_id: number | null; difficulty: Difficulty; fault_count: number; rounds: number } | null;
+}
+export interface ScenarioDetail extends ScenarioSummary {
+  topology: LessonTopology; difficulties: Record<Difficulty, string>; can_edit: boolean;
+}
+export interface TicketDebrief {
+  title: string; protocol: string; category: string; explanation: string; find: string;
+  changed: Record<string, string>; fix: Record<string, string>; silent: boolean;
+}
+export interface Ticket {
+  reporter: string; ticket: string; resolved: boolean; hints: string[]; hints_left: number; debrief?: TicketDebrief;
+}
+export interface ScenarioAttemptView {
+  id: number; scenario_id: number; topology_id: number | null; state: ScenarioState; progress: string; error: string;
+  difficulty: Difficulty; fault_count: number; max_faults: number; tickets: Ticket[]; elapsed: number | null;
+  checks_run: number; hints_used: number; last_check_at: number | null;
+  health: { describe: string; ok: boolean; scope: string }[] | null; health_summary: { ok: number; total: number } | null;
+  docs_md: string; debrief_ai: string | null; outdated: boolean;
+  history: { difficulty: Difficulty; faults: number; outcome: string; started_at: number | null; ended_at: number; hints: number; checks: number }[];
 }

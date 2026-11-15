@@ -6,7 +6,7 @@ import type { ConsoleTab } from '../components/LabConsoleDrawer';
 
 export type Selection = { type: 'node' | 'link'; id: number } | { type: 'annotation'; id: string } | null;
 export type CanvasTool = 'select' | 'group' | 'text' | 'note';
-export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users' | 'lessons' | 'lesson' | 'lessonEdit' | 'modules' | 'module' | 'moduleEdit';
+export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users' | 'lessons' | 'lesson' | 'lessonEdit' | 'modules' | 'module' | 'moduleEdit' | 'troubleshooting' | 'scenario';
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -48,6 +48,8 @@ interface LabStore {
   moduleId: number | null;
   openModule: (id: number) => void;
   editModule: (id: number | null) => void;
+  scenarioId: number | null;
+  openScenario: (id: number) => void;
   bootstrap: () => Promise<void>;
   loadTemplates: () => Promise<void>;
   loadTopologies: () => Promise<void>;
@@ -126,6 +128,8 @@ export const useLabStore = create<LabStore>((set, get) => ({
   moduleId: null,
   openModule: (moduleId) => set({ page: 'module', moduleId }),
   editModule: (moduleId) => set({ page: 'moduleEdit', moduleId }),
+  scenarioId: null,
+  openScenario: (scenarioId) => set({ page: 'scenario', scenarioId }),
 
   setPage: (page) => {
     set({ page });
@@ -156,7 +160,9 @@ export const useLabStore = create<LabStore>((set, get) => ({
   closeTopology: () => {
     // A lesson lab goes back to its lesson (the editor for an authoring lab).
     const t = get().topology;
-    const back: Partial<LabStore> = t?.lesson_id && t.lesson_role
+    const back: Partial<LabStore> = t?.scenario_id && t.lesson_role === 'troubleshoot'
+      ? { page: 'scenario', scenarioId: t.scenario_id }
+      : t?.lesson_id && t.lesson_role
       ? { page: t.lesson_role === 'authoring' ? 'lessonEdit' : 'lesson', lessonId: t.lesson_id }
       : { page: 'labs' };
     set({ currentTopologyId: null, topology: null, nodes: [], links: [], lab: null, ...back,

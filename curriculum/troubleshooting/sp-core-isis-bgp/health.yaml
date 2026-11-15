@@ -1,0 +1,65 @@
+# Every check passes on the healthy network. scope: service = what customers
+# and peers would notice (shown at Standard difficulty); the rest is internal.
+- {type: ping, from: H1, to: 198.51.100.10, count: 5, min_success: 80, scope: service, describe: "Customer A reaches the server at upstream A (198.51.100.10)"}
+- {type: ping, from: H1, to: "2001:db8:a5:5::10", count: 5, min_success: 80, scope: service, describe: "Customer A reaches the server over IPv6 (2001:db8:a5:5::10)"}
+- {type: ping, from: H1, to: 6.6.6.6, count: 5, min_success: 80, scope: service, describe: "Customer A reaches upstream B (6.6.6.6)"}
+- {type: ping, from: H1, to: 203.0.113.1, count: 5, min_success: 80, scope: service, describe: "Customer A reaches the anycast service (203.0.113.1)"}
+- {type: ping, from: H1, to: "2001:db8:ffff::1", count: 5, min_success: 80, scope: service, describe: "Customer A reaches the anycast service over IPv6"}
+- {type: route, device: R5, prefix: 100.64.0.0/16, protocol: B, via: 10.2.35.1, scope: service, describe: "Upstream A receives 100.64.0.0/16 from AS 65000"}
+- {type: route, device: R6, prefix: 100.64.0.0/16, protocol: B, via: 10.3.16.1, scope: service, describe: "Upstream B receives 100.64.0.0/16 from AS 65000"}
+- {type: route, device: R5, prefix: 192.0.2.0/24, protocol: B, via: 10.2.35.1, scope: service, describe: "Upstream A receives customer A's 192.0.2.0/24 from AS 65000"}
+- {type: route, device: R6, prefix: 192.0.2.0/24, protocol: B, via: 10.3.16.1, scope: service, describe: "Upstream B receives customer A's 192.0.2.0/24 from AS 65000"}
+- {type: route, device: R5, prefix: 100.70.20.0/24, protocol: B, via: 10.2.35.1, scope: service, describe: "Upstream A receives the static customer's 100.70.20.0/24"}
+- {type: route, device: R6, prefix: "2001:db8:6500::/48", protocol: B, scope: service, describe: "Upstream B receives 2001:db8:6500::/48"}
+- {type: route, device: R5, prefix: "2001:db8:c1::/48", protocol: B, scope: service, describe: "Upstream A receives customer A's 2001:db8:c1::/48"}
+- type: cli
+  device: R2
+  command: show isis neighbors
+  expect:
+    - {regex: '^R1\s+(?=.*\bup\b)', ignore_case: true}
+    - {regex: '^R3\s+(?=.*\bup\b)', ignore_case: true}
+  describe: "R2: IS-IS adjacencies to R1 and R3 up"
+- type: cli
+  device: R1
+  command: show isis neighbors
+  expect:
+    - {regex: '^R3\s+(?=.*\bup\b)', ignore_case: true}
+  describe: "R1: IS-IS adjacency to R3 up"
+- {type: route, device: R2, prefix: 1.1.1.1/32, protocol: i L2, via: 10.0.12.1, describe: "R2 reaches R1's loopback over the R1–R2 link"}
+- {type: route, device: R2, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.23.2, describe: "R2 reaches R3's loopback over the R2–R3 link"}
+- {type: route, device: R1, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.13.2, describe: "R1 reaches R3's loopback over the R1–R3 link"}
+- {type: route, device: R2, prefix: "2001:db8::3/128", protocol: i L2, describe: "R2 reaches R3's IPv6 loopback"}
+- {type: route, device: R3, prefix: "2001:db8::1/128", protocol: i L2, describe: "R3 reaches R1's IPv6 loopback"}
+- type: cli
+  device: R2
+  command: show bgp ipv4 unicast summary
+  expect:
+    - {regex: '^1\.1\.1\.1\s.*\s\d+\s*$'}
+    - {regex: '^3\.3\.3\.3\s.*\s\d+\s*$'}
+  describe: "R2: IPv4 iBGP sessions to R1 and R3 established"
+- type: cli
+  device: R2
+  command: show bgp ipv6 unicast summary
+  expect:
+    - {regex: '^2001:db8::1\s.*\s\d+\s*$'}
+    - {regex: '^2001:db8::3\s.*\s\d+\s*$'}
+  describe: "R2: IPv6 iBGP sessions to R1 and R3 established"
+- type: cli
+  device: R1
+  command: show bgp ipv4 unicast summary
+  expect:
+    - {regex: '^10\.1\.14\.2\s.*\s\d+\s*$'}
+    - {regex: '^10\.3\.16\.2\s.*\s\d+\s*$'}
+  describe: "R1: eBGP to customer A and upstream B established"
+- type: cli
+  device: R3
+  command: show bgp ipv4 unicast summary
+  expect:
+    - {regex: '^10\.2\.35\.2\s.*\s\d+\s*$'}
+  describe: "R3: eBGP to upstream A established"
+- {type: route, device: R2, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1, describe: "R2 installs customer A's 192.0.2.0/24 via R1"}
+- {type: route, device: R3, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1, describe: "R3 installs customer A's 192.0.2.0/24 via R1"}
+- {type: route, device: R2, prefix: 198.51.100.0/24, protocol: B, via: 3.3.3.3, describe: "R2 installs upstream A's 198.51.100.0/24 via R3"}
+- {type: route, device: R1, prefix: 198.51.100.0/24, protocol: B, via: 3.3.3.3, describe: "R1 installs upstream A's 198.51.100.0/24 via R3"}
+- {type: route, device: R2, prefix: 100.70.20.0/24, protocol: B, via: 3.3.3.3, describe: "R2 installs the static customer's 100.70.20.0/24 via R3"}
+- {type: route, device: R1, prefix: "2001:db8:a5::/48", protocol: B, via: "2001:db8::3", describe: "R1 installs upstream A's 2001:db8:a5::/48 via R3"}

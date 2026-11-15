@@ -126,7 +126,7 @@ def test_status_lists_models(client, monkeypatch):
     monkeypatch.setattr(llm, "OPENAI_KEY", "sk-test")
     monkeypatch.setattr(llm, "OPENAI_MODELS", ["gpt-x"])
     r = client.get("/api/ai/status").json()
-    assert r["enabled"] and r["default_model"] == "claude-opus-5-5"
+    assert r["enabled"] and r["default_model"] == "claude-sonnet-5-5"
     assert {m["id"] for m in r["models"]} == {"claude-opus-5-5", "claude-sonnet-5-5", "gpt-x"}
 
 

@@ -1,0 +1,16 @@
+slug: sp-core-isis-bgp
+title: "Chaos in the provider core: IS-IS and BGP"
+summary: >-
+  AS 65000 was working: an IS-IS core, iBGP through a route reflector, a
+  customer and two upstream providers, IPv4 and IPv6, IOS XR and IOS XE.
+  Chaos has been in the network. Work the tickets with show commands, find
+  what broke and fix it — without breaking anything else. Covers CCNP SPCOR
+  2.6 a and b for IS-IS and BGP.
+level: advanced
+track: service_provider
+tags: [troubleshooting, isis, bgp, ipv6, iosxr, iosxe, ccnp-spcor]
+protocols: [isis, bgp]
+max_faults: 4
+status: published
+version: "1.0"
+author: Phanero Labs

@@ -1,6 +1,6 @@
 import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology, Annotation,
   LessonAttempt, LessonDetail, LessonSection, LessonSummary, LessonTask, PublicTask, TaskResult,
-  ModuleDetail, ModuleItem, ModuleMeta, ModuleSummary } from '../types';
+  ModuleDetail, ModuleItem, ModuleMeta, ModuleSummary, ScenarioSummary, ScenarioDetail, ScenarioAttemptView, Difficulty } from '../types';
 
 const BASE = '/api';
 
@@ -267,6 +267,21 @@ export const api = {
   saveLessonAuthoring: (id: number, capture_running: boolean) =>
     request<{ captured: string[]; failed: { device: string; error: string }[]; warnings: string[]; topology_summary: string }>(
       `/lessons/${id}/authoring/save`, json('POST', { capture_running })),
+  // Troubleshooting (Chaos)
+  listScenarios: () => request<ScenarioSummary[]>('/troubleshooting'),
+  getScenario: (id: number) => request<ScenarioDetail>(`/troubleshooting/${id}`),
+  startScenario: (id: number, difficulty: Difficulty, faults: number) =>
+    request<{ attempt: ScenarioAttemptView; created: boolean }>(`/troubleshooting/${id}/start`, json('POST', { difficulty, faults })),
+  scenarioForTopology: (tid: number) =>
+    request<{ scenario: { id: number; title: string; summary: string; max_faults: number; protocols: string[] };
+              difficulties: Record<Difficulty, string>; attempt: ScenarioAttemptView }>(`/troubleshoot-attempts/by-topology/${tid}`),
+  chaosRound: (aid: number, difficulty?: Difficulty, faults?: number) =>
+    request<ScenarioAttemptView>(`/troubleshoot-attempts/${aid}/round`, json('POST', { difficulty, faults })),
+  chaosCheck: (aid: number) => request<ScenarioAttemptView>(`/troubleshoot-attempts/${aid}/check`, json('POST')),
+  chaosHint: (aid: number, ticket: number) => request<ScenarioAttemptView>(`/troubleshoot-attempts/${aid}/hint?ticket=${ticket}`, json('POST')),
+  chaosGiveUp: (aid: number) => request<ScenarioAttemptView>(`/troubleshoot-attempts/${aid}/give-up`, json('POST')),
+  chaosDebrief: (aid: number) => request<{ text: string | null }>(`/troubleshoot-attempts/${aid}/debrief`, json('POST')),
+  chaosRebuild: (aid: number) => request<ScenarioAttemptView>(`/troubleshoot-attempts/${aid}/rebuild`, json('POST')),
   // Modules
   listModules: () => request<ModuleSummary[]>('/modules'),
   getModule: (id: number) => request<ModuleDetail>(`/modules/${id}`),

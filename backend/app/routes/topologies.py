@@ -28,12 +28,18 @@ def _out(db: Session, t: Topology) -> dict:
         # With the learning add-on off, lesson labs are ordinary labs.
         "lesson_id": t.lesson_id if config.LEARNING_ENABLED else None,
         "lesson_role": t.lesson_role if config.LEARNING_ENABLED else None,
+        "scenario_id": t.scenario_id if config.LEARNING_ENABLED else None,
         "lesson_ai_policy": _lesson_policy(db, t),
     }
 
 
 def _lesson_policy(db: Session, t: Topology):
-    if not t.lesson_id or t.lesson_role != "attempt" or not config.LEARNING_ENABLED:
+    if not config.LEARNING_ENABLED:
+        return None
+    if t.lesson_role == "troubleshoot":
+        from app.services.lab_agent import troubleshoot_policy
+        return troubleshoot_policy(db, t.id)
+    if not t.lesson_id or t.lesson_role != "attempt":
         return None
     from app.models.lesson import Lesson
     l = db.get(Lesson, t.lesson_id)

@@ -13,7 +13,7 @@ def test_models_follow_keys(monkeypatch):
     assert "Anthropic" in llm.config_error("claude-opus-5-5")
     monkeypatch.setattr(llm, "ANTHROPIC_KEY", "k")
     monkeypatch.setattr(llm, "OPENAI_MODELS", ["gpt-x"])
-    assert [m["id"] for m in llm.available_models()] == ["claude-opus-5-5", "claude-sonnet-5-5"]
+    assert [m["id"] for m in llm.available_models()] == ["claude-sonnet-5-5", "claude-opus-5-5"]
     assert llm.config_error("claude-opus-5-5") is None and "OpenAI" in llm.config_error("gpt-x")
     monkeypatch.setattr(llm, "OPENAI_BASE_URL", "http://litellm:4000")
     assert "gpt-x" in [m["id"] for m in llm.available_models()]

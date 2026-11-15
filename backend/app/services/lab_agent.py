@@ -218,12 +218,32 @@ def lesson_policy(topology_id: int) -> str | None:
     db = SessionLocal()
     try:
         t = db.get(Topology, topology_id)
+        if t and t.lesson_role == "troubleshoot":
+            return troubleshoot_policy(db, topology_id)
         if not t or not t.lesson_id or t.lesson_role != "attempt":
             return None
         l = db.get(Lesson, t.lesson_id)
         return l.ai_policy if l else None
     finally:
         db.close()
+
+
+def troubleshoot_policy(db, topology_id: int) -> str:
+    """Troubleshooting labs: a read-only coach at Guided difficulty, no AI
+    otherwise — the assistant could read the configs and spot the faults."""
+    from app.services import troubleshooting as ts
+    a = ts.attempt_for_topology(db, topology_id)
+    return "hints" if a and a.difficulty == "guided" else "off"
+
+
+_TROUBLESHOOT_RULES = (
+    "\n\n# This lab is a troubleshooting exercise\n"
+    "Something in this network was deliberately broken, and the learner is working trouble tickets to find and "
+    "fix it. You don't know what was broken and must not guess at it for them. Coach like a senior engineer: ask "
+    "what they've checked, suggest the next show command or the layer to look at (adjacency? advertisement? "
+    "policy? next hop?), and help them read the output. Never write the fix, never name the faulty device or "
+    "setting before they have, and don't run a sweep of the network to find it yourself — run a command only "
+    "when the learner asks you to.\n\nOpen tickets:\n")
 
 
 _POLICY_RULES = {
@@ -247,6 +267,14 @@ def lesson_prompt(topology_id: int) -> str:
         return ""
     db = SessionLocal()
     try:
+        from app.models.topology import Topology
+        t = db.get(Topology, topology_id)
+        if t and t.lesson_role == "troubleshoot":
+            from app.services import troubleshooting as ts
+            ta = ts.attempt_for_topology(db, topology_id)
+            tickets = (ts.view(db, ta)["tickets"] if ta else [])
+            return _TROUBLESHOOT_RULES + ("\n".join(f"- {x['reporter']}: {x['ticket']}" + (" (resolved)" if x["resolved"] else "")
+                                                     for x in tickets) or "- none yet (Chaos hasn't struck)")
         a = lesson_svc.attempt_for_topology(db, topology_id)
         l = db.get(Lesson, a.lesson_id) if a else None
         if not l:

@@ -9,7 +9,7 @@ message history so callers never handle tool_use / tool_calls blocks.
 Configured from env (read at import; recreate the backend to change):
     PLABS_AI_ENABLED            1 to turn the AI features on
     PLABS_AI_API_KEY            Anthropic key (falls back to ANTHROPIC_API_KEY)
-    PLABS_AI_MODEL              default model (claude-opus-5-5)
+    PLABS_AI_MODEL              default model (claude-sonnet-5-5)
     PLABS_AI_CLAUDE_MODELS      Claude models offered in the UI (comma list)
     PLABS_AI_OPENAI_API_KEY     OpenAI key (falls back to OPENAI_API_KEY)
     PLABS_AI_OPENAI_BASE_URL    optional OpenAI-compatible endpoint (e.g. LiteLLM)
@@ -31,8 +31,8 @@ _list = lambda k: [m.strip() for m in _env(k).split(",") if m.strip()]  # noqa: 
 ANTHROPIC_KEY = _env("PLABS_AI_API_KEY") or _env("ANTHROPIC_API_KEY")
 OPENAI_KEY = _env("PLABS_AI_OPENAI_API_KEY") or _env("OPENAI_API_KEY")
 OPENAI_BASE_URL = _env("PLABS_AI_OPENAI_BASE_URL")
-DEFAULT_MODEL = _env("PLABS_AI_MODEL") or "claude-opus-5-5"
-CLAUDE_MODELS = _list("PLABS_AI_CLAUDE_MODELS") or ["claude-opus-5-5", "claude-sonnet-5-5"]
+DEFAULT_MODEL = _env("PLABS_AI_MODEL") or "claude-sonnet-5-5"
+CLAUDE_MODELS = _list("PLABS_AI_CLAUDE_MODELS") or ["claude-sonnet-5-5", "claude-opus-5-5"]
 OPENAI_MODELS = _list("PLABS_AI_OPENAI_MODELS")
 
 _LABELS = {"claude-opus-5-5": "Claude Opus 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5",
@@ -156,7 +156,7 @@ class AgentConversation:
             system=[{"type": "text", "text": system}],
             messages=self.messages,
             tools=self._tools,
-            output_config={"effort": "high"},     # Opus 5.5 defaults to medium; config work wants more
+            output_config={"effort": "high"},     # set explicitly (Opus 5.5 defaults to medium); config work wants high
             cache_control={"type": "ephemeral"},  # stable system + tools + growing history
             **kwargs,
         ) as stream:
