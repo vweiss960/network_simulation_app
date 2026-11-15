@@ -47,6 +47,7 @@ services:
       - PLABS_AI_OPENAI_BASE_URL=${PLABS_AI_OPENAI_BASE_URL:-}
       - PLABS_AI_OPENAI_MODELS=${PLABS_AI_OPENAI_MODELS:-}
       - PLABS_LAB_TELEMETRY_ENABLED=${PLABS_LAB_TELEMETRY_ENABLED:-0}
+      - PLABS_LEARNING_ENABLED=${PLABS_LEARNING_ENABLED:-0}
       - PLABS_LAB_MGMT_SUBNET=${PLABS_LAB_MGMT_SUBNET:-}
     command: ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8100"]
     restart: unless-stopped

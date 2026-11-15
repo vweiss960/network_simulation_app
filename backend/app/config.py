@@ -28,3 +28,6 @@ CURRICULUM_DIR: Path = _path("PLABS_CURRICULUM_DIR", REPO_ROOT / "curriculum")
 # Optional modules
 AI_ENABLED = _flag("PLABS_AI_ENABLED")
 LAB_TELEMETRY_ENABLED = _flag("PLABS_LAB_TELEMETRY_ENABLED")
+# Learning add-on: lessons, modules (and later curricula). Off → their API
+# answers 404, nothing is seeded, and lesson labs behave as ordinary labs.
+LEARNING_ENABLED = _flag("PLABS_LEARNING_ENABLED")

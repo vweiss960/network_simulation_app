@@ -22,7 +22,7 @@ function saveAnnotations(get: () => { currentTopologyId: number | null; annotati
 
 interface LabStore {
   page: Page;
-  features: { ai_enabled: boolean; lab_telemetry_enabled: boolean };
+  features: { ai_enabled: boolean; lab_telemetry_enabled: boolean; learning_enabled: boolean };
   templates: NodeTemplate[];
   kinds: Record<string, DeviceKind>;
   topologies: Topology[];
@@ -98,7 +98,7 @@ interface LabStore {
 
 export const useLabStore = create<LabStore>((set, get) => ({
   page: 'labs',
-  features: { ai_enabled: false, lab_telemetry_enabled: false },
+  features: { ai_enabled: false, lab_telemetry_enabled: false, learning_enabled: false },
   templates: [],
   kinds: {},
   topologies: [],

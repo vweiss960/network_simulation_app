@@ -4,6 +4,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import config
 from app.models.database import get_db
 from app.models.lab_deployment import LabDeployment
 from app.models.link import Link
@@ -24,13 +25,15 @@ def _out(db: Session, t: Topology) -> dict:
         "node_count": db.query(func.count(NodeInstance.id)).filter(NodeInstance.topology_id == t.id).scalar(),
         "link_count": db.query(func.count(Link.id)).filter(Link.topology_id == t.id).scalar(),
         "lab_status": dep.status if dep else "idle",
-        "lesson_id": t.lesson_id, "lesson_role": t.lesson_role,
+        # With the learning add-on off, lesson labs are ordinary labs.
+        "lesson_id": t.lesson_id if config.LEARNING_ENABLED else None,
+        "lesson_role": t.lesson_role if config.LEARNING_ENABLED else None,
         "lesson_ai_policy": _lesson_policy(db, t),
     }
 
 
 def _lesson_policy(db: Session, t: Topology):
-    if not t.lesson_id or t.lesson_role != "attempt":
+    if not t.lesson_id or t.lesson_role != "attempt" or not config.LEARNING_ENABLED:
         return None
     from app.models.lesson import Lesson
     l = db.get(Lesson, t.lesson_id)

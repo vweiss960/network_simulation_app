@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from sqlalchemy import func
 
+from app import config
 from app.models.agent_action import AgentAction
 from app.models.agent_conversation import AgentConversation
 from app.models.database import SessionLocal
@@ -212,6 +213,8 @@ def lesson_policy(topology_id: int) -> str | None:
     or None for an ordinary lab."""
     from app.models.lesson import Lesson
     from app.models.topology import Topology
+    if not config.LEARNING_ENABLED:
+        return None
     db = SessionLocal()
     try:
         t = db.get(Topology, topology_id)
@@ -240,6 +243,8 @@ def lesson_prompt(topology_id: int) -> str:
     lesson, every task with its pass state, the current task and the rules."""
     from app.models.lesson import Lesson
     from app.services import lessons as lesson_svc
+    if not config.LEARNING_ENABLED:
+        return ""
     db = SessionLocal()
     try:
         a = lesson_svc.attempt_for_topology(db, topology_id)

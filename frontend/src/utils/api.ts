@@ -168,7 +168,7 @@ export const api = {
     request<{ ok: boolean }>(`/topologies/${tid}/agent/conversations/${cid}`, json('DELETE')),
   stopAgent: (tid: number, cid: string) =>
     request<{ ok: boolean }>(`/topologies/${tid}/agent/conversations/${cid}/stop`, json('POST')),
-  getFeatures: () => request<{ ai_enabled: boolean; lab_telemetry_enabled: boolean }>('/features'),
+  getFeatures: () => request<{ ai_enabled: boolean; lab_telemetry_enabled: boolean; learning_enabled: boolean }>('/features'),
 
   // Topologies
   listTopologies: () => request<Topology[]>('/topologies/'),

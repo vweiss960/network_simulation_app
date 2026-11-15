@@ -7,6 +7,7 @@ os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(_tmp, "test.db")
 os.environ["LAB_STATE_DIR"] = os.path.join(_tmp, "lab_state")
 for _k in [k for k in list(os.environ) if k.startswith("PLABS_")]:
     del os.environ[_k]
+os.environ["PLABS_LEARNING_ENABLED"] = "1"      # the learning add-on's tests; test_learning_addon turns it off
 
 from types import SimpleNamespace  # noqa: E402
 

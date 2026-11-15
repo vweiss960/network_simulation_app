@@ -1,7 +1,7 @@
 import logging
 import re
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -54,8 +54,15 @@ app.include_router(device.router, dependencies=auth_dep)
 app.include_router(uploads.router, dependencies=auth_dep)
 app.include_router(agent.router, dependencies=auth_dep)
 app.include_router(capture.router, dependencies=auth_dep)
-app.include_router(lessons.router, dependencies=auth_dep)
-app.include_router(modules.router, dependencies=auth_dep)
+# Learning add-on (PLABS_LEARNING_ENABLED): checked per request, so the
+# routes simply answer 404 while it's off.
+def _learning_on():
+    if not config.LEARNING_ENABLED:
+        raise HTTPException(404, "The learning add-on is off (set PLABS_LEARNING_ENABLED=1 in .env)")
+
+
+app.include_router(lessons.router, dependencies=auth_dep + [Depends(_learning_on)])
+app.include_router(modules.router, dependencies=auth_dep + [Depends(_learning_on)])
 app.include_router(capture.ws_router)   # ?token= auth, like the consoles
 # Console / log WebSockets authenticate via ?token=<jwt> (browsers can't set
 # headers on a WebSocket upgrade).
@@ -110,6 +117,8 @@ def startup():
     packet_capture.sweep_orphans()
     # Bundled lessons (curriculum/lessons/*/): new ones and newer versions.
     try:
+        if not config.LEARNING_ENABLED:
+            raise RuntimeError("the learning add-on is off")
         from app.services import lessons as lesson_svc
         _db = SessionLocal()
         try:
@@ -166,4 +175,5 @@ def features():
     return {
         "ai_enabled": config.AI_ENABLED,
         "lab_telemetry_enabled": config.LAB_TELEMETRY_ENABLED,
+        "learning_enabled": config.LEARNING_ENABLED,
     }

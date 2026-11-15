@@ -198,6 +198,14 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   (not `lab_state`: tshark can't read back its own file on that bind mount),
   are swept at startup, and stop on lab destroy. Closing the tab deletes one.
 
+### Learning add-on (`PLABS_LEARNING_ENABLED`, default off)
+Lessons and modules (curricula later) are an optional add-on. Off: the
+`/api/lessons…` / `/api/modules…` routes answer 404 (`main._learning_on`),
+bundled packs aren't seeded, topologies report no `lesson_id` / `lesson_role`
+/ `lesson_ai_policy` and the agent ignores lesson policies — lesson labs act as
+ordinary labs; nothing is deleted. `/api/features` → `learning_enabled`; the
+nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons).
+
 ### Lessons (`models/lesson.py`, `services/lessons.py`, `services/lesson_checks.py`, `routes/lessons.py`)
 - A lesson = starting topology (topology_io YAML: devices, cables, starting
   configs, annotations, `enabled: false` devices) + tasks graded by checks +
