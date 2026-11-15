@@ -1,0 +1,18 @@
+slug: bgp-addpaths-pic
+title: BGP additional paths and Prefix Independent Convergence (PIC)
+summary: >-
+  A route reflector only advertises its best path, so its clients never learn
+  the second exit — and can't fail over until BGP reconverges. Fix it with
+  additional paths, pre-install backup paths with BGP PIC edge, keep the
+  backups alive with best-external, and prove the failover on IOS XR and IOS XE.
+  Covers CCNP SPCOR 2.4 g and h.
+level: advanced
+track: service_provider
+topic: Routing
+tags: [bgp, add-paths, pic, best-external, convergence, route-reflector, iosxr, iosxe, ccnp-spcor]
+minutes: 75
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

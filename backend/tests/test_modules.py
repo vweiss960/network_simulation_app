@@ -26,12 +26,13 @@ def test_bundled_module(db, seeded):
     m = seeded
     assert m.track == "service_provider" and m.blueprint.startswith("CCNP SPCOR")
     assert [(it["section"], it["lesson"]) for it in m.items] == [
-        ("2.1", "isis-sp-levels-multitopology"), ("2.2", "ospf-xr-multiarea-area-types")]
+        ("2.1", "isis-sp-levels-multitopology"), ("2.2", "ospf-xr-multiarea-area-types"),
+        ("2.4", "bgp-sp-core"), ("2.3 · 2.5", "bgp-path-selection-policy"), ("2.4", "bgp-addpaths-pic")]
     assert m.items[0]["objectives"][2] == "2.1.c Multitopology"
     assert svc.seed_bundled(db, CURRICULUM) == []                   # same version: left alone
     p = svc.progress(db, m, "learner")
-    assert p["completed"] == 0 and p["total"] == 2 and p["minutes"] == 240
-    assert [it["status"]["state"] for it in p["items"]] == ["not_started", "not_started"]
+    assert p["completed"] == 0 and p["total"] == 5 and p["minutes"] == 555
+    assert {it["status"]["state"] for it in p["items"]} == {"not_started"}
     isis = db.query(Lesson).filter_by(slug="isis-sp-levels-multitopology").one()
     assert p["next_lesson_id"] == isis.id
     assert svc.modules_for_lesson(db, isis.slug) == [
@@ -71,7 +72,7 @@ def test_pack_round_trip_installs_lessons(db, seeded):
     db.query(Lesson).delete()
     db.commit()
     meta, items, overview, packs = svc.read_zip(data)
-    assert set(packs) == {"isis-sp-levels-multitopology", "ospf-xr-multiarea-area-types"}
+    assert set(packs) == {it["lesson"] for it in seeded.items}
     m, report = svc.import_pack(db, meta, items, overview, packs)
     db.commit()
     assert sorted(report["imported"]) == sorted(packs) and m.items == seeded.items
@@ -81,12 +82,12 @@ def test_pack_round_trip_installs_lessons(db, seeded):
     with pytest.raises(svc.ModuleExists):
         svc.import_pack(db, meta, items, overview, packs)
     c, report = svc.import_pack(db, meta, items, overview, packs, mode="copy")
-    assert c.slug == "spcor-networking-2" and len(report["kept"]) == 2
+    assert c.slug == "spcor-networking-2" and len(report["kept"]) == 5
 
 
 def test_routes(client, db, seeded):
     lst = client.get("/api/modules").json()
-    assert [m["slug"] for m in lst] == ["spcor-networking"] and lst[0]["lesson_count"] == 2
+    assert [m["slug"] for m in lst] == ["spcor-networking"] and lst[0]["lesson_count"] == 5
     d = client.get(f"/api/modules/{seeded.id}").json()
     assert [i["lesson_title"] for i in d["items"]][0].startswith("IS-IS")
     assert d["items"][1]["task_count"] == 10 and d["sections"][0]["title"] == "About this module"

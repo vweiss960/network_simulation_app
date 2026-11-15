@@ -1,0 +1,262 @@
+- id: add-paths
+  title: Let the route reflector advertise a second path (additional paths)
+  body: |
+    The anycast prefix **203.0.113.0/24** reaches AS 65000 twice: from
+    upstream B at R1 and from upstream A at R3. The route reflector R2 has both
+    paths — but, like every BGP speaker, it only **advertises its best**
+    (R1's). Look at R1:
+
+    ```
+    show bgp ipv4 unicast 203.0.113.0/24
+    ```
+
+    One path. R2 did send its best path to R1, but that's R1's own route, so
+    R1 drops it (ORIGINATOR_ID). If R1's link to upstream B fails, R1 has no
+    alternative until R2 recomputes and advertises R3's path — seconds,
+    with the full Internet table, minutes.
+
+    **Additional paths** (RFC 7911) lets a speaker advertise more than one
+    path per prefix, each with its own **path identifier**. Both ends must
+    negotiate the capability — and capabilities are only exchanged when a
+    session **starts**, so reset the sessions afterwards.
+
+    - R2 (XR, reflector): send and receive additional paths, and select
+      which ones to advertise: the best **plus one backup**.
+    - R1 (XR) and R3 (XE): receive additional paths.
+
+    Do it for IPv4 and IPv6.
+  hints:
+    - "XR (R2): `route-policy ADD-PATHS` → `set path-selection backup 1 advertise` → `end-policy`; under `router bgp 65000` → `address-family ipv4 unicast`: `additional-paths receive`, `additional-paths send`, `additional-paths selection route-policy ADD-PATHS` (same for IPv6)."
+    - "XR (R1): `additional-paths receive` under both address families, then reset the sessions: `clear bgp 2.2.2.2` and `clear bgp 2001:db8::2`."
+    - "XE (R3): under `address-family ipv4`: `bgp additional-paths receive` and `neighbor 2.2.2.2 additional-paths receive` (IPv6 likewise), then `clear ip bgp 2.2.2.2` and `clear bgp ipv6 unicast 2001:DB8::2`."
+    - "`show bgp neighbor 2.2.2.2` on R1 ends with `Additional-paths operation: Receive` once negotiated."
+  solution:
+    R2: |
+      route-policy ADD-PATHS
+        set path-selection backup 1 advertise
+      end-policy
+      !
+      router bgp 65000
+       address-family ipv4 unicast
+        additional-paths receive
+        additional-paths send
+        additional-paths selection route-policy ADD-PATHS
+       !
+       address-family ipv6 unicast
+        additional-paths receive
+        additional-paths send
+        additional-paths selection route-policy ADD-PATHS
+       !
+      !
+    R1: |
+      router bgp 65000
+       address-family ipv4 unicast
+        additional-paths receive
+       !
+       address-family ipv6 unicast
+        additional-paths receive
+       !
+      !
+      do clear bgp 2.2.2.2
+      do clear bgp 2001:db8::2
+    R3: |
+      router bgp 65000
+       address-family ipv4
+        bgp additional-paths receive
+        neighbor 2.2.2.2 additional-paths receive
+       exit-address-family
+       address-family ipv6
+        bgp additional-paths receive
+        neighbor 2001:DB8::2 additional-paths receive
+       exit-address-family
+      !
+      do clear ip bgp 2.2.2.2
+      do clear bgp ipv6 unicast 2001:DB8::2
+  checks:
+    - type: cli
+      device: R1
+      command: show bgp neighbor 2.2.2.2
+      expect:
+        - contains: "Additional-paths operation: Receive"
+      describe: "R1 (XR): add-paths negotiated with the reflector"
+    - type: cli
+      device: R1
+      command: show bgp ipv4 unicast 203.0.113.0/24
+      expect:
+        - {regex: 'Paths: \(2 available'}
+        - {regex: 'Received Path ID [1-9]'}
+      describe: "R1 now knows both exits to 203.0.113.0/24 (the reflected one carries a path ID)"
+    - type: cli
+      device: R1
+      command: show bgp ipv6 unicast 2001:db8:ffff::/48
+      expect:
+        - {regex: 'Paths: \(2 available'}
+      describe: "…and both exits to 2001:db8:ffff::/48"
+    - type: cli
+      device: R3
+      command: show bgp ipv4 unicast neighbors 2.2.2.2
+      expect:
+        - contains: "Additional Paths receive capability: advertised and received"
+      describe: "R3 (XE): add-paths negotiated with the reflector"
+
+- id: pic
+  title: Pre-install the backup path (BGP PIC edge)
+  body: |
+    Knowing a second path is half the job. **BGP Prefix Independent
+    Convergence (PIC)** installs it in the RIB and FIB **as a backup**, ahead
+    of time. When the primary next hop dies, the forwarding plane switches to
+    the backup at once — for every prefix sharing that next hop, however many
+    there are (hence *prefix independent*) — and BGP cleans up afterwards.
+
+    - R1 (XR): select one backup path **and install it**.
+    - R3 (XE): install the backup paths it already has.
+
+    IPv4 and IPv6.
+  hints:
+    - "XR (R1): `route-policy PIC` → `set path-selection backup 1 install` → `end-policy`, then `additional-paths selection route-policy PIC` under both address families."
+    - "XE (R3): `bgp additional-paths install` under `address-family ipv4` and `address-family ipv6`."
+    - "XR: `show route 203.0.113.0/24` lists the second next hop as `BGP backup path`. XE: `show bgp ipv4 unicast 203.0.113.0/24` marks it `backup/repair`."
+  solution:
+    R1: |
+      route-policy PIC
+        set path-selection backup 1 install
+      end-policy
+      !
+      router bgp 65000
+       address-family ipv4 unicast
+        additional-paths selection route-policy PIC
+       !
+       address-family ipv6 unicast
+        additional-paths selection route-policy PIC
+       !
+      !
+    R3: |
+      router bgp 65000
+       address-family ipv4
+        bgp additional-paths install
+       exit-address-family
+       address-family ipv6
+        bgp additional-paths install
+       exit-address-family
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show route ipv4 203.0.113.0/24
+      expect:
+        - contains: BGP backup path
+      describe: "R1 (XR): 203.0.113.0/24 has a pre-installed BGP backup path"
+    - type: cli
+      device: R1
+      command: show route ipv6 2001:db8:ffff::/48
+      expect:
+        - contains: BGP backup path
+      describe: "R1 (XR): 2001:db8:ffff::/48 has a BGP backup path"
+    - type: cli
+      device: R3
+      command: show bgp ipv4 unicast 203.0.113.0/24
+      expect:
+        - contains: backup/repair
+      describe: "R3 (XE): the second path to 203.0.113.0/24 is installed as backup/repair"
+    - type: cli
+      device: R3
+      command: show bgp ipv6 unicast 2001:DB8:FFFF::/48
+      expect:
+        - contains: backup/repair
+      describe: "R3 (XE): …and for IPv6"
+
+- id: best-external
+  title: Keep the backup alive when policy hides it (best-external)
+  body: |
+    Now make **upstream A the primary exit** for the whole AS: on R3, set
+    local preference **200** on everything learned from R5.
+
+    Look what happens to the backups. R1 now prefers the internal path via R3
+    (local preference beats eBGP), and a router only advertises its **best**
+    path — so R1 **stops advertising** its upstream B path to the reflector.
+    R2 is left with one path; add-paths has nothing to add, and R3 loses its
+    backup:
+
+    ```
+    show bgp ipv4 unicast 203.0.113.0/24        ! on R2 and R3
+    ```
+
+    **Best-external** fixes it: an edge router keeps advertising its best
+    **external** path even when its overall best is internal. Enable it on
+    R1, and R3 gets its backup back.
+  hints:
+    - "R3 (XE): `route-map FROM-UPSTREAM-A permit 10` → `set local-preference 200`, attached `in` on 10.2.35.2 (IPv4) and 2001:DB8:2:35::2 (IPv6), then `clear ip bgp 10.2.35.2 soft in` and `clear bgp ipv6 unicast 2001:DB8:2:35::2 soft in`."
+    - "R1 (XR): `advertise best-external` under `router bgp 65000` → `address-family ipv4 unicast` (and IPv6). On IOS XE it's `bgp advertise-best-external`."
+    - "R2 should have two paths again; R3's path through R1 is marked `backup/repair`."
+  solution:
+    R3: |
+      route-map FROM-UPSTREAM-A permit 10
+       set local-preference 200
+      !
+      router bgp 65000
+       address-family ipv4
+        neighbor 10.2.35.2 route-map FROM-UPSTREAM-A in
+       exit-address-family
+       address-family ipv6
+        neighbor 2001:DB8:2:35::2 route-map FROM-UPSTREAM-A in
+       exit-address-family
+      !
+      do clear ip bgp 10.2.35.2 soft in
+      do clear bgp ipv6 unicast 2001:DB8:2:35::2 soft in
+    R1: |
+      router bgp 65000
+       address-family ipv4 unicast
+        advertise best-external
+       !
+       address-family ipv6 unicast
+        advertise best-external
+       !
+      !
+  checks:
+    - {type: route, device: R1, prefix: 203.0.113.0/24, protocol: B, via: 3.3.3.3, describe: "Upstream A is the primary: R1 exits via R3"}
+    - type: cli
+      device: R2
+      command: show bgp ipv4 unicast 203.0.113.0/24
+      expect:
+        - {regex: 'Paths: \(2 available'}
+      describe: "R2 has both paths again — R1 advertises its best external path"
+    - type: cli
+      device: R3
+      command: show bgp ipv4 unicast 203.0.113.0/24
+      expect:
+        - contains: backup/repair
+        - {regex: 'localpref 200, valid, external, best'}
+      describe: "R3 (XE): primary via upstream A, backup/repair via R1"
+    - type: cli
+      device: R1
+      command: show route ipv4 203.0.113.0/24
+      expect:
+        - contains: BGP backup path
+      describe: "R1 (XR): its own upstream B path is the installed backup"
+
+- id: failover
+  title: Fail the primary exit and watch the backup take over
+  body: |
+    Time to test it. Upstream A's link fails: **shut down R3's interface to
+    R5** (GigabitEthernet4).
+
+    R3 switches to the pre-installed path through R1 straight away; BGP then
+    withdraws upstream A's routes and every router converges on upstream B.
+    The customer's traffic to the anycast service keeps flowing.
+
+    (On a real platform the PIC switch happens in the hardware FIB in tens of
+    milliseconds. In this lab you'll see the result in the routing tables
+    and in an uninterrupted `ping` from H1.)
+  hints:
+    - "On R3: `interface GigabitEthernet4` → `shutdown`. Keep a `ping 203.0.113.1` running on H1 while you do it (`ping 203.0.113.1` without -c, Ctrl+C to stop)."
+    - "Afterwards: `show ip route 203.0.113.0` on R3 points to 1.1.1.1; R1 uses its own eBGP path to upstream B."
+  solution:
+    R3: |
+      interface GigabitEthernet4
+       shutdown
+      !
+  checks:
+    - {type: route, device: R3, prefix: 203.0.113.0/24, protocol: B, via: 1.1.1.1, describe: "R3 now reaches 203.0.113.0/24 through R1"}
+    - {type: route, device: R1, prefix: 203.0.113.0/24, protocol: B, via: 10.3.16.2, describe: "R1 uses its own path to upstream B"}
+    - {type: ping, from: H1, to: 203.0.113.1, count: 5, min_success: 80, describe: "The customer still reaches the anycast service (IPv4)"}
+    - {type: ping, from: H1, to: "2001:db8:ffff::1", count: 5, min_success: 80, describe: "…and over IPv6"}

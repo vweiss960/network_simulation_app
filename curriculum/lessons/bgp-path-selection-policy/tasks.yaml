@@ -1,0 +1,368 @@
+- id: local-preference
+  title: Prefer upstream A for all outbound traffic (local preference)
+  body: |
+    Everything from the BGP core lesson is in place. Start by reading the
+    best-path decision as it stands: the anycast prefix **203.0.113.0/24**
+    is announced by both upstreams. On R2 (XR) run
+
+    ```
+    show bgp ipv4 unicast 203.0.113.0/24 bestpath-compare
+    ```
+
+    Both paths tie on every attribute down to the **router ID**, so R2 picks
+    R1's path — and R1 and R3 each prefer their own eBGP path, because
+    **eBGP beats iBGP**.
+
+    Upstream A is the cheaper contract: AS 65000 should send **all** outbound
+    traffic through it. **Local preference** is the attribute for that: set
+    inside your AS, carried on every iBGP session, compared before AS path
+    length, highest wins (default 100).
+
+    On R3 (XE), set local preference **200** on everything learned from R5,
+    IPv4 and IPv6, and tag it with community **65000:200** while you're at it.
+    Then R1 — and the whole AS — exits through R3, even for prefixes R1 hears
+    directly from upstream B. (The community stays on R3 for now: IOS XE
+    doesn't send communities to its iBGP peers yet — the next task fixes
+    that.)
+  hints:
+    - "XE: `route-map FROM-UPSTREAM-A permit 10` → `set local-preference 200` → `set community 65000:200 additive`, then `neighbor 10.2.35.2 route-map FROM-UPSTREAM-A in` under `address-family ipv4` (and the IPv6 neighbor under `address-family ipv6`). `ip bgp-community new-format` shows communities as AS:NN."
+    - "IOS XE applies a new inbound policy only to updates it receives from now on: run `clear ip bgp 10.2.35.2 soft in` and `clear bgp ipv6 unicast 2001:DB8:2:35::2 soft in` (route refresh — the session stays up). IOS XR does this by itself when a policy changes."
+    - "`show bgp ipv4 unicast 203.0.113.0/24` on R1: the best path is now the internal one via 3.3.3.3 with localpref 200."
+  solution:
+    R3: |
+      ip bgp-community new-format
+      route-map FROM-UPSTREAM-A permit 10
+       set local-preference 200
+       set community 65000:200 additive
+      !
+      router bgp 65000
+       address-family ipv4
+        neighbor 10.2.35.2 route-map FROM-UPSTREAM-A in
+       exit-address-family
+       address-family ipv6
+        neighbor 2001:DB8:2:35::2 route-map FROM-UPSTREAM-A in
+       exit-address-family
+      !
+      do clear ip bgp 10.2.35.2 soft in
+      do clear bgp ipv6 unicast 2001:DB8:2:35::2 soft in
+  checks:
+    - {type: route, device: R1, prefix: 203.0.113.0/24, protocol: B, via: 3.3.3.3, describe: "R1 (XR) now reaches 203.0.113.0/24 through R3 instead of its own eBGP path"}
+    - {type: route, device: R1, prefix: "2001:db8:ffff::/48", protocol: B, via: "2001:db8::3", describe: "IPv6 too: R1 reaches 2001:db8:ffff::/48 through R3"}
+    - type: cli
+      device: R2
+      command: show bgp ipv4 unicast 198.51.100.0/24
+      expect:
+        - {regex: 'localpref 200'}
+      describe: "R2: upstream A's routes arrive with localpref 200"
+    - type: cli
+      device: R3
+      command: show bgp ipv4 unicast 198.51.100.0/24
+      expect:
+        - contains: "65000:200"
+      describe: "R3 (XE): upstream A's routes are tagged 65000:200"
+
+- id: no-transit
+  title: Stop being a transit AS (communities and outbound policy)
+  body: |
+    Right now AS 65000 advertises **everything** it learns to everyone —
+    including upstream A's routes to upstream B and vice versa. On R6:
+
+    ```
+    show bgp ipv4 unicast 5.5.5.5/32
+    ```
+
+    One of the paths is `65000 65200`: upstream B could send upstream A's
+    traffic through **you**, for free. A provider only advertises to its
+    upstreams **its own blocks and its customers' routes**.
+
+    Do it the scalable way — mark routes **where they enter** the AS, filter
+    on the mark **where they leave**:
+
+    1. **Tag customer routes** with community **65000:100** as they arrive:
+       on R1 from R4 (BGP customer), and on R3's redistributed static
+       customer.
+    2. **Outbound to each upstream**, allow only routes carrying 65000:100,
+       plus AS 65000's own blocks (100.64.0.0/16, 2001:db8:6500::/48).
+
+    Communities have to survive the trip across the AS: IOS XR sends them to
+    iBGP peers by default, **IOS XE doesn't** — R3 needs `send-community`
+    towards the route reflector, or R1 never sees the static customer's tag.
+  hints:
+    - "XR (R1): `community-set CUSTOMER` → `65000:100` → `end-set`; `prefix-set OWN-BLOCKS` → `100.64.0.0/16, 2001:db8:6500::/48` → `end-set`. A policy `FROM-CUSTOMER` (`set community (65000:100) additive` / `pass`) inbound from R4, and `TO-UPSTREAM` outbound to R6: `if community matches-any CUSTOMER then pass elseif destination in OWN-BLOCKS then pass else drop endif`."
+    - "XE (R3): `ip community-list standard CUSTOMER permit 65000:100`, prefix lists for the own blocks, `route-map TO-UPSTREAM` with one `permit` entry matching the community and one matching the prefix list (and a `-V6` twin). Add `set community 65000:100` to the STATIC-CUST route maps, `neighbor 2.2.2.2 send-community` (and the IPv6 one), then `clear ip bgp 10.2.35.2 soft out`."
+    - "Check on the upstreams: R6 `show bgp ipv4 unicast 5.5.5.5/32` must show only the direct `65200` path; R5 must still learn the customer's 192.0.2.0/24 from AS 65000."
+  solution:
+    R1: |
+      community-set CUSTOMER
+        65000:100
+      end-set
+      !
+      prefix-set OWN-BLOCKS
+        100.64.0.0/16,
+        2001:db8:6500::/48
+      end-set
+      !
+      route-policy FROM-CUSTOMER
+        set community (65000:100) additive
+        pass
+      end-policy
+      !
+      route-policy TO-UPSTREAM
+        if community matches-any CUSTOMER then
+          pass
+        elseif destination in OWN-BLOCKS then
+          pass
+        else
+          drop
+        endif
+      end-policy
+      !
+      router bgp 65000
+       neighbor 10.1.14.2
+        address-family ipv4 unicast
+         route-policy FROM-CUSTOMER in
+        !
+       !
+       neighbor 2001:db8:1:14::2
+        address-family ipv6 unicast
+         route-policy FROM-CUSTOMER in
+        !
+       !
+       neighbor 10.3.16.2
+        address-family ipv4 unicast
+         route-policy TO-UPSTREAM out
+        !
+       !
+       neighbor 2001:db8:3:16::2
+        address-family ipv6 unicast
+         route-policy TO-UPSTREAM out
+        !
+       !
+      !
+    R3: |
+      ip community-list standard CUSTOMER permit 65000:100
+      ip prefix-list OWN-BLOCKS seq 5 permit 100.64.0.0/16
+      ipv6 prefix-list OWN-BLOCKS-V6 seq 5 permit 2001:DB8:6500::/48
+      route-map TO-UPSTREAM permit 10
+       match community CUSTOMER
+      !
+      route-map TO-UPSTREAM permit 20
+       match ip address prefix-list OWN-BLOCKS
+      !
+      route-map TO-UPSTREAM-V6 permit 10
+       match community CUSTOMER
+      !
+      route-map TO-UPSTREAM-V6 permit 20
+       match ipv6 address prefix-list OWN-BLOCKS-V6
+      !
+      route-map STATIC-CUST permit 10
+       set community 65000:100
+      !
+      route-map STATIC-CUST-V6 permit 10
+       set community 65000:100
+      !
+      router bgp 65000
+       address-family ipv4
+        neighbor 2.2.2.2 send-community
+        neighbor 10.2.35.2 route-map TO-UPSTREAM out
+       exit-address-family
+       address-family ipv6
+        neighbor 2001:DB8::2 send-community
+        neighbor 2001:DB8:2:35::2 route-map TO-UPSTREAM-V6 out
+       exit-address-family
+      !
+      do clear ip bgp 10.2.35.2 soft out
+      do clear bgp ipv6 unicast 2001:DB8:2:35::2 soft out
+  checks:
+    - type: cli
+      device: R6
+      command: show bgp ipv4 unicast 5.5.5.5/32
+      expect:
+        - not_regex: '^\s+65000 65200'
+      describe: "Upstream B no longer learns upstream A's routes through AS 65000"
+    - type: cli
+      device: R5
+      command: show bgp ipv4 unicast 6.6.6.6/32
+      expect:
+        - not_regex: '^\s+65000 65300'
+      describe: "Upstream A no longer learns upstream B's routes through AS 65000"
+    - {type: route, device: R5, prefix: 192.0.2.0/24, protocol: B, via: 10.2.35.1, describe: "Upstream A still learns the BGP customer's 192.0.2.0/24 from R3"}
+    - {type: route, device: R6, prefix: 100.70.20.0/24, protocol: B, via: 10.3.16.1, describe: "Upstream B learns the static customer from R1 — its community crossed the AS (send-community)"}
+    - {type: route, device: R6, prefix: "2001:db8:6500::/48", protocol: B, describe: "Upstream B still learns AS 65000's own IPv6 block"}
+    - type: cli
+      device: R2
+      command: show bgp ipv4 unicast 198.51.100.0/24
+      expect:
+        - contains: "65000:200"
+      describe: "R2 now sees R3's tag 65000:200 too (send-community)"
+
+- id: prepend
+  title: Steer inbound traffic towards upstream A (AS-path prepending)
+  body: |
+    Local preference controls how traffic **leaves** your AS. Traffic coming
+    **in** is chosen by other networks' path selection — you can only
+    influence it with what you advertise.
+
+    The most common tool is **AS-path prepending**: repeat your own AS number
+    on the routes you send to the link you want used *less*. Other ASes see a
+    longer path and, all else equal, prefer the shorter one.
+
+    Make upstream B prefer reaching AS 65000 **through upstream A**: on R1,
+    prepend **65000 twice** on everything sent to R6 — while keeping the
+    no-transit filter. R6 then sees `65000 65000 65000` directly and
+    `65200 65000` via R5, and picks the shorter path.
+  hints:
+    - "XR can call one policy from another: `route-policy TO-UPSTREAM-B` → `apply TO-UPSTREAM` → `prepend as-path 65000 2` → `end-policy`. If the applied policy drops a route, it stays dropped."
+    - "Attach `TO-UPSTREAM-B out` to R6's IPv4 and IPv6 neighbors instead of `TO-UPSTREAM`."
+    - "On R6: `show bgp ipv4 unicast 100.64.0.0/16` — the best path is now via 10.9.56.1 (R5)."
+  solution:
+    R1: |
+      route-policy TO-UPSTREAM-B
+        apply TO-UPSTREAM
+        prepend as-path 65000 2
+      end-policy
+      !
+      router bgp 65000
+       neighbor 10.3.16.2
+        address-family ipv4 unicast
+         route-policy TO-UPSTREAM-B out
+        !
+       !
+       neighbor 2001:db8:3:16::2
+        address-family ipv6 unicast
+         route-policy TO-UPSTREAM-B out
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R6
+      command: show bgp ipv4 unicast 100.64.0.0/16
+      expect:
+        - regex: '65000 65000 65000'
+      describe: "R6 (XE) receives AS 65000's block from R1 with the AS path prepended"
+    - {type: route, device: R6, prefix: 100.64.0.0/16, protocol: B, via: 10.9.56.1, describe: "Upstream B now reaches 100.64.0.0/16 through upstream A"}
+    - {type: route, device: R6, prefix: 192.0.2.0/24, protocol: B, via: 10.9.56.1, describe: "…and the customer's 192.0.2.0/24 too"}
+
+- id: as-path-policy
+  title: Reach upstream B's own networks directly (AS-path match)
+  body: |
+    Local preference 200 sends **everything** through upstream A — even
+    upstream B's own prefixes, which then cross A and B's peering instead of
+    using your direct link to B. Check on R1:
+
+    ```
+    show bgp ipv4 unicast 6.6.6.6/32
+    ```
+
+    Refine the policy on R1: routes **originated by AS 65300 itself** (AS path
+    exactly `65300`) get local preference **300** when learned from R6;
+    everything else from R6 stays at 100. Tag all of R6's routes with
+    community **65000:300** to mirror R3.
+
+    Note what else matches: AS 65300 also originates the **anycast**
+    203.0.113.0/24 — so it moves to upstream B too. Matching on the AS path
+    matches *every* route with that path.
+  hints:
+    - "XR: `as-path-set ORIGINATED-BY-B` → `ios-regex '^65300$'` → `end-set`, then `route-policy FROM-UPSTREAM-B`: `if as-path in ORIGINATED-BY-B then set local-preference 300 endif`, `set community (65000:300) additive`, `pass`."
+    - "Apply it `in` on R6's IPv4 and IPv6 neighbors — it replaces PASS. XR re-applies inbound policy changes by itself."
+    - "R2: `show bgp ipv4 unicast 6.6.6.6/32` — localpref 300, community 65000:300, via 1.1.1.1. 198.51.100.0/24 still goes via 3.3.3.3."
+  solution:
+    R1: |
+      as-path-set ORIGINATED-BY-B
+        ios-regex '^65300$'
+      end-set
+      !
+      route-policy FROM-UPSTREAM-B
+        if as-path in ORIGINATED-BY-B then
+          set local-preference 300
+        endif
+        set community (65000:300) additive
+        pass
+      end-policy
+      !
+      router bgp 65000
+       neighbor 10.3.16.2
+        address-family ipv4 unicast
+         route-policy FROM-UPSTREAM-B in
+        !
+       !
+       neighbor 2001:db8:3:16::2
+        address-family ipv6 unicast
+         route-policy FROM-UPSTREAM-B in
+        !
+       !
+      !
+  checks:
+    - {type: route, device: R1, prefix: 6.6.6.6/32, protocol: B, via: 10.3.16.2, describe: "R1 reaches upstream B's 6.6.6.6/32 directly"}
+    - {type: route, device: R2, prefix: 6.6.6.6/32, protocol: B, via: 1.1.1.1, describe: "…and so does the whole AS (R2 via R1)"}
+    - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: B, via: 3.3.3.3, describe: "Everything else still prefers upstream A (198.51.100.0/24 via R3)"}
+    - type: cli
+      device: R2
+      command: show bgp ipv6 unicast 2001:db8:b6::/48
+      expect:
+        - regex: 'localpref 300'
+        - contains: "65000:300"
+      describe: "IPv6: 2001:db8:b6::/48 has localpref 300 and community 65000:300"
+
+- id: igp-policy
+  title: Use routing policy in the IGP too (IS-IS redistribution)
+  body: |
+    Route policies and route maps aren't only for BGP. The operations team
+    wants to reach the **customer and upstream link addresses** from anywhere
+    in the core for troubleshooting — `next-hop-self` means the IGP doesn't
+    carry them today.
+
+    Redistribute **connected** routes into IS-IS level 2 on both edge routers
+    — but only the edge links, through a policy, and **tag** them **100** so
+    they're recognisable:
+
+    - R1 (XR): 10.1.14.0/30 (customer) and 10.3.16.0/30 (upstream B).
+    - R3 (XE): 10.2.35.0/30 (upstream A).
+
+    Without the filter, a router would also redistribute its management
+    subnet and every other connected network into the core.
+  hints:
+    - "XR: `route-policy PE-CE-LINKS` → `if destination in (10.1.14.0/30, 10.3.16.0/30) then set tag 100 pass else drop endif`; then `router isis CORE` → `address-family ipv4 unicast` → `redistribute connected level-2 route-policy PE-CE-LINKS`."
+    - "XE: a prefix list for 10.2.35.0/30, `route-map PE-CE-LINKS permit 10` matching it with `set tag 100`, then `redistribute connected level-2 route-map PE-CE-LINKS` under `router isis CORE`."
+    - "Tags need wide metrics — this core already has them. `show route 10.2.35.0/30` on R2 shows `Tag 100`."
+  solution:
+    R1: |
+      route-policy PE-CE-LINKS
+        if destination in (10.1.14.0/30, 10.3.16.0/30) then
+          set tag 100
+          pass
+        else
+          drop
+        endif
+      end-policy
+      !
+      router isis CORE
+       address-family ipv4 unicast
+        redistribute connected level-2 route-policy PE-CE-LINKS
+       !
+      !
+    R3: |
+      ip prefix-list PE-CE-LINKS seq 5 permit 10.2.35.0/30
+      route-map PE-CE-LINKS permit 10
+       match ip address prefix-list PE-CE-LINKS
+       set tag 100
+      !
+      router isis CORE
+       redistribute connected level-2 route-map PE-CE-LINKS
+      !
+  checks:
+    - {type: route, device: R2, prefix: 10.1.14.0/30, protocol: i L2, describe: "R2 learns R1's customer link 10.1.14.0/30 in IS-IS"}
+    - {type: route, device: R2, prefix: 10.2.35.0/30, protocol: i L2, describe: "R2 learns R3's upstream link 10.2.35.0/30 in IS-IS"}
+    - type: cli
+      device: R2
+      command: show route ipv4 10.2.35.0/30
+      expect:
+        - regex: 'Tag 100'
+      describe: "R2: the redistributed link carries tag 100"
+    - type: cli
+      device: R2
+      command: show route ipv4 isis
+      expect:
+        - not_regex: '172\.(1[6-9]|2\d|3[01])\.'
+      describe: "No management subnet leaked into IS-IS"

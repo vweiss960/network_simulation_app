@@ -1,0 +1,18 @@
+slug: bgp-path-selection-policy
+title: BGP path selection, attributes and routing policy
+summary: >-
+  AS 65000 is built; now decide which paths win. Walk the BGP best-path
+  algorithm, then steer outbound traffic with local preference, inbound traffic
+  with AS-path prepending, and stop being a transit AS with communities —
+  written as IOS XR route policies and IOS XE route maps, for BGP and IS-IS.
+  Covers CCNP SPCOR 2.3, 2.4 d and e, and 2.5.
+level: advanced
+track: service_provider
+topic: Routing
+tags: [bgp, path-selection, local-preference, as-path, communities, rpl, route-maps, iosxr, iosxe, ccnp-spcor]
+minutes: 120
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

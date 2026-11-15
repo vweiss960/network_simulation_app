@@ -1,0 +1,17 @@
+slug: bgp-sp-core
+title: "BGP in the service provider core: iBGP, eBGP and address families"
+summary: >-
+  Build BGP for AS 65000 on IOS XR and IOS XE: iBGP between loopbacks through a
+  route reflector, eBGP to a customer and two upstream providers, IPv4 and IPv6
+  address families, originating the provider's own blocks and redistributing a
+  static customer. Covers CCNP SPCOR 2.4 a, b, c and f.
+level: advanced
+track: service_provider
+topic: Routing
+tags: [bgp, ibgp, ebgp, route-reflector, ipv6, iosxr, iosxe, ccnp-spcor]
+minutes: 120
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

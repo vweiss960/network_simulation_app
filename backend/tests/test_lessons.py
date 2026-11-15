@@ -54,6 +54,16 @@ def test_bundled_isis_pack_is_valid(db):
                                            "metrics", "end-to-end"]
 
 
+@pytest.mark.parametrize("slug", ["bgp-sp-core", "bgp-path-selection-policy", "bgp-addpaths-pic"])
+def test_bundled_bgp_packs_are_valid(db, slug):
+    meta, topo, tasks, content = svc.read_dir(PACK.parent / slug)
+    assert svc.validate(svc.normalize_meta(meta), topo, tasks, content) == []
+    l = svc.save_lesson(db, meta, topo, tasks, content)
+    assert l.level == "advanced" and "bgp" in l.tags
+    assert svc.topology_summary(l.topology_yaml) == "6 routers · 2 hosts"
+    assert len(svc.content_sections(l.content_md)) >= 5
+
+
 def test_seed_updates_newer_version_unless_edited(db, tmp_path):
     root = tmp_path / "curriculum"
     d = root / "lessons" / "x"

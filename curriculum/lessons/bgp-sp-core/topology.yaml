@@ -1,0 +1,399 @@
+name: BGP in the service provider core
+description: >-
+  AS 65000 is a three-router IS-IS core (two XRd, one CSR 1000v) with R2 as the
+  route reflector. A customer (AS 65100) hangs off R1; two upstream providers
+  (AS 65200, AS 65300) connect at R3 and R1 and peer with each other.
+nodes:
+  - name: H1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 330]
+    startup_config: |
+      sysctl -w net.ipv6.conf.all.disable_ipv6=0
+      sysctl -w net.ipv6.conf.eth1.disable_ipv6=0
+      ip link set eth1 up
+      ip addr add 192.0.2.10/24 dev eth1
+      ip -6 addr add 2001:db8:c1:4::10/64 dev eth1 nodad
+      ip route add 0.0.0.0/1 via 192.0.2.1
+      ip route add 128.0.0.0/1 via 192.0.2.1
+      ip -6 route add 2000::/3 via 2001:db8:c1:4::1
+  - name: R4
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 4
+    position: [220, 330]
+    notes: Customer edge, AS 65100 — preconfigured.
+    startup_config: |
+      interface Loopback0
+       ip address 4.4.4.4 255.255.255.255
+      !
+      interface GigabitEthernet2
+       description to R1 (AS 65000)
+       ip address 10.1.14.2 255.255.255.252
+       ipv6 address 2001:DB8:1:14::2/64
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description customer LAN (H1)
+       ip address 192.0.2.1 255.255.255.0
+       ipv6 address 2001:DB8:C1:4::1/64
+       no shutdown
+      !
+      ipv6 route 2001:DB8:C1::/48 Null0
+      !
+      router bgp 65100
+       bgp router-id 4.4.4.4
+       bgp log-neighbor-changes
+       no bgp default ipv4-unicast
+       neighbor 10.1.14.1 remote-as 65000
+       neighbor 2001:DB8:1:14::1 remote-as 65000
+       address-family ipv4
+        network 192.0.2.0
+        neighbor 10.1.14.1 activate
+       exit-address-family
+       address-family ipv6
+        network 2001:DB8:C1::/48
+        neighbor 2001:DB8:1:14::1 activate
+       exit-address-family
+      !
+  - name: R1
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [440, 330]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 1.1.1.1 255.255.255.255
+       ipv6 address 2001:db8::1/128
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R2 (core)
+       ipv4 address 10.0.12.1 255.255.255.252
+       ipv6 address 2001:db8:0:12::1/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R4 (customer, AS 65100)
+       ipv4 address 10.1.14.1 255.255.255.252
+       ipv6 address 2001:db8:1:14::1/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description to R3 (core)
+       ipv4 address 10.0.13.1 255.255.255.252
+       ipv6 address 2001:db8:0:13::1/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/3
+       description to R6 (upstream B, AS 65300)
+       ipv4 address 10.3.16.1 255.255.255.252
+       ipv6 address 2001:db8:3:16::1/64
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0000.0000.0000.0001.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/2
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+      !
+  - name: R2
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [640, 110]
+    notes: Route reflector for AS 65000.
+    startup_config: |
+      interface Loopback0
+       ipv4 address 2.2.2.2 255.255.255.255
+       ipv6 address 2001:db8::2/128
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R1 (core)
+       ipv4 address 10.0.12.2 255.255.255.252
+       ipv6 address 2001:db8:0:12::2/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R3 (core)
+       ipv4 address 10.0.23.1 255.255.255.252
+       ipv6 address 2001:db8:0:23::1/64
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0000.0000.0000.0002.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+      !
+  - name: R3
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 4
+    position: [840, 330]
+    startup_config: |
+      interface Loopback0
+       ip address 3.3.3.3 255.255.255.255
+       ipv6 address 2001:DB8::3/128
+      !
+      interface GigabitEthernet2
+       description to R2 (core)
+       ip address 10.0.23.2 255.255.255.252
+       ipv6 address 2001:DB8:0:23::2/64
+       ip router isis CORE
+       ipv6 router isis CORE
+       isis network point-to-point
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description to R1 (core)
+       ip address 10.0.13.2 255.255.255.252
+       ipv6 address 2001:DB8:0:13::2/64
+       ip router isis CORE
+       ipv6 router isis CORE
+       isis network point-to-point
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description to R5 (upstream A, AS 65200)
+       ip address 10.2.35.1 255.255.255.252
+       ipv6 address 2001:DB8:2:35::1/64
+       no shutdown
+      !
+      router isis CORE
+       net 49.0000.0000.0000.0003.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+       address-family ipv6
+        multi-topology
+       exit-address-family
+      !
+  - name: R5
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [1060, 330]
+    notes: Upstream provider A, AS 65200 — preconfigured.
+    startup_config: |
+      interface Loopback0
+       ipv4 address 5.5.5.5 255.255.255.255
+       ipv6 address 2001:db8:a5::5/128
+      !
+      interface Loopback1
+       description anycast service, also announced by AS 65300
+       ipv4 address 203.0.113.1 255.255.255.255
+       ipv6 address 2001:db8:ffff::1/128
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R3 (AS 65000)
+       ipv4 address 10.2.35.2 255.255.255.252
+       ipv6 address 2001:db8:2:35::2/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description server LAN (H2)
+       ipv4 address 198.51.100.1 255.255.255.0
+       ipv6 address 2001:db8:a5:5::1/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description to R6 (AS 65300)
+       ipv4 address 10.9.56.1 255.255.255.252
+       ipv6 address 2001:db8:9:56::1/64
+       no shutdown
+      !
+      router static
+       address-family ipv4 unicast
+        203.0.113.0/24 Null0
+       !
+       address-family ipv6 unicast
+        2001:db8:a5::/48 Null0
+        2001:db8:ffff::/48 Null0
+       !
+      !
+      route-policy PASS
+        pass
+      end-policy
+      !
+      router bgp 65200
+       bgp router-id 5.5.5.5
+       address-family ipv4 unicast
+        network 5.5.5.5/32
+        network 198.51.100.0/24
+        network 203.0.113.0/24
+       !
+       address-family ipv6 unicast
+        network 2001:db8:a5::/48
+        network 2001:db8:ffff::/48
+       !
+       neighbor 10.2.35.1
+        remote-as 65000
+        address-family ipv4 unicast
+         route-policy PASS in
+         route-policy PASS out
+        !
+       !
+       neighbor 2001:db8:2:35::1
+        remote-as 65000
+        address-family ipv6 unicast
+         route-policy PASS in
+         route-policy PASS out
+        !
+       !
+       neighbor 10.9.56.2
+        remote-as 65300
+        address-family ipv4 unicast
+         route-policy PASS in
+         route-policy PASS out
+        !
+       !
+       neighbor 2001:db8:9:56::2
+        remote-as 65300
+        address-family ipv6 unicast
+         route-policy PASS in
+         route-policy PASS out
+        !
+       !
+      !
+  - name: R6
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 4
+    position: [640, 520]
+    notes: Upstream provider B, AS 65300 — preconfigured.
+    startup_config: |
+      interface Loopback0
+       ip address 6.6.6.6 255.255.255.255
+       ipv6 address 2001:DB8:B6::6/128
+      !
+      interface Loopback1
+       description anycast service, also announced by AS 65200
+       ip address 203.0.113.1 255.255.255.255
+       ipv6 address 2001:DB8:FFFF::1/128
+      !
+      interface GigabitEthernet2
+       description to R1 (AS 65000)
+       ip address 10.3.16.2 255.255.255.252
+       ipv6 address 2001:DB8:3:16::2/64
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description to R5 (AS 65200)
+       ip address 10.9.56.2 255.255.255.252
+       ipv6 address 2001:DB8:9:56::2/64
+       no shutdown
+      !
+      ip route 203.0.113.0 255.255.255.0 Null0
+      ipv6 route 2001:DB8:B6::/48 Null0
+      ipv6 route 2001:DB8:FFFF::/48 Null0
+      !
+      router bgp 65300
+       bgp router-id 6.6.6.6
+       bgp log-neighbor-changes
+       no bgp default ipv4-unicast
+       neighbor 10.3.16.1 remote-as 65000
+       neighbor 10.9.56.1 remote-as 65200
+       neighbor 2001:DB8:3:16::1 remote-as 65000
+       neighbor 2001:DB8:9:56::1 remote-as 65200
+       address-family ipv4
+        network 6.6.6.6 mask 255.255.255.255
+        network 203.0.113.0
+        neighbor 10.3.16.1 activate
+        neighbor 10.9.56.1 activate
+       exit-address-family
+       address-family ipv6
+        network 2001:DB8:B6::/48
+        network 2001:DB8:FFFF::/48
+        neighbor 2001:DB8:3:16::1 activate
+        neighbor 2001:DB8:9:56::1 activate
+       exit-address-family
+      !
+  - name: H2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1240, 330]
+    startup_config: |
+      sysctl -w net.ipv6.conf.all.disable_ipv6=0
+      sysctl -w net.ipv6.conf.eth1.disable_ipv6=0
+      ip link set eth1 up
+      ip addr add 198.51.100.10/24 dev eth1
+      ip -6 addr add 2001:db8:a5:5::10/64 dev eth1 nodad
+      ip route add 0.0.0.0/1 via 198.51.100.1
+      ip route add 128.0.0.0/1 via 198.51.100.1
+      ip -6 route add 2000::/3 via 2001:db8:a5:5::1
+links:
+  - [H1, eth1, R4, GigabitEthernet3]
+  - [R4, GigabitEthernet2, R1, GigabitEthernet0/0/0/1, "eBGP · customer"]
+  - [R1, GigabitEthernet0/0/0/0, R2, GigabitEthernet0/0/0/0, "IS-IS"]
+  - [R2, GigabitEthernet0/0/0/1, R3, GigabitEthernet2, "IS-IS"]
+  - [R1, GigabitEthernet0/0/0/2, R3, GigabitEthernet3, "IS-IS"]
+  - [R3, GigabitEthernet4, R5, GigabitEthernet0/0/0/0, "eBGP · upstream A"]
+  - [R1, GigabitEthernet0/0/0/3, R6, GigabitEthernet2, "eBGP · upstream B"]
+  - [R5, GigabitEthernet0/0/0/2, R6, GigabitEthernet3, "eBGP"]
+  - [R5, GigabitEthernet0/0/0/1, H2, eth1]
+annotations:
+  - {id: cust, type: group, x: 0, y: 220, w: 380, h: 240, text: "CUSTOMER · AS 65100", color: orange, locked: true}
+  - {id: core, type: group, x: 400, y: 40, w: 540, h: 420, text: "AS 65000 · IS-IS core · R2 = route reflector", color: blue, locked: true}
+  - {id: upA, type: group, x: 960, y: 220, w: 380, h: 240, text: "UPSTREAM A · AS 65200", color: teal, locked: true}
+  - {id: upB, type: group, x: 560, y: 480, w: 260, h: 190, text: "UPSTREAM B · AS 65300", color: purple, locked: true}
+  - {id: os, type: text, x: 960, y: 490, w: 380, h: 40, text: "You configure R1, R2 (XR) and R3 (XE)", color: gray, locked: true}

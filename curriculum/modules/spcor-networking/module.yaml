@@ -1,15 +1,17 @@
 slug: spcor-networking
-title: "Service Provider Networking: IS-IS and OSPF"
+title: "Service Provider Networking: IS-IS, OSPF and BGP"
 summary: >-
-  The link-state IGPs of a service provider network, following section 2.0
+  The routing protocols of a service provider network, following section 2.0
   (Networking) of the CCNP Service Provider Core (SPCOR) blueprint: IS-IS and
-  OSPF for IPv4 and IPv6, built and verified on IOS XR and IOS XE side by side.
+  OSPF as the IGP, then BGP — iBGP and eBGP, path selection and routing
+  policy, additional paths and PIC — for IPv4 and IPv6, built and verified on
+  IOS XR and IOS XE side by side.
 level: intermediate
 track: service_provider
 blueprint: "CCNP SPCOR 350-501 · 2.0 Networking"
-tags: [ccnp-spcor, isis, ospf, ipv6, iosxr, iosxe]
+tags: [ccnp-spcor, isis, ospf, bgp, ipv6, iosxr, iosxe]
 status: published
-version: "1.0"
+version: "1.1"
 author: Phanero Labs
 lessons:
   - lesson: isis-sp-levels-multitopology
@@ -28,3 +30,25 @@ lessons:
       - 2.2.b Route advertisement
       - 2.2.c Multiarea (addressing and types)
       - 2.2.d Metrics
+  - lesson: bgp-sp-core
+    section: "2.4"
+    title: Implement BGP (v4 and v6 for IBGP and EBGP)
+    objectives:
+      - 2.4.a Neighbors
+      - 2.4.b Prefix advertisement
+      - 2.4.c Address family
+      - 2.4.f Redistribution
+  - lesson: bgp-path-selection-policy
+    section: "2.3 · 2.5"
+    title: BGP path selection, attributes and routing policy
+    objectives:
+      - 2.3 Describe BGP path selection algorithm
+      - 2.4.d Path selection
+      - 2.4.e Attributes
+      - 2.5 Implement routing policy language and route maps (BGP, OSPF, IS-IS)
+  - lesson: bgp-addpaths-pic
+    section: "2.4"
+    title: "Implement BGP: additional paths and PIC"
+    objectives:
+      - 2.4.g Additional Paths
+      - 2.4.h PIC

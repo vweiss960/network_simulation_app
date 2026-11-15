@@ -88,7 +88,7 @@ export default function ModulePage() {
           <section className="rounded-xl bg-white border border-slate-200 shadow-sm p-5">
             <h2 className="text-[16px] font-semibold text-slate-900 mb-3">Lessons</h2>
             <ol className="relative">
-              {m.items.map((it, i) => <LessonRow key={it.lesson + i} it={it} last={i === m.items.length - 1}
+              {m.items.map((it, i) => <LessonRow key={it.lesson + i} it={it} n={i + 1} last={i === m.items.length - 1}
                 current={it.lesson_id != null && it.lesson_id === m.next_lesson_id} onOpen={openLesson} />)}
               {m.items.length === 0 && <li className="text-sm text-slate-500">No lessons in this module yet.</li>}
             </ol>
@@ -146,7 +146,7 @@ export default function ModulePage() {
   );
 }
 
-function LessonRow({ it, last, current, onOpen }: { it: Item; last: boolean; current: boolean; onOpen: (id: number) => void }) {
+function LessonRow({ it, n, last, current, onOpen }: { it: Item; n: number; last: boolean; current: boolean; onOpen: (id: number) => void }) {
   const st = it.status;
   const done = st.state === 'completed';
   const missing = st.state === 'not_installed';
@@ -155,7 +155,7 @@ function LessonRow({ it, last, current, onOpen }: { it: Item; last: boolean; cur
       {!last && <span className={`absolute left-[15px] top-8 bottom-0 w-0.5 ${done ? 'bg-emerald-300' : 'bg-slate-200'}`} />}
       <span className={`relative z-[1] w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-[12px] font-bold
         ${done ? 'bg-emerald-500 text-white' : current ? 'bg-blue-700 text-white' : 'bg-white border-2 border-slate-300 text-slate-500'}`}>
-        {done ? <Check size={15} strokeWidth={3} /> : (it.section || '•')}
+        {done ? <Check size={15} strokeWidth={3} /> : n}
       </span>
       <div className={`flex-1 min-w-0 rounded-lg border p-3.5 ${current ? 'border-blue-300 bg-blue-50/40' : 'border-slate-200'}`}>
         <div className="flex flex-wrap items-start justify-between gap-2">
