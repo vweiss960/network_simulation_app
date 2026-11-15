@@ -13,3 +13,4 @@ from app.models.config_snapshot import ConfigSnapshot  # noqa: F401
 from app.models.agent_action import AgentAction  # noqa: F401
 from app.models.agent_conversation import AgentConversation  # noqa: F401
 from app.models.lesson import Lesson, LessonAttempt  # noqa: F401
+from app.models.module import Module  # noqa: F401

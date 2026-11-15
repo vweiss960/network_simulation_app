@@ -1,0 +1,30 @@
+slug: spcor-networking
+title: "Service Provider Networking: IS-IS and OSPF"
+summary: >-
+  The link-state IGPs of a service provider network, following section 2.0
+  (Networking) of the CCNP Service Provider Core (SPCOR) blueprint: IS-IS and
+  OSPF for IPv4 and IPv6, built and verified on IOS XR and IOS XE side by side.
+level: intermediate
+track: service_provider
+blueprint: "CCNP SPCOR 350-501 · 2.0 Networking"
+tags: [ccnp-spcor, isis, ospf, ipv6, iosxr, iosxe]
+status: published
+version: "1.0"
+author: Phanero Labs
+lessons:
+  - lesson: isis-sp-levels-multitopology
+    section: "2.1"
+    title: Implement IS-IS (IPv4 and IPv6)
+    objectives:
+      - 2.1.a Route advertisement
+      - 2.1.b Area addressing
+      - 2.1.c Multitopology
+      - 2.1.d Metrics
+  - lesson: ospf-xr-multiarea-area-types
+    section: "2.2"
+    title: Implement OSPF (v2 and v3)
+    objectives:
+      - 2.2.a Neighbor adjacency
+      - 2.2.b Route advertisement
+      - 2.2.c Multiarea (addressing and types)
+      - 2.2.d Metrics

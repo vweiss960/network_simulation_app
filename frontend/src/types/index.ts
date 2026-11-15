@@ -79,6 +79,27 @@ export interface LessonDetail extends LessonSummary {
   topology_yaml: string; topology: LessonTopology; tasks: (PublicTask | LessonTask)[]; content_md: string; sections: LessonSection[];
   requires: { kind: string; label: string; image: string; devices: string[]; ready: boolean }[];
   authoring_topology_id: number | null; can_edit: boolean;
+  modules: { id: number; slug: string; title: string; section: string }[];
+}
+
+// --- Modules: ordered lessons around one topic (e.g. a blueprint section) ---------
+export interface ModuleItem { lesson: string; section: string; title: string; objectives: string[] }
+export type ModuleItemState = 'not_installed' | 'not_started' | 'in_progress' | 'completed';
+export interface ModuleMeta {
+  slug: string; title: string; summary: string; level: LessonLevel; track: LessonTrack; blueprint: string;
+  tags: string[]; status: 'draft' | 'published'; version: string; author: string;
+}
+export interface ModuleSummary extends ModuleMeta {
+  id: number; lesson_count: number; completed: number; minutes: number; next_lesson_id: number | null;
+  updated_at: string | null;
+}
+export interface ModuleDetail extends ModuleSummary {
+  overview_md: string; sections: LessonSection[]; can_edit: boolean;
+  items: (ModuleItem & {
+    lesson_id: number | null; lesson_title: string; lesson_summary: string; level: LessonLevel | null;
+    minutes: number | null; task_count: number; topology_summary: string;
+    status: { state: ModuleItemState; passed?: number; total?: number; outdated?: boolean };
+  })[];
 }
 
 export interface Device {

@@ -12,11 +12,15 @@ import Workspace from './components/workspace/Workspace';
 import LessonsPage from './components/pages/LessonsPage';
 import LessonPage from './components/pages/LessonPage';
 import LessonEditor from './components/pages/LessonEditor';
+import ModulesPage from './components/pages/ModulesPage';
+import ModulePage from './components/pages/ModulePage';
+import ModuleEditor from './components/pages/ModuleEditor';
 import UserManagementPanel from './components/panels/UserManagementPanel';
 
 // Primary destinations on the left; configuration pages on the right.
 const NAV_MAIN: { page: Page; label: string; also?: Page[] }[] = [
   { page: 'labs', label: 'Labs' },
+  { page: 'modules', label: 'Modules', also: ['module', 'moduleEdit'] },
   { page: 'lessons', label: 'Lessons', also: ['lesson', 'lessonEdit'] },
 ];
 const NAV_SETUP: { page: Page; label: string }[] = [{ page: 'templates', label: 'Templates' }, { page: 'images', label: 'Images' }];
@@ -61,6 +65,9 @@ export default function App() {
           : page === 'lessons' ? <LessonsPage />
           : page === 'lesson' ? <LessonPage />
           : page === 'lessonEdit' ? <LessonEditor />
+          : page === 'modules' ? <ModulesPage />
+          : page === 'module' ? <ModulePage />
+          : page === 'moduleEdit' ? <ModuleEditor />
           : <LabsHome />}
       </div>
     </div>

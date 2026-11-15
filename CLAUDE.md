@@ -203,7 +203,7 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   configs, annotations, `enabled: false` devices) + tasks graded by checks +
   markdown content, with level, track (enterprise / service_provider / …),
   topic, tags, `ai_policy` (teach | hints | off) and `hints_mode` (open |
-  on_request | none). Modules / curricula don't exist yet.
+  on_request | none). Lessons are grouped into modules (below); curricula don't exist yet.
 - Packs: a zip of `lesson.yaml`, `topology.yaml`, `tasks.yaml`, `content.md`
   (`## ` sections = readings). Import validates everything (check devices
   exist, regexes compile…); a duplicate slug → 409 unless `mode=replace|copy`.
@@ -231,6 +231,19 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   `--authoring` uses the lesson's authoring lab instead of the token user's attempt; `--keep`).
 - Attempts record `lesson_version`; when the bundled lesson gets a newer version the
   attempt is `outdated` and the UI offers Restart (its lab was built from the old topology).
+
+### Modules (`models/module.py`, `services/modules.py`, `routes/modules.py`)
+- A module = ordered items `{lesson: slug, section, title, objectives}` (a
+  blueprint section per lesson) + `overview.md` + level / track / `blueprint`.
+  Lessons are referenced by **slug**; a lesson can be in several modules and
+  still runs on its own (lesson detail lists `modules` → "Part of").
+- Progress is derived per user from lesson attempts (a lesson completed once
+  stays completed after a restart); `next_lesson_id` drives "Continue".
+- Packs: `module.yaml` (+ `lessons:` items), `overview.md`, and on export
+  `lessons/<slug>/…` lesson packs, so a module imports anywhere. Import
+  installs missing lessons and newer versions of lessons not edited in the
+  app, keeps the rest. Bundled: `curriculum/modules/*/` (seeded after lessons).
+- Frontend: `pages/ModulesPage`, `ModulePage`, `ModuleEditor` (nav "Modules").
 
 ### Lab agent (`services/lab_agent.py`, `services/llm.py`, `routes/agent.py`)
 - Chat on the canvas (Ask AI bar → `components/agent/AIChatPanel`), streamed as

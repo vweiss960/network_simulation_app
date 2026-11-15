@@ -65,6 +65,9 @@ def deploy_estimate(topology_id: int, db: Session = Depends(get_db)):
 
 @router.get("/status")
 def lab_status(topology_id: int, db: Session = Depends(get_db)):
+    from app.models.topology import Topology
+    if not db.get(Topology, topology_id):            # deleted while a page still polls it
+        raise HTTPException(404, "Topology not found")
     return get_deployment_state(db, topology_id)
 
 

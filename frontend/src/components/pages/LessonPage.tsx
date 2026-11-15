@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Bot, Check, ChevronDown, ChevronRight, Download, FileCode2, Loader2, Pencil, Play, X } from 'lucide-react';
+import { ArrowLeft, Bot, Check, ChevronDown, ChevronRight, Download, FileCode2, Layers, Loader2, Pencil, Play, X } from 'lucide-react';
 import { api, downloadLesson } from '../../utils/api';
 import { useLabStore } from '../../stores/useLabStore';
 import type { LessonDetail, PublicTask } from '../../types';
@@ -16,7 +16,7 @@ import { AI_HELP, AI_LABEL, DraftBadge, LevelBadge, TRACK_LABEL, TrackBadge } fr
 const HINTS_TEXT = { open: 'Hints are shown with every task.', on_request: 'Hints are revealed one at a time when you ask.', none: 'No hints or solutions.' } as const;
 
 export default function LessonPage() {
-  const { lessonId, setPage, editLesson, openTopology } = useLabStore();
+  const { lessonId, setPage, editLesson, openTopology, openModule } = useLabStore();
   const [l, setL] = useState<LessonDetail | null>(null);
   const [error, setError] = useState('');
   const [starting, setStarting] = useState(false);
@@ -199,6 +199,20 @@ export default function LessonPage() {
 
         {/* Side */}
         <div className="space-y-4">
+          {l.modules?.length > 0 && (
+            <Side title="Part of">
+              {l.modules.map(m => (
+                <button key={m.id} onClick={() => openModule(m.id)}
+                  className="w-full flex items-start gap-2 text-left px-2 py-1.5 -mx-2 rounded-md hover:bg-slate-50">
+                  <Layers size={15} className="text-indigo-600 shrink-0 mt-0.5" />
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-blue-700 leading-snug">{m.title}</span>
+                    {m.section && <span className="block text-[11.5px] text-slate-500">Section {m.section}</span>}
+                  </span>
+                </button>
+              ))}
+            </Side>
+          )}
           <Side title="AI assistance">
             <div className="flex p-1 rounded-lg bg-slate-100 mb-2">
               {(['teach', 'hints', 'off'] as const).map(p => (

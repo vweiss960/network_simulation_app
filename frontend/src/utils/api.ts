@@ -1,5 +1,6 @@
 import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology, Annotation,
-  LessonAttempt, LessonDetail, LessonSection, LessonSummary, LessonTask, PublicTask, TaskResult } from '../types';
+  LessonAttempt, LessonDetail, LessonSection, LessonSummary, LessonTask, PublicTask, TaskResult,
+  ModuleDetail, ModuleItem, ModuleMeta, ModuleSummary } from '../types';
 
 const BASE = '/api';
 
@@ -34,10 +35,13 @@ const json = (method: string, body?: unknown): RequestInit =>
   ({ method, body: body === undefined ? undefined : JSON.stringify(body) });
 
 /** Download a lesson pack (.zip). */
-export async function downloadLesson(id: number): Promise<void> {
-  const res = await fetch(`${BASE}/lessons/${id}/export`, { headers: authHeaders() });
+export function downloadLesson(id: number): Promise<void> { return downloadZip(`/lessons/${id}/export`, 'lesson.zip'); }
+export function downloadModule(id: number): Promise<void> { return downloadZip(`/modules/${id}/export`, 'module.zip'); }
+
+async function downloadZip(path: string, fallback: string): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() });
   if (!res.ok) throw new ApiError(res.status, (await res.text()) || `HTTP ${res.status}`);
-  const name = /filename="?([^";]+)"?/.exec(res.headers.get('content-disposition') || '')?.[1] || 'lesson.zip';
+  const name = /filename="?([^";]+)"?/.exec(res.headers.get('content-disposition') || '')?.[1] || fallback;
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement('a');
   a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
@@ -45,11 +49,21 @@ export async function downloadLesson(id: number): Promise<void> {
 }
 
 /** Upload a lesson pack. mode: new (409 if the slug exists), replace, copy. */
-export async function importLesson(file: File, mode: 'new' | 'replace' | 'copy' = 'new'): Promise<LessonSummary> {
+export function importLesson(file: File, mode: 'new' | 'replace' | 'copy' = 'new'): Promise<LessonSummary> {
+  return uploadPack<LessonSummary>('/lessons/import', file, mode);
+}
+
+export type ModuleImportResult = ModuleSummary & { lessons: { imported: string[]; updated: string[]; kept: string[] } };
+/** Upload a module pack (with its lessons). mode as for lessons. */
+export function importModule(file: File, mode: 'new' | 'replace' | 'copy' = 'new'): Promise<ModuleImportResult> {
+  return uploadPack<ModuleImportResult>('/modules/import', file, mode);
+}
+
+async function uploadPack<T>(path: string, file: File, mode: string): Promise<T> {
   const fd = new FormData();
   fd.append('file', file);
   const token = localStorage.getItem('auth_token');
-  const res = await fetch(`${BASE}/lessons/import?mode=${mode}`, {
+  const res = await fetch(`${BASE}${path}?mode=${mode}`, {
     method: 'POST', body: fd, headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) {
@@ -63,6 +77,7 @@ export async function importLesson(file: File, mode: 'new' | 'replace' | 'copy' 
 }
 
 export type LessonPayload = { meta: Record<string, unknown>; topology_yaml: string; tasks: LessonTask[]; content_md: string };
+export type ModulePayload = { meta: Partial<ModuleMeta>; items: ModuleItem[]; overview_md: string };
 export type LessonPanelData = {
   lesson: LessonSummary & { tasks: PublicTask[]; sections: LessonSection[] };
   attempt: LessonAttempt; mine: boolean;
@@ -252,6 +267,13 @@ export const api = {
   saveLessonAuthoring: (id: number, capture_running: boolean) =>
     request<{ captured: string[]; failed: { device: string; error: string }[]; warnings: string[]; topology_summary: string }>(
       `/lessons/${id}/authoring/save`, json('POST', { capture_running })),
+  // Modules
+  listModules: () => request<ModuleSummary[]>('/modules'),
+  getModule: (id: number) => request<ModuleDetail>(`/modules/${id}`),
+  createModule: (body: ModulePayload) => request<ModuleSummary>('/modules', json('POST', body)),
+  updateModule: (id: number, body: ModulePayload) => request<ModuleSummary>(`/modules/${id}`, json('PUT', body)),
+  validateModule: (body: ModulePayload) => request<{ errors: string[] }>('/modules/validate', json('POST', body)),
+  deleteModule: (id: number) => request<{ ok: boolean }>(`/modules/${id}`, json('DELETE')),
   testLessonChecks: (id: number, task?: string) =>
     request<Record<string, TaskResult>>(`/lessons/${id}/authoring/test-checks${task ? `?task=${encodeURIComponent(task)}` : ''}`, json('POST')),
 

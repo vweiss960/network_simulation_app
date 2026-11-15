@@ -12,7 +12,7 @@ from app.auth.dependencies import get_current_user, require_admin
 from app.models.database import get_db
 from app.models.lesson import Lesson, LessonAttempt
 from app.models.topology import Topology
-from app.services import lesson_checks, lessons as svc
+from app.services import lesson_checks, lessons as svc, modules as module_svc
 
 router = APIRouter(prefix="/api", tags=["lessons"])
 
@@ -105,6 +105,7 @@ def get_lesson(lesson_id: int, full: bool = False, user=Depends(get_current_user
         "sections": svc.content_sections(l.content_md),
         "requires": reqs,
         "authoring_topology_id": authoring.id if authoring else None,
+        "modules": module_svc.modules_for_lesson(db, l.slug),
         "can_edit": bool(user.is_admin),
     }
     return out

@@ -6,7 +6,7 @@ import type { ConsoleTab } from '../components/LabConsoleDrawer';
 
 export type Selection = { type: 'node' | 'link'; id: number } | { type: 'annotation'; id: string } | null;
 export type CanvasTool = 'select' | 'group' | 'text' | 'note';
-export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users' | 'lessons' | 'lesson' | 'lessonEdit';
+export type Page = 'labs' | 'workspace' | 'images' | 'templates' | 'network' | 'users' | 'lessons' | 'lesson' | 'lessonEdit' | 'modules' | 'module' | 'moduleEdit';
 
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -45,6 +45,9 @@ interface LabStore {
   lessonId: number | null;
   openLesson: (id: number) => void;
   editLesson: (id: number | null) => void;
+  moduleId: number | null;
+  openModule: (id: number) => void;
+  editModule: (id: number | null) => void;
   bootstrap: () => Promise<void>;
   loadTemplates: () => Promise<void>;
   loadTopologies: () => Promise<void>;
@@ -120,6 +123,9 @@ export const useLabStore = create<LabStore>((set, get) => ({
   lessonId: null,
   openLesson: (lessonId) => set({ page: 'lesson', lessonId }),
   editLesson: (lessonId) => set({ page: 'lessonEdit', lessonId }),
+  moduleId: null,
+  openModule: (moduleId) => set({ page: 'module', moduleId }),
+  editModule: (moduleId) => set({ page: 'moduleEdit', moduleId }),
 
   setPage: (page) => {
     set({ page });
