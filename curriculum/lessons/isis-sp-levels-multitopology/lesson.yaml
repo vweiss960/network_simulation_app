@@ -1,0 +1,17 @@
+slug: isis-sp-levels-multitopology
+title: IS-IS levels, multi-topology and metrics on IOS XR and IOS XE
+summary: >-
+  Build a service-provider IS-IS design across IOS XR and IOS XE: a level 2
+  core, level 1 access areas behind level 1/2 border routers, IPv6 in its own
+  topology, filtered redistribution, loopback leaking from level 2 into level 1
+  and metrics that steer traffic. Covers CCNP SPCOR 2.1 a–d.
+level: intermediate
+track: service_provider
+topic: Routing
+tags: [isis, ipv6, multi-topology, iosxr, iosxe, levels, route-leaking, metrics, ccnp-spcor]
+minutes: 120
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

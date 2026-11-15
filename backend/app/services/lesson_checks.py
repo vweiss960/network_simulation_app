@@ -140,11 +140,16 @@ def _net(prefix: str):
         return None
 
 
+# IOS-XE's IPv6 table abbreviates codes the IPv4 tables (and IOS-XR) spell
+# out: OSPF inter-area "OI" = "O IA"; IS-IS "I1" / "I2" / "IA" = "i L1" /
+# "i L2" / "i ia".
+_XE_V6_CODES = {"OI": "OIA", "I1": "IL1", "I2": "IL2", "IA": "IIA"}
+
+
 def _code(s: str) -> str:
-    """Protocol code without spaces / selection marks; IOS-XE's IPv6 "OI"
-    (inter-area) is the same thing as "O IA"."""
+    """Protocol code without spaces / selection marks, XE IPv6 spellings mapped."""
     c = re.sub(r"[\s*>]", "", s).upper()
-    return "OIA" if c == "OI" else c
+    return _XE_V6_CODES.get(c, c)
 
 
 def _route_what(c: dict) -> str:

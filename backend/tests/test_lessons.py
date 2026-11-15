@@ -33,15 +33,25 @@ def ospf(db):
 def test_bundled_ospf_pack_is_valid(db):
     meta, topo, tasks, content = _pack()
     assert svc.validate(svc.normalize_meta(meta), topo, tasks, content) == []
-    assert svc.seed_bundled(db, PACK.parents[1]) == ["ospf-xr-multiarea-area-types"]
+    assert "ospf-xr-multiarea-area-types" in svc.seed_bundled(db, PACK.parents[1])
     assert svc.seed_bundled(db, PACK.parents[1]) == []              # same version: left alone
-    l = db.query(Lesson).one()
+    l = db.query(Lesson).filter_by(slug="ospf-xr-multiarea-area-types").one()
     assert l.track == "service_provider" and l.level == "intermediate" and "ospf" in l.tags
     assert svc.topology_summary(l.topology_yaml) == "5 routers · 2 hosts"
     assert [t["id"] for t in l.tasks][:2] == ["backbone-v2", "backbone-v3"]
     assert {r["kind"] for r in svc.requirements(l)} == {"cisco_xrd", "cisco_csr1000v", "linux"}
     titles = [s["title"] for s in svc.content_sections(l.content_md)]
     assert titles[0] == "Why split OSPF into areas?" and len(titles) == 10
+
+
+def test_bundled_isis_pack_is_valid(db):
+    meta, topo, tasks, content = svc.read_dir(PACK.parent / "isis-sp-levels-multitopology")
+    assert svc.validate(svc.normalize_meta(meta), topo, tasks, content) == []
+    l = svc.save_lesson(db, meta, topo, tasks, content)
+    assert l.track == "service_provider" and "isis" in l.tags
+    assert {r["kind"] for r in svc.requirements(l)} == {"cisco_xrd", "cisco_csr1000v", "linux"}
+    assert [t["id"] for t in l.tasks] == ["core", "multitopology", "levels", "redistribute", "leaking",
+                                           "metrics", "end-to-end"]
 
 
 def test_seed_updates_newer_version_unless_edited(db, tmp_path):

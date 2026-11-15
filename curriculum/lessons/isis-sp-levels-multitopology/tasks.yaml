@@ -1,0 +1,500 @@
+- id: core
+  title: Build the level 2 core (area addressing and adjacencies)
+  body: |
+    Start IS-IS instance **CORE** on the three core routers and bring up
+    **level 2** adjacencies around the triangle, for IPv4.
+
+    | Router | OS | NET | Role |
+    |---|---|---|---|
+    | R1 | IOS XR | `49.0001.0000.0000.0001.00` | L1/L2 border of area 49.0001 |
+    | R2 | IOS XR | `49.0000.0000.0000.0002.00` | **level-2-only** core |
+    | R3 | IOS XE | `49.0002.0000.0000.0003.00` | L1/L2 border of area 49.0002 |
+
+    The three routers are in **different areas** — that's fine: level 2
+    adjacencies don't care about the area, level 1 adjacencies need the same
+    one. Best practice for the core:
+
+    - R2 has no level 1 neighbors, so make the whole router `level-2-only`.
+    - R1 and R3 stay level 1/2 (they'll own an area later), but their
+      **core-facing** links are `level-2-only` — no point sending level 1
+      hellos where no level 1 adjacency can form.
+    - Make router-to-router links **point-to-point** (no DIS election, no
+      pseudonode) and use **wide metrics** (the default *narrow* metrics stop at
+      63 per link and can't carry IPv6 multi-topology).
+    - Advertise Loopback0 **passively**.
+  hints:
+    - "XR: `router isis CORE` → `net …` → `address-family ipv4 unicast` → `metric-style wide`; then each interface: `interface GigabitEthernet0/0/0/0` → `point-to-point` → `circuit-type level-2-only` → `address-family ipv4 unicast`. Loopback0 gets `passive` + `address-family ipv4 unicast`. Commit."
+    - "R2 also needs `is-type level-2-only` under `router isis CORE`."
+    - "XE: `router isis CORE` → `net …` → `metric-style wide` → `passive-interface Loopback0`; on each core interface `ip router isis CORE`, `isis network point-to-point`, `isis circuit-type level-2-only`."
+    - "Verify with `show isis neighbors` (both OSes): the System Id column shows the neighbor's hostname, and the Type should be L2."
+  solution:
+    R1: |
+      router isis CORE
+       net 49.0001.0000.0000.0001.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        circuit-type level-2-only
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/2
+        circuit-type level-2-only
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+    R2: |
+      router isis CORE
+       is-type level-2-only
+       net 49.0000.0000.0000.0002.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+    R3: |
+      router isis CORE
+       net 49.0002.0000.0000.0003.00
+       metric-style wide
+       passive-interface Loopback0
+      !
+      interface GigabitEthernet2
+       ip router isis CORE
+       isis network point-to-point
+       isis circuit-type level-2-only
+      !
+      interface GigabitEthernet3
+       ip router isis CORE
+       isis network point-to-point
+       isis circuit-type level-2-only
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show isis neighbors
+      expect:
+        - {regex: '^R1\s+(?=.*\bL2\b)(?=.*\bup\b)', ignore_case: true}
+        - {regex: '^R3\s+(?=.*\bL2\b)(?=.*\bup\b)', ignore_case: true}
+      describe: "R2 (XR): show isis neighbors → R1 and R3 up at L2"
+    - type: cli
+      device: R3
+      command: show isis neighbors
+      expect:
+        - {regex: '^R1\s+(?=.*\bL2\b)(?=.*\bup\b)', ignore_case: true}
+        - {regex: '^R2\s+(?=.*\bL2\b)(?=.*\bup\b)', ignore_case: true}
+      describe: "R3 (XE): show isis neighbors → R1 and R2 up at L2"
+    - {type: route, device: R1, prefix: 2.2.2.2/32, protocol: i L2, describe: "R1 learns R2's loopback (i L2 2.2.2.2/32)"}
+    - {type: route, device: R3, prefix: 1.1.1.1/32, protocol: i L2, describe: "R3 (XE) learns R1's loopback (i L2 1.1.1.1/32)"}
+
+- id: multitopology
+  title: Add IPv6 in its own topology (multi-topology)
+  body: |
+    Enable IPv6 in IS-IS on the core — the R1–R2 and R2–R3 links and the
+    loopbacks. Note that the **R1–R3 backup link has no IPv6 addresses**.
+
+    By default IS-IS runs **single topology**: one SPF for every address
+    family, which assumes every link carries every family. Here that would
+    send IPv6 traffic straight across R1–R3, where it would be dropped.
+    **Multi-topology** (RFC 5120) gives IPv6 its own topology (MT ID 2) and
+    its own SPF, so IPv6 only uses links that run IPv6. It needs wide
+    metrics, which you already have.
+
+    Watch the defaults: an IOS XR IPv6 address family is multi-topology
+    unless you configure `single-topology`; IOS XE is single topology unless
+    you configure `multi-topology`. Both ends must agree.
+
+    After this task R1 must reach R3's IPv6 loopback **through R2**, even
+    though R1 reaches R3's IPv4 loopback directly.
+  hints:
+    - "XR: `router isis CORE` → `address-family ipv6 unicast` → `metric-style wide`; then `address-family ipv6 unicast` under Loopback0 and each IPv6 core interface (not Gi0/0/0/2 on R1). On IOS XR the IPv6 address family is multi-topology by default — `single-topology` is the command that turns it off."
+    - "XE is the opposite: single topology unless you say otherwise — `router isis CORE` → `address-family ipv6` → `multi-topology` → `exit-address-family`; `ipv6 router isis CORE` on Gi2 only. The passive Loopback0 advertises its IPv6 address too once IPv6 is on."
+    - "`show route ipv6 isis` (XR) / `show ipv6 route isis` (XE); `show isis topology` lists each topology separately."
+  solution:
+    R1: |
+      router isis CORE
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        address-family ipv6 unicast
+        !
+       !
+      !
+    R2: |
+      router isis CORE
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        address-family ipv6 unicast
+        !
+       !
+      !
+    R3: |
+      router isis CORE
+       address-family ipv6
+        multi-topology
+       exit-address-family
+      !
+      interface GigabitEthernet2
+       ipv6 router isis CORE
+      !
+  checks:
+    - {type: route, device: R1, prefix: "2001:db8::3/128", protocol: i L2, via: GigabitEthernet0/0/0/0, describe: "R1 reaches R3's IPv6 loopback through R2 (Gi0/0/0/0)"}
+    - {type: route, device: R3, prefix: "2001:db8::1/128", protocol: i L2, via: GigabitEthernet2, describe: "R3 (XE) reaches R1's IPv6 loopback through R2 (I2 via Gi2)"}
+    - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.13.2, describe: "IPv4 still takes the direct R1–R3 link"}
+    - {type: route, device: R2, prefix: "2001:db8::3/128", protocol: i L2, describe: "R2 learns R3's IPv6 loopback"}
+
+- id: levels
+  title: Attach the level 1 access areas
+  body: |
+    Each PoP is its own **area** with **level-1-only** access routers behind a
+    **level 1/2** border router:
+
+    | Router | OS | NET | is-type |
+    |---|---|---|---|
+    | R4 | IOS XE | `49.0001.0000.0000.0004.00` | level-1 |
+    | R5 | IOS XR | `49.0002.0000.0000.0005.00` | level-1 |
+
+    Run both address families (multi-topology) on the R1–R4 and R3–R5 links,
+    the access routers' loopbacks and their host LANs (passive). On R1 and R3
+    the access-facing link is `level-1` only.
+
+    Level 1 routers know only their own area. The L1/L2 router sets the
+    **attached (ATT) bit** in its level 1 LSP, and level 1 routers install a
+    **default route** towards it — much like an OSPF totally stubby area,
+    without any configuration. In the other direction, L1/L2 routers
+    advertise their area's level 1 prefixes into level 2 automatically.
+  hints:
+    - "R1 (XR): add `interface GigabitEthernet0/0/0/1` → `circuit-type level-1` → `point-to-point` → both address families. R3 (XE): Gi4 gets `ip router isis CORE`, `ipv6 router isis CORE`, `isis network point-to-point`, `isis circuit-type level-1`."
+    - "R4 (XE): `router isis CORE` → `net`, `is-type level-1`, `metric-style wide`, `passive-interface Loopback0`, `passive-interface GigabitEthernet3`, and `address-family ipv6` → `multi-topology`."
+    - "R5 (XR): like R2 but `is-type level-1`, IPv4 and IPv6 on Loopback0, Gi0/0/0/0 and the passive LAN Gi0/0/0/1 (IPv6 is multi-topology by default on XR)."
+    - "Look for `i*L1 0.0.0.0/0` on R4 and R5, and for R4's loopback as `i L2` on R2."
+  solution:
+    R1: |
+      router isis CORE
+       interface GigabitEthernet0/0/0/1
+        circuit-type level-1
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+      !
+    R4: |
+      router isis CORE
+       net 49.0001.0000.0000.0004.00
+       is-type level-1
+       metric-style wide
+       passive-interface Loopback0
+       passive-interface GigabitEthernet3
+       address-family ipv6
+        multi-topology
+       exit-address-family
+      !
+      interface GigabitEthernet2
+       ip router isis CORE
+       ipv6 router isis CORE
+       isis network point-to-point
+      !
+    R3: |
+      interface GigabitEthernet4
+       ip router isis CORE
+       ipv6 router isis CORE
+       isis network point-to-point
+       isis circuit-type level-1
+      !
+    R5: |
+      router isis CORE
+       is-type level-1
+       net 49.0002.0000.0000.0005.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R4
+      command: show isis neighbors
+      expect:
+        - {regex: '^R1\s+(?=.*\bL1\b)(?=.*\bup\b)', ignore_case: true}
+      describe: "R4 (XE): R1 up at L1"
+    - type: cli
+      device: R5
+      command: show isis neighbors
+      expect:
+        - {regex: '^R3\s+(?=.*\bL1\b)(?=.*\bup\b)', ignore_case: true}
+      describe: "R5 (XR): R3 up at L1"
+    - {type: route, device: R4, prefix: 0.0.0.0/0, protocol: i L1, describe: "R4 has a default route from the ATT bit (i*L1 0.0.0.0/0)"}
+    - {type: route, device: R5, prefix: "::/0", protocol: i L1, describe: "R5 has an IPv6 default from the ATT bit (i*L1 ::/0)"}
+    - {type: route, device: R4, prefix: 5.5.5.5/32, present: false, describe: "R4 doesn't know the other area's routes (no 5.5.5.5/32)"}
+    - {type: route, device: R2, prefix: 4.4.4.4/32, protocol: i L2, describe: "R2 learns R4's loopback as i L2 (L1 → L2 is automatic)"}
+    - {type: route, device: R2, prefix: "2001:db8:2::5/128", protocol: i L2, describe: "R2 learns R5's IPv6 loopback as i L2"}
+
+- id: redistribute
+  title: Advertise customer routes from R2 — filtered
+  body: |
+    R2 connects to a customer network that doesn't run IS-IS. Model it with
+    static routes to Null0 — **203.0.113.0/24** and **2001:db8:cafe::/48** —
+    and redistribute them into **level 2**.
+
+    `redistribute static` on its own advertises **every** static route on the
+    router — in a real PE that's management routes, customer statics, discard
+    routes for aggregates… Redistribute through a **route policy** that
+    matches exactly what you mean to advertise. (A default route is the one
+    exception: it's never redistributed — advertise one deliberately with
+    `default-information originate`.)
+  hints:
+    - "On XR a route-policy is a small program: `route-policy CUSTOMER-V4` → `if destination in (203.0.113.0/24) then` → `pass` → `endif` → `end-policy`. Make a second one for the IPv6 prefix."
+    - "`redistribute static level-2 route-policy CUSTOMER-V4` under `router isis CORE` → `address-family ipv4 unicast` (and the IPv6 one under `address-family ipv6 unicast`)."
+    - "Check that R1 learns 203.0.113.0/24 as `i L2`, and still has no IS-IS default route."
+  solution:
+    R2: |
+      route-policy CUSTOMER-V4
+        if destination in (203.0.113.0/24) then
+          pass
+        endif
+      end-policy
+      !
+      route-policy CUSTOMER-V6
+        if destination in (2001:db8:cafe::/48) then
+          pass
+        endif
+      end-policy
+      !
+      router static
+       address-family ipv4 unicast
+        203.0.113.0/24 Null0
+       !
+       address-family ipv6 unicast
+        2001:db8:cafe::/48 Null0
+       !
+      !
+      router isis CORE
+       address-family ipv4 unicast
+        redistribute static level-2 route-policy CUSTOMER-V4
+       !
+       address-family ipv6 unicast
+        redistribute static level-2 route-policy CUSTOMER-V6
+       !
+      !
+  checks:
+    - {type: route, device: R1, prefix: 203.0.113.0/24, protocol: i L2, describe: "R1 learns 203.0.113.0/24 (i L2)"}
+    - {type: route, device: R3, prefix: "2001:db8:cafe::/48", protocol: i L2, describe: "R3 (XE) learns 2001:db8:cafe::/48 (I2)"}
+    - {type: route, device: R1, prefix: 0.0.0.0/0, protocol: i L2, present: false, describe: "No default route is advertised into IS-IS (no i L2 0.0.0.0/0 on R1)"}
+    - {type: route, device: R4, prefix: 203.0.113.0/24, present: false, describe: "R4 (level 1) doesn't learn it — level 2 stays out of level 1"}
+
+- id: leaking
+  title: Leak the loopbacks from level 2 into level 1
+  body: |
+    The default route is enough for plain IP, but not for an MPLS service
+    provider: label switched paths and BGP next hops need an **exact /32
+    (/128) route to every PE loopback**, and a default doesn't give LDP or
+    segment routing a FEC to bind a label to. It also routes sub-optimally
+    when an area has more than one L1/L2 exit.
+
+    Configure **route leaking** (RFC 5302) on both border routers: level 2
+    routes into level 1, but **only host routes** — the loopbacks. Customer
+    prefixes stay out; the default still covers them.
+
+    - R1 (XR): `propagate level 2 into level 1` with a route policy.
+    - R3 (XE): `redistribute isis … level-2 into level-1` with a route map.
+
+    Leaked routes show up as **inter-area** (`i ia`) in the level 1 routers.
+  hints:
+    - "XR: `route-policy LOOPBACKS-V4` → `if destination in (0.0.0.0/0 eq 32) then pass endif`; IPv6: `::/0 eq 128`. Then `propagate level 2 into level 1 route-policy LOOPBACKS-V4` under each address family of `router isis CORE`."
+    - "XE: `ip prefix-list LOOPBACKS permit 0.0.0.0/0 ge 32` and `ipv6 prefix-list LOOPBACKS-V6 permit ::/0 ge 128`, route maps matching them, then `redistribute isis ip level-2 into level-1 route-map …` under `router isis CORE` and `redistribute isis level-2 into level-1 route-map …` under `address-family ipv6`."
+    - "R4 should now have 5.5.5.5/32 as `i ia` — and still no 203.0.113.0/24."
+  solution:
+    R1: |
+      route-policy LOOPBACKS-V4
+        if destination in (0.0.0.0/0 eq 32) then
+          pass
+        endif
+      end-policy
+      !
+      route-policy LOOPBACKS-V6
+        if destination in (::/0 eq 128) then
+          pass
+        endif
+      end-policy
+      !
+      router isis CORE
+       address-family ipv4 unicast
+        propagate level 2 into level 1 route-policy LOOPBACKS-V4
+       !
+       address-family ipv6 unicast
+        propagate level 2 into level 1 route-policy LOOPBACKS-V6
+       !
+      !
+    R3: |
+      ip prefix-list LOOPBACKS seq 5 permit 0.0.0.0/0 ge 32
+      ipv6 prefix-list LOOPBACKS-V6 seq 5 permit ::/0 ge 128
+      route-map LOOPBACKS-V4 permit 10
+       match ip address prefix-list LOOPBACKS
+      !
+      route-map LOOPBACKS-V6 permit 10
+       match ipv6 address prefix-list LOOPBACKS-V6
+      !
+      router isis CORE
+       redistribute isis ip level-2 into level-1 route-map LOOPBACKS-V4
+       address-family ipv6
+        redistribute isis level-2 into level-1 route-map LOOPBACKS-V6
+       exit-address-family
+      !
+  checks:
+    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: i ia, describe: "R4 (XE) learns R5's loopback leaked into L1 (i ia)"}
+    - {type: route, device: R4, prefix: "2001:db8:2::5/128", protocol: i ia, describe: "R4 (XE) learns R5's IPv6 loopback (IA)"}
+    - {type: route, device: R5, prefix: 4.4.4.4/32, protocol: i ia, describe: "R5 (XR) learns R4's loopback (i ia)"}
+    - {type: route, device: R5, prefix: "2001:db8::2/128", protocol: i ia, describe: "R5 (XR) learns R2's IPv6 loopback (i ia)"}
+    - {type: route, device: R4, prefix: 203.0.113.0/24, present: false, describe: "Customer prefixes stay out of level 1"}
+
+- id: metrics
+  title: Set the metrics
+  body: |
+    IS-IS gives every interface a metric of **10**, whatever its speed — there
+    is no reference bandwidth. Service providers set metrics explicitly, per
+    link, usually derived from bandwidth or latency.
+
+    1. Core links **R1–R2** and **R2–R3**: metric **100**, for IPv4 *and*
+       IPv6. With multi-topology each topology has its **own** metrics, so
+       set both.
+    2. The **R1–R3** backup link: metric **1000** (IPv4 only — it runs no
+       IPv6).
+
+    IPv4 traffic between R1 and R3 then goes through R2, like IPv6 already
+    does. A path's metric is the sum of the outgoing link metrics plus the
+    metric the destination prefix is advertised with — **0 for a loopback**
+    on both IOS XR and IOS XE, so R1 → 3.3.3.3 costs 100 + 100 = 200.
+  hints:
+    - "XR: the metric lives under the interface's address family: `interface GigabitEthernet0/0/0/0` → `address-family ipv4 unicast` → `metric 100` (and the same under `address-family ipv6 unicast`)."
+    - "XE: on the interface, `isis metric 100` for IPv4 and `isis ipv6 metric 100` for the IPv6 topology; R3's Gi3 gets `isis metric 1000`."
+    - "`show isis interface` (XR) / `show isis interface brief` and `show clns interface` (XE) list each interface's metric per level and topology."
+  solution:
+    R1: |
+      router isis CORE
+       interface GigabitEthernet0/0/0/0
+        address-family ipv4 unicast
+         metric 100
+        !
+        address-family ipv6 unicast
+         metric 100
+        !
+       !
+       interface GigabitEthernet0/0/0/2
+        address-family ipv4 unicast
+         metric 1000
+        !
+       !
+      !
+    R2: |
+      router isis CORE
+       interface GigabitEthernet0/0/0/0
+        address-family ipv4 unicast
+         metric 100
+        !
+        address-family ipv6 unicast
+         metric 100
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        address-family ipv4 unicast
+         metric 100
+        !
+        address-family ipv6 unicast
+         metric 100
+        !
+       !
+      !
+    R3: |
+      interface GigabitEthernet2
+       isis metric 100
+       isis ipv6 metric 100
+      !
+      interface GigabitEthernet3
+       isis metric 1000
+      !
+  checks:
+    - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: i L2, metric: 200, via: 10.0.12.2, describe: "R1 now reaches R3's loopback through R2 at metric 200 (100 + 100)"}
+    - {type: route, device: R3, prefix: 1.1.1.1/32, protocol: i L2, via: 10.0.23.1, describe: "R3 (XE) reaches R1's loopback through R2 (via 10.0.23.1)"}
+    - {type: route, device: R1, prefix: 2.2.2.2/32, protocol: i L2, metric: 100, describe: "R1 → R2's loopback costs 100 (the link; loopbacks are advertised at metric 0)"}
+    - {type: route, device: R3, prefix: "2001:db8::2/128", protocol: i L2, metric: 100, describe: "The IPv6 topology has its own metric: R3 (XE) → R2's IPv6 loopback costs 100"}
+
+- id: end-to-end
+  title: Prove end-to-end reachability over IPv4 and IPv6
+  body: |
+    Traffic should flow from one access area to the other over both address
+    families: H1's LAN is level 1 in area 49.0001, H2's in area 49.0002, and
+    the core between them is level 2.
+
+    Ping H2 from H1 — **10.2.5.10** and **2001:db8:2:5::10** — and R5's
+    loopbacks from R4's.
+  hints:
+    - "H1's console: `ping -c 3 10.2.5.10` and `ping -c 3 2001:db8:2:5::10`."
+    - "R4 reaches H2's LAN through its default route; R5 must have a way back to 10.1.4.0/24 — its own default, towards R3."
+  solution: {}
+  checks:
+    - {type: ping, from: H1, to: 10.2.5.10, count: 5, min_success: 80, describe: "H1 pings H2 over IPv4 (10.2.5.10)"}
+    - {type: ping, from: H1, to: "2001:db8:2:5::10", count: 5, min_success: 80, describe: "H1 pings H2 over IPv6 (2001:db8:2:5::10)"}
+    - {type: ping, from: R4, to: 5.5.5.5, source: Loopback0, count: 5, min_success: 80, describe: "R4 (Lo0) pings R5's loopback"}
+    - {type: ping, from: R4, to: "2001:db8:2::5", source: Loopback0, count: 5, min_success: 80, describe: "R4 (Lo0) pings R5's IPv6 loopback"}

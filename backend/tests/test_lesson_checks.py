@@ -101,6 +101,20 @@ def test_find_routes_xe_ipv6_metric_via():
     assert not lc.validate_check({"type": "route", "device": "R1", "prefix": "::/0", "metric": 5})
 
 
+def test_find_routes_isis_codes():
+    xr = "i L2 3.3.3.3/32 [115/20] via 10.0.12.2, 00:01:00, GigabitEthernet0/0/0/0\ni*L1 0.0.0.0/0 [115/10] via 10.1.14.1, 00:00:10, Gi0/0/0/1\ni ia 5.5.5.5/32 [115/40] via 10.1.14.1, 00:00:10, Gi0/0/0/1\n"
+    xe_v4 = "      5.0.0.0/32 is subnetted, 1 subnets\ni ia     5.5.5.5 [115/40] via 10.1.14.1, 00:00:10, GigabitEthernet2\n"
+    xe_v6 = "I2  2001:DB8::3/128 [115/20]\n     via FE80::1, GigabitEthernet2\nIA  2001:DB8:2::5/128 [115/40]\n     via FE80::1, GigabitEthernet2\nI1  ::/0 [115/10]\n     via FE80::1, GigabitEthernet2\n"
+    assert lc.find_routes(xr, "3.3.3.3/32", "i L2", metric=20)
+    assert lc.find_routes(xr, "0.0.0.0/0", "i L1")                    # "i*L1"
+    assert lc.find_routes(xr, "5.5.5.5/32", "i ia")
+    assert lc.find_routes(xe_v4, "5.5.5.5/32", "i ia")
+    assert lc.find_routes(xe_v6, "2001:db8::3/128", "i L2", metric=20)
+    assert lc.find_routes(xe_v6, "2001:db8:2::5/128", "i ia")
+    assert lc.find_routes(xe_v6, "::/0", "i L1")
+    assert not lc.find_routes(xe_v6, "::/0", "i L2")
+
+
 def test_eval_expect():
     ok, _ = lc.eval_expect(XR_NEIGHBORS, [{"regex": r"^1\.1\.1\.1\s+\d+\s+FULL"}])
     assert ok
