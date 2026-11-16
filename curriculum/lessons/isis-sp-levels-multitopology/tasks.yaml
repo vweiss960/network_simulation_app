@@ -424,8 +424,13 @@
 
     IPv4 traffic between R1 and R3 then goes through R2, like IPv6 already
     does. A path's metric is the sum of the outgoing link metrics plus the
-    metric the destination prefix is advertised with — **0 for a loopback**
-    on both IOS XR and IOS XE, so R1 → 3.3.3.3 costs 100 + 100 = 200.
+    metric the destination prefix is advertised with. That last part depends
+    on how the prefix got into IS-IS: a loopback made **passive**
+    (`passive` on XR, `passive-interface` on XE) is advertised at 0, but a
+    loopback with IS-IS enabled on it (`ip router isis` on XE) carries its
+    interface metric — 10 by default, never less than 1. So check the core
+    metrics on a link prefix: R1 → the R2–R3 link costs 100 + 100 = 200,
+    whatever the loopbacks do.
   hints:
     - "XR: the metric lives under the interface's address family: `interface GigabitEthernet0/0/0/0` → `address-family ipv4 unicast` → `metric 100` (and the same under `address-family ipv6 unicast`)."
     - "XE: on the interface, `isis metric 100` for IPv4 and `isis ipv6 metric 100` for the IPv6 topology; R3's Gi3 gets `isis metric 1000`."
@@ -475,10 +480,10 @@
        isis metric 1000
       !
   checks:
-    - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: i L2, metric: 200, via: 10.0.12.2, describe: "R1 now reaches R3's loopback through R2 at metric 200 (100 + 100)"}
+    - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.12.2, describe: "R1 now reaches R3's loopback through R2 (via 10.0.12.2), not the backup link"}
     - {type: route, device: R3, prefix: 1.1.1.1/32, protocol: i L2, via: 10.0.23.1, describe: "R3 (XE) reaches R1's loopback through R2 (via 10.0.23.1)"}
-    - {type: route, device: R1, prefix: 2.2.2.2/32, protocol: i L2, metric: 100, describe: "R1 → R2's loopback costs 100 (the link; loopbacks are advertised at metric 0)"}
-    - {type: route, device: R3, prefix: "2001:db8::2/128", protocol: i L2, metric: 100, describe: "The IPv6 topology has its own metric: R3 (XE) → R2's IPv6 loopback costs 100"}
+    - {type: route, device: R1, prefix: 10.0.23.0/30, protocol: i L2, metric: 200, via: 10.0.12.2, describe: "R1 → the R2–R3 link costs 200 (R1–R2 100 + R2–R3 100)"}
+    - {type: route, device: R3, prefix: "2001:db8:0:12::/64", protocol: i L2, metric: 200, describe: "The IPv6 topology has its own metrics: R3 (XE) → the R1–R2 link costs 200"}
 
 - id: end-to-end
   title: Prove end-to-end reachability over IPv4 and IPv6

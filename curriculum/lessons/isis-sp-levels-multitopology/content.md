@@ -165,8 +165,10 @@ bit stops them from being advertised back into level 2.
   is no reference bandwidth as in OSPF. Set metrics explicitly — per link,
   from bandwidth or latency.
 - A route's metric = the outgoing link metrics along the path + the metric
-  the prefix is advertised with. Loopbacks are advertised at **metric 0**
-  (IOS XR and IOS XE alike); a connected link prefix at its interface's
+  the prefix is advertised with. A **passive** loopback is advertised at
+  **metric 0** (IOS XR `passive`, IOS XE `passive-interface`); a loopback with
+  IS-IS enabled on it (IOS XE `ip router isis`) carries its interface metric —
+  10 by default, minimum 1. A connected link prefix carries its interface's
   metric.
 - With multi-topology, IPv4 and IPv6 metrics are configured **separately**.
 - Narrow and wide routers don't understand each other's TLVs; migrate with
