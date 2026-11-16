@@ -57,6 +57,7 @@ services:
     network_mode: host
     volumes:
       - ./nginx/plabs.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/plabs-certs:ro      # scripts/make-cert.sh
       - ./frontend/dist:/usr/share/plabs/www:ro
     depends_on: [backend]
     restart: unless-stopped

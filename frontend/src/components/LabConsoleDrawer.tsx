@@ -8,7 +8,9 @@
  *  - Right-click pastes SecureCRT-style: a confirmation shows exactly what
  *    will be sent; lines go out one at a time so the device keeps up. A
  *    multi-line Ctrl+V gets the same confirmation. Right-click with a
- *    selection copies it instead.
+ *    selection copies it instead. The box is pre-filled with the clipboard
+ *    (https only — browsers block clipboard reads on plain http), else with
+ *    the last text copied in this page. No Enter is sent after the last line.
  * Every session stays mounted (its WebSocket open) whether shown or not.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -376,7 +378,21 @@ function ToolBtn({ title, on, onClick, children }: { title: string; on?: boolean
 }
 
 /** Copy text without the async Clipboard API (unavailable over plain http). */
+// The last text copied in this page (console selections, lesson text…): the
+// paste box falls back to it when the browser won't let us read the clipboard.
+let lastCopied = '';
+if (typeof document !== 'undefined') {
+  document.addEventListener('copy', () => {
+    const sel = window.getSelection()?.toString();
+    if (sel) lastCopied = sel;
+  }, true);
+}
+
+/** Lines to send: CRLF/CR → LF, trailing newlines dropped. */
+const pasteLines = (text: string) => text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n');
+
 function copyText(text: string): boolean {
+  lastCopied = text;
   const ta = document.createElement('textarea');
   ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
   document.body.appendChild(ta); ta.select();
@@ -395,8 +411,9 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
   const rotateRef = useRef(onRotate);
   rotateRef.current = onRotate;
   const currentTopologyId = useLabStore(s => s.currentTopologyId);
-  // Paste confirmation: the text (editable) + whether the clipboard was readable.
-  const [paste, setPaste] = useState<{ text: string; auto: boolean } | null>(null);
+  // Paste confirmation: the text (editable) + where it came from
+  // (clipboard | last copy in this page | empty → Ctrl+V in the box).
+  const [paste, setPaste] = useState<{ text: string; source: 'clipboard' | 'page' | 'none' } | null>(null);
   const [sending, setSending] = useState<{ done: number; total: number } | null>(null);
   const [note, setNote] = useState('');
 
@@ -456,12 +473,17 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
       }
     });
 
-    // Multi-line Ctrl+V → the same confirmation as right-click paste.
+    // Multi-line Ctrl+V → the same confirmation as right-click paste. A
+    // single line goes straight in, without its trailing newline (no Enter).
     const onPaste = (e: ClipboardEvent) => {
       const text = e.clipboardData?.getData('text') ?? '';
-      if (/\r|\n/.test(text.replace(/[\r\n]+$/, ''))) {
+      const trimmed = text.replace(/[\r\n]+$/, '');
+      if (/\r|\n/.test(trimmed)) {
         e.preventDefault(); e.stopImmediatePropagation();
-        setPaste({ text, auto: true });
+        setPaste({ text, source: 'clipboard' });
+      } else if (trimmed !== text) {
+        e.preventDefault(); e.stopImmediatePropagation();
+        if (trimmed) term.paste(trimmed);
       }
     };
     containerRef.current.addEventListener('paste', onPaste, true);
@@ -500,24 +522,27 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
       term.clearSelection();
       return;
     }
-    let text = '';
-    let auto = false;
     try {
-      if (navigator.clipboard?.readText) { text = await navigator.clipboard.readText(); auto = true; }
-    } catch { /* not allowed (plain http) → the dialog asks for Ctrl+V */ }
-    setPaste({ text, auto });
+      if (navigator.clipboard?.readText) {
+        const text = await navigator.clipboard.readText();
+        if (text) { setPaste({ text, source: 'clipboard' }); return; }
+      }
+    } catch { /* not allowed (plain http, permission denied) */ }
+    setPaste(lastCopied ? { text: lastCopied, source: 'page' } : { text: '', source: 'none' });
   };
 
   // Send line by line with a short gap so the device's input buffer keeps up.
+  // Every line but the last ends with Enter: the last one is left on the
+  // prompt for the user to check and send.
   const send = async (text: string) => {
     const ws = wsRef.current;
     setPaste(null);
     if (!ws || ws.readyState !== WebSocket.OPEN) { flash('Not connected — press Enter to reconnect'); return; }
-    const lines = text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n');
+    const lines = pasteLines(text);
     setSending({ done: 0, total: lines.length });
     for (let i = 0; i < lines.length; i++) {
       if (ws.readyState !== WebSocket.OPEN) break;
-      ws.send(lines[i] + '\r');
+      ws.send(i < lines.length - 1 ? lines[i] + '\r' : lines[i]);
       setSending({ done: i + 1, total: lines.length });
       await new Promise(r => setTimeout(r, lines.length > 1 ? 60 : 0));
     }
@@ -525,7 +550,7 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
     termRef.current?.focus();
   };
 
-  const lineCount = paste?.text ? paste.text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n').length : 0;
+  const lineCount = paste?.text ? pasteLines(paste.text).length : 0;
 
   return (
     <div className="w-full h-full relative" onContextMenu={onContextMenu}>
@@ -545,12 +570,15 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
             <div className="px-4 pt-3 pb-2">
               <div className="text-sm font-semibold text-white">Paste to {nodeName}?</div>
               <div className="text-xs mt-1" style={{ color: C.text }}>
-                {paste.text
-                  ? <>The following <b className="text-white">{lineCount} line{lineCount === 1 ? '' : 's'}</b> will be sent to {nodeName}, one line at a time. Review or edit before sending.</>
-                  : <>Press <b className="text-white">Ctrl+V</b> (⌘V) in the box to paste your clipboard here, review it, then send. (The browser only lets the page read the clipboard over https.)</>}
+                {!paste.text
+                  ? <>Press <b className="text-white">Ctrl+V</b> (⌘V) in the box to paste your clipboard here, review it, then send. (Browsers only let a page read the clipboard over https.)</>
+                  : paste.source === 'page'
+                    ? <>Your last copy in this page is below — press <b className="text-white">Ctrl+V</b> (⌘V) to replace it with your clipboard. Review or edit before sending; no Enter is sent after the last line.</>
+                    : <>The following <b className="text-white">{lineCount} line{lineCount === 1 ? '' : 's'}</b> will be sent to {nodeName}, one line at a time. Review or edit before sending; no Enter is sent after the last line.</>}
               </div>
             </div>
-            <textarea autoFocus value={paste.text} onChange={e => setPaste({ ...paste, text: e.target.value })}
+            <textarea autoFocus value={paste.text}
+              onFocus={e => { if (paste.source === 'page') e.currentTarget.select(); }} onChange={e => setPaste({ ...paste, text: e.target.value })}
               spellCheck={false} placeholder="Ctrl+V to paste here"
               onKeyDown={e => {
                 if (e.key === 'Escape') { setPaste(null); termRef.current?.focus(); }
@@ -559,7 +587,7 @@ function LabConsole({ nodeId, nodeName, cli, focused, onRotate }:
               className="mx-4 min-h-[160px] max-h-[50vh] flex-1 p-2 rounded text-[13px] leading-snug outline-none resize-y"
               style={{ background: VSCODE.background, color: VSCODE.foreground, border: `1px solid ${C.border}`, fontFamily: FONT }} />
             <div className="px-4 py-3 flex items-center justify-end gap-2">
-              {!paste.auto && <span className="mr-auto text-[11px]" style={{ color: '#6e7681' }}>Ctrl+Enter sends</span>}
+              {paste.source !== 'clipboard' && <span className="mr-auto text-[11px]" style={{ color: '#6e7681' }}>Ctrl+Enter sends</span>}
               <button onClick={() => { setPaste(null); termRef.current?.focus(); }}
                 className="px-3 py-1 rounded text-sm hover:bg-[#ffffff1a]" style={{ border: `1px solid ${C.border}` }}>Cancel</button>
               <button disabled={!paste.text} onClick={() => send(paste.text)}

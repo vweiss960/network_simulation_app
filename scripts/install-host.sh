@@ -87,9 +87,13 @@ systemctl daemon-reload
 systemctl enable --now plabs-backend
 systemctl restart plabs-backend
 
-echo "==> nginx site (:8880)"
+echo "==> nginx site (:8880, https :8443)"
 mkdir -p /usr/share/plabs
 ln -sfn "$REPO/frontend/dist" /usr/share/plabs/www
+sudo -u "${SUDO_USER:-root}" "$REPO/scripts/make-cert.sh" || "$REPO/scripts/make-cert.sh"
+install -d -m 755 /etc/nginx/plabs-certs
+install -m 644 "$REPO/nginx/certs/plabs.crt" /etc/nginx/plabs-certs/plabs.crt
+install -m 600 "$REPO/nginx/certs/plabs.key" /etc/nginx/plabs-certs/plabs.key
 install -m 644 "$REPO/nginx/plabs.conf" /etc/nginx/conf.d/plabs.conf
 nginx -t && systemctl enable --now nginx && systemctl reload nginx
 
