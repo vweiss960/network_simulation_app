@@ -1,974 +1,1004 @@
-# Chaos's catalog for the IS-IS + BGP provider core. Every variant: inject
-# breaks the healthy baseline, symptoms fail while it's in place, revert
-# restores the baseline. Verified with scripts/chaos_catalog_test.py.
-# Placeholders {POLICY1} {ROUTEMAP1} {PREFIXLIST1} {KEYCHAIN1} {SECRET1} get
-# neutral names / random secrets each round.
+# Chaos's catalog for the IS-IS + BGP provider core: templates applied to the
+# parts of the network they fit. Every template × target (× side) is a
+# candidate fault, verified live with scripts/chaos_catalog_test.py:
+# inject → a symptom appears → revert → every health check passes again.
+# {var} = a target variable; {POLICY1} {ROUTEMAP1} {PREFIXLIST1} {KEYCHAIN1}
+# {SECRET1} = neutral names / random secrets filled in each round.
 
-# ============================== IS-IS — adjacency ==============================
-- id: isis-auth-mismatch
-  protocol: isis
-  category: adjacency
-  title: IS-IS hello authentication on one end only
-  explanation: |
-    One end of the link started authenticating its IS-IS hellos (HMAC-MD5); the other end
-    doesn't. Each side discards the other's hellos, so the adjacency never comes back up.
-    Traffic reroutes over the rest of the triangle, so customers barely notice — but the
-    network has lost its redundancy, and the direct path is gone.
-  find: |
-    `show isis neighbors` is missing the neighbor on one side. `show isis interface <if>`
-    shows authentication configured; XE `show isis neighbors detail` / `debug isis adj-packets`
-    and XR `show isis adjacency` / `show isis statistics` count hellos dropped for authentication.
-  leak_terms: [authentication, password, key]
-  variants:
-    - id: r1-r2-xr
-      scope: [isis:R1-R2]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: the routing protocol adjacency between R1 and R2 went down and hasn't recovered. Traffic between them is taking a longer path."
-      hints:
-        - "Start at the adjacency: which neighbors does `show isis neighbors` list on R1 and on R2?"
-        - "The link itself is fine (ping across it). Compare `show isis interface GigabitEthernet0/0/0/0` on R1 with R2's side."
-        - "One side is now authenticating its hellos. Remove it — or configure the same on both ends."
-      inject:
-        R1: |
+targets:
+  # IS-IS core links; a template with sides [a, b] can hit either end.
+  isis_link:
+    - {link: R1-R2, a: R1, a_if: GigabitEthernet0/0/0/0, a_addr: 10.0.12.1, a_lo: 1.1.1.1, b: R2, b_if: GigabitEthernet0/0/0/0, b_addr: 10.0.12.2, b_lo: 2.2.2.2}
+    - {link: R2-R3, a: R2, a_if: GigabitEthernet0/0/0/1, a_addr: 10.0.23.1, a_lo: 2.2.2.2, b: R3, b_if: GigabitEthernet2, b_addr: 10.0.23.2, b_lo: 3.3.3.3}
+    - {link: R1-R3, a: R1, a_if: GigabitEthernet0/0/0/2, a_addr: 10.0.13.1, a_lo: 1.1.1.1, b: R3, b_if: GigabitEthernet3, b_addr: 10.0.13.2, b_lo: 3.3.3.3}
+  isis_router:
+    - {dev: R1, lo: 1.1.1.1, lo6: "2001:db8::1", observer: R2}
+    - {dev: R2, lo: 2.2.2.2, lo6: "2001:db8::2", observer: R1}
+    - {dev: R3, lo: 3.3.3.3, lo6: "2001:db8::3", observer: R2}
+  # iBGP sessions between a client (dev) and the route reflector R2, per family.
+  ibgp:
+    - {dev: R1, rr: R2, afi: IPv4, xr_af: ipv4 unicast, rr_af: ipv4 unicast, nbr: 2.2.2.2, rr_nbr: 1.1.1.1, sample: 192.0.2.0/24, via: 1.1.1.1}
+    - {dev: R1, rr: R2, afi: IPv6, xr_af: ipv6 unicast, rr_af: ipv6 unicast, nbr: "2001:db8::2", rr_nbr: "2001:db8::1", sample: "2001:db8:c1::/48", via: "2001:db8::1"}
+    - {dev: R3, rr: R2, afi: IPv4, xe_af: ipv4, rr_af: ipv4 unicast, nbr: 2.2.2.2, rr_nbr: 3.3.3.3, sample: 198.51.100.0/24, via: 3.3.3.3,
+       clear_hard: clear ip bgp 2.2.2.2, clear_out: clear ip bgp 2.2.2.2 soft out}
+    - {dev: R3, rr: R2, afi: IPv6, xe_af: ipv6, rr_af: ipv6 unicast, nbr: "2001:DB8::2", rr_nbr: "2001:db8::3", sample: "2001:db8:a5::/48", via: "2001:db8::3",
+       clear_hard: "clear bgp ipv6 unicast 2001:DB8::2", clear_out: "clear bgp ipv6 unicast 2001:DB8::2 soft out"}
+  # eBGP sessions of AS 65000 (dev = our edge router), per family.
+  #   in_*:     a prefix the peer sends, as the route reflector R2 should see it
+  #   out_*:    a prefix we send, as the peer should see it
+  #   export_*: a prefix from this peer, as a *different* eBGP neighbor should see it
+  ebgp:
+    - {dev: R1, peer: R4, party: Customer A (AS 65100), who: customer A, afi: IPv4, xr_af: ipv4 unicast, local: 10.1.14.1, nbr: 10.1.14.2, peer_as: 65100, wrong_as: 65110,
+       in_prefix: 192.0.2.0/24, in_via: 1.1.1.1, out_prefix: 198.51.100.0/24, out_via: 10.1.14.1,
+       export_observer: R5, export_prefix: 192.0.2.0/24, export_via: 10.2.35.1, many: false}
+    - {dev: R1, peer: R4, party: Customer A (AS 65100), who: customer A, afi: IPv6, xr_af: ipv6 unicast, local: "2001:db8:1:14::1", nbr: "2001:db8:1:14::2", peer_as: 65100, wrong_as: 65110,
+       in_prefix: "2001:db8:c1::/48", in_via: "2001:db8::1", out_prefix: "2001:db8:a5::/48", out_via: GigabitEthernet2,
+       export_observer: R5, export_prefix: "2001:db8:c1::/48", export_via: GigabitEthernet0/0/0/0, many: false}
+    - {dev: R1, peer: R6, party: Upstream B peering desk (AS 65300), who: upstream B, afi: IPv4, xr_af: ipv4 unicast, local: 10.3.16.1, nbr: 10.3.16.2, peer_as: 65300, wrong_as: 65310,
+       in_prefix: 6.6.6.6/32, in_via: 1.1.1.1, out_prefix: 100.64.0.0/16, out_via: 10.3.16.1,
+       export_observer: R4, export_prefix: 6.6.6.6/32, export_via: 10.1.14.1, many: true}
+    - {dev: R1, peer: R6, party: Upstream B peering desk (AS 65300), who: upstream B, afi: IPv6, xr_af: ipv6 unicast, local: "2001:db8:3:16::1", nbr: "2001:db8:3:16::2", peer_as: 65300, wrong_as: 65310,
+       in_prefix: "2001:db8:b6::/48", in_via: "2001:db8::1", out_prefix: "2001:db8:6500::/48", out_via: GigabitEthernet2,
+       export_observer: R4, export_prefix: "2001:db8:b6::/48", export_via: GigabitEthernet2, many: true}
+    - {dev: R3, peer: R5, party: Upstream A peering desk (AS 65200), who: upstream A, afi: IPv4, xe_af: ipv4, local: 10.2.35.1, nbr: 10.2.35.2, peer_as: 65200, wrong_as: 65220,
+       in_prefix: 198.51.100.0/24, in_via: 3.3.3.3, out_prefix: 100.64.0.0/16, out_via: 10.2.35.1,
+       export_observer: R4, export_prefix: 198.51.100.0/24, export_via: 10.1.14.1, many: true,
+       pl: ip prefix-list, match: ip address, any: 0.0.0.0/0 le 32, rr_nbr: 2.2.2.2,
+       clear_hard: clear ip bgp 10.2.35.2, clear_in: clear ip bgp 10.2.35.2 soft in, clear_rr_out: clear ip bgp 2.2.2.2 soft out}
+    - {dev: R3, peer: R5, party: Upstream A peering desk (AS 65200), who: upstream A, afi: IPv6, xe_af: ipv6, local: "2001:DB8:2:35::1", nbr: "2001:DB8:2:35::2", peer_as: 65200, wrong_as: 65220,
+       in_prefix: "2001:db8:a5::/48", in_via: "2001:db8::3", out_prefix: "2001:db8:6500::/48", out_via: GigabitEthernet0/0/0/0,
+       export_observer: R4, export_prefix: "2001:db8:a5::/48", export_via: GigabitEthernet2, many: true,
+       pl: ipv6 prefix-list, match: ipv6 address, any: "::/0 le 128", rr_nbr: "2001:DB8::2",
+       clear_hard: "clear bgp ipv6 unicast 2001:DB8:2:35::2", clear_in: "clear bgp ipv6 unicast 2001:DB8:2:35::2 soft in",
+       clear_rr_out: "clear bgp ipv6 unicast 2001:DB8::2 soft out"}
+  aggregate:
+    - {afi: IPv4, prefix: 100.64.0.0/16, devices: [R1, R3], xr_af: ipv4 unicast, xr_route: 100.64.0.0/16 Null0, xe_route: ip route 100.64.0.0 255.255.0.0 Null0}
+    - {afi: IPv6, prefix: "2001:db8:6500::/48", devices: [R1, R3], xr_af: ipv6 unicast, xr_route: "2001:db8:6500::/48 Null0", xe_route: "ipv6 route 2001:DB8:6500::/48 Null0"}
+  static_customer:
+    - {afi: IPv4, dev: R3, prefix: 100.70.20.0/24, right: 100.70.20.0/24, wrong: 100.70.20.0/25, plist: ip prefix-list STATIC-CUST, via: 3.3.3.3}
+    - {afi: IPv6, dev: R3, prefix: "2001:db8:c2::/48", right: "2001:DB8:C2::/48", wrong: "2001:DB8:C2::/49", plist: ipv6 prefix-list STATIC-CUST-V6, via: "2001:db8::3"}
+  route_reflector:
+    - {dev: R2, afi: IPv4, xr_af: ipv4 unicast, c1: 1.1.1.1, c2: 3.3.3.3, observer: R3, sample: 192.0.2.0/24, via: 1.1.1.1}
+    - {dev: R2, afi: IPv6, xr_af: ipv6 unicast, c1: "2001:db8::1", c2: "2001:db8::3", observer: R3, sample: "2001:db8:c1::/48", via: "2001:db8::1"}
+
+templates:
+  # ============================== IS-IS — adjacency ==============================
+  - id: isis-auth
+    protocol: isis
+    category: adjacency
+    target: isis_link
+    sides: [a, b]
+    label: "{dev} {dev_if} (towards {peer})"
+    key: "{dev}:{dev_if}"
+    title: IS-IS hello authentication on one end only
+    explanation: |
+      {dev} started authenticating its IS-IS hellos on the link to {peer}; {peer} doesn't.
+      Each side discards the other's hellos, so the adjacency never comes back. Traffic
+      reroutes around the triangle, so customers barely notice — but the direct path and the
+      redundancy are gone.
+    find: |
+      `show isis neighbors` on {peer} no longer lists {dev}. `show isis interface {dev_if}` on
+      {dev} shows authentication; the interface's hello statistics count the rejected hellos.
+    leak_terms: [authentication, password, key]
+    scope: ["isis:{link}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: the IS-IS adjacency between {dev} and {peer} is down; traffic between them takes a longer path."
+    hints:
+      - "Which IS-IS neighbors do {dev} and {peer} see? Is the link itself up (ping {peer_addr} from {dev})?"
+      - "Compare the IS-IS interface settings on both ends of the {dev}–{peer} link."
+      - "{dev} authenticates its hellos on {dev_if}; {peer} doesn't. Remove it (or configure the same on both ends)."
+    config:
+      iosxr:
+        inject: |
           router isis CORE
-           interface GigabitEthernet0/0/0/0
+           interface {dev_if}
             hello-password hmac-md5 clear {SECRET1}
            !
           !
-      revert:
-        R1: |
+        revert: |
           router isis CORE
-           interface GigabitEthernet0/0/0/0
+           interface {dev_if}
             no hello-password
            !
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 1.1.1.1/32, protocol: i L2, via: 10.0.12.1}
-    - id: r2-r3-xe
-      scope: [isis:R2-R3]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: the routing protocol adjacency between R2 and R3 is down. R3 is still reachable, but not over the direct link."
-      hints:
-        - "Which IS-IS neighbors does R3 see? And R2?"
-        - "Compare the IS-IS settings of R3's GigabitEthernet2 with R2's GigabitEthernet0/0/0/1: `show running-config interface GigabitEthernet2` on R3."
-        - "R3 authenticates its hellos with a key chain; R2 doesn't. Remove the authentication from R3's interface."
-      inject:
-        R3: |
+      iosxe:
+        inject: |
           key chain {KEYCHAIN1}
            key 1
             key-string {SECRET1}
           !
-          interface GigabitEthernet2
+          interface {dev_if}
            isis authentication mode md5
            isis authentication key-chain {KEYCHAIN1}
           !
-      revert:
-        R3: |
-          interface GigabitEthernet2
+        revert: |
+          interface {dev_if}
            no isis authentication mode md5
            no isis authentication key-chain {KEYCHAIN1}
           !
           no key chain {KEYCHAIN1}
-      symptoms:
-        - {type: route, device: R2, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.23.2}
+    symptoms:
+      - {type: route, device: "{peer}", prefix: "{dev_lo}/32", protocol: i L2, via: "{dev_addr}"}
 
-- id: isis-level-mismatch
-  protocol: isis
-  category: adjacency
-  title: Interface level doesn't match the neighbor
-  explanation: |
-    The interface was set to `circuit-type level-1`, but every core router is level-2-only.
-    The interface now offers level 1 only, the neighbor level 2 only — there's no level in
-    common, so no adjacency forms. Level 1 adjacencies also need the same area, which these
-    routers wouldn't have anyway.
-  find: |
-    `show isis neighbors` lacks the neighbor; `show isis interface <if>` shows the circuit type
-    (level-1) next to the router's own is-type (level-2-only).
-  leak_terms: [circuit-type, level-1, level 1]
-  variants:
-    - id: r1-r2-xr
-      scope: [isis:R1-R2]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: R1 lost its routing protocol neighbor towards R2. Everything still seems to route, through R3."
-      hints:
-        - "Look at `show isis neighbors` on both routers, then at `show isis interface GigabitEthernet0/0/0/0` on R1."
-        - "Which IS-IS level does R1 run on that interface, and which level does R2 run?"
-        - "R1's interface was set to `circuit-type level-1`. Remove it so the interface follows the router's level-2-only."
-      inject:
-        R1: |
+  - id: isis-level
+    protocol: isis
+    category: adjacency
+    target: isis_link
+    sides: [a, b]
+    label: "{dev} {dev_if} (towards {peer})"
+    key: "{dev}:{dev_if}"
+    title: Interface level doesn't match the neighbor
+    explanation: |
+      {dev}'s interface to {peer} was set to level 1 only, but every core router runs level 2
+      only. The two ends have no level in common, so no adjacency forms (a level 1 adjacency
+      would also need the same area, which these routers don't share).
+    find: |
+      `show isis neighbors` lacks the neighbor; `show isis interface {dev_if}` (XR) / `show clns
+      interface {dev_if}` (XE) on {dev} shows level 1 next to the router's level-2-only.
+    leak_terms: [circuit-type, level-1, level 1]
+    scope: ["isis:{link}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: {dev} lost its IS-IS neighbor {peer}. The link itself is up."
+    hints:
+      - "`show isis neighbors` on both routers — who's missing?"
+      - "Which IS-IS levels does {dev} run on {dev_if}? And {peer} on its side?"
+      - "{dev}'s {dev_if} is set to level 1 only. Remove the circuit type so it follows the router's level-2-only."
+    config:
+      iosxr:
+        inject: |
           router isis CORE
-           interface GigabitEthernet0/0/0/0
+           interface {dev_if}
             circuit-type level-1
            !
           !
-      revert:
-        R1: |
+        revert: |
           router isis CORE
-           interface GigabitEthernet0/0/0/0
+           interface {dev_if}
             no circuit-type
            !
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 1.1.1.1/32, protocol: i L2, via: 10.0.12.1}
-    - id: r1-r3-xe
-      scope: [isis:R1-R3]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: the direct R1–R3 routing adjacency is down. The link itself is up."
-      hints:
-        - "`show isis neighbors` on R3 (XE) and R1 (XR): who's missing?"
-        - "`show clns interface GigabitEthernet3` on R3 shows which levels the interface runs."
-        - "R3's Gi3 was set to `isis circuit-type level-1`. Remove it."
-      inject:
-        R3: |
-          interface GigabitEthernet3
+      iosxe:
+        inject: |
+          interface {dev_if}
            isis circuit-type level-1
           !
-      revert:
-        R3: |
-          interface GigabitEthernet3
+        revert: |
+          interface {dev_if}
            no isis circuit-type
           !
-      symptoms:
-        - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.13.2}
+    symptoms:
+      - {type: route, device: "{peer}", prefix: "{dev_lo}/32", protocol: i L2, via: "{dev_addr}"}
 
-- id: isis-network-type
-  protocol: isis
-  category: adjacency
-  title: Point-to-point on one end, broadcast on the other
-  explanation: |
-    One end of the link went back to the default broadcast (LAN) network type while the other
-    is point-to-point. IS-IS uses different hello PDUs for the two (LAN IIH vs point-to-point
-    IIH), so each side ignores the other's hellos and the adjacency never forms.
-  find: |
-    `show isis interface <if>` (XR) / `show clns interface <if>` (XE) shows the circuit type:
-    point-to-point on one side, broadcast / LAN with a DIS election on the other.
-  leak_terms: [point-to-point, broadcast, network type]
-  variants:
-    - id: r1-r3-xe
-      scope: [isis:R1-R3]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: the R1–R3 routing adjacency is down. Interfaces are up/up on both routers."
-      hints:
-        - "Compare the IS-IS interface details on both ends of the R1–R3 link."
-        - "XE: `show clns interface GigabitEthernet3`; XR: `show isis interface GigabitEthernet0/0/0/2`. Is it the same kind of circuit?"
-        - "R3's Gi3 lost `isis network point-to-point`. Put it back."
-      inject:
-        R3: |
-          interface GigabitEthernet3
-           no isis network point-to-point
-          !
-      revert:
-        R3: |
-          interface GigabitEthernet3
-           isis network point-to-point
-          !
-      symptoms:
-        - {type: route, device: R1, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.13.2}
-    - id: r1-r2-xr
-      scope: [isis:R1-R2]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: no routing adjacency between R1 and R2 anymore. Pings across the link work."
-      hints:
-        - "Compare `show isis interface GigabitEthernet0/0/0/0` on R1 and R2."
-        - "One end runs the link as a LAN, the other as point-to-point."
-        - "R2's interface lost `point-to-point` under `router isis CORE`. Add it back."
-      inject:
-        R2: |
+  - id: isis-network-type
+    protocol: isis
+    category: adjacency
+    target: isis_link
+    sides: [a, b]
+    label: "{dev} {dev_if} (towards {peer})"
+    key: "{dev}:{dev_if}"
+    title: Point-to-point on one end, broadcast on the other
+    explanation: |
+      {dev}'s end of the link to {peer} went back to the default broadcast (LAN) network type
+      while {peer} runs point-to-point. IS-IS uses different hellos for the two, so each side
+      ignores the other's and the adjacency never forms.
+    find: |
+      `show isis interface {dev_if}` (XR) / `show clns interface {dev_if}` (XE) shows a LAN circuit
+      with a DIS election on one side and point-to-point on the other.
+    leak_terms: [point-to-point, broadcast, network type]
+    scope: ["isis:{link}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: no IS-IS adjacency between {dev} and {peer} anymore; pings across the link work."
+    hints:
+      - "Compare the IS-IS circuit on both ends of the {dev}–{peer} link."
+      - "Is it the same kind of circuit on both sides — point-to-point or LAN?"
+      - "{dev}'s {dev_if} lost its point-to-point setting. Put it back."
+    config:
+      iosxr:
+        inject: |
           router isis CORE
-           interface GigabitEthernet0/0/0/0
+           interface {dev_if}
             no point-to-point
            !
           !
-      revert:
-        R2: |
+        revert: |
           router isis CORE
-           interface GigabitEthernet0/0/0/0
+           interface {dev_if}
             point-to-point
            !
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 1.1.1.1/32, protocol: i L2, via: 10.0.12.1}
+      iosxe:
+        inject: |
+          interface {dev_if}
+           no isis network point-to-point
+          !
+        revert: |
+          interface {dev_if}
+           isis network point-to-point
+          !
+    symptoms:
+      - {type: route, device: "{peer}", prefix: "{dev_lo}/32", protocol: i L2, via: "{dev_addr}"}
 
-- id: isis-mtu
-  protocol: isis
-  category: adjacency
-  title: MTU mismatch — padded hellos dropped
-  explanation: |
-    IS-IS pads its hellos to the full interface MTU, which proves both ends can carry
-    full-size LSPs. One side's MTU was lowered: the big padded hellos from the other side no
-    longer fit and are dropped, so that side never sees its neighbor and the adjacency fails.
-  find: |
-    One router lists the neighbor stuck in Init (or not at all). `show interface <if>` /
-    `show isis interface <if>` shows a lower MTU than the neighbor's.
-  leak_terms: [mtu, padding, size]
-  variants:
-    - id: r2-r3-xr
-      scope: [isis:R2-R3]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: the R2–R3 routing adjacency is down. Small pings across the link work."
-      hints:
-        - "Does each side see the other in `show isis neighbors`? In which state?"
-        - "Try `ping 10.0.23.2 size 1500 df-bit` (XR) from R2. Compare the interfaces' MTU."
-        - "R2's GigabitEthernet0/0/0/1 has a reduced `mtu`. Remove it."
-      inject:
-        R2: |
-          interface GigabitEthernet0/0/0/1
+  - id: isis-mtu
+    protocol: isis
+    category: adjacency
+    target: isis_link
+    sides: [a, b]
+    label: "{dev} {dev_if} (towards {peer})"
+    key: "{dev}:{dev_if}"
+    title: MTU mismatch — padded hellos dropped
+    explanation: |
+      IS-IS pads its hellos to the full MTU, proving both ends can carry full-size LSPs. {dev}'s
+      MTU on the link to {peer} was lowered: {peer}'s full-size hellos no longer fit and are
+      dropped, so {dev} never sees {peer} and the adjacency fails.
+    find: |
+      One side lists the neighbor in Init or not at all. `show interface {dev_if}` / `show isis
+      interface {dev_if}` on {dev} shows a lower MTU than {peer}'s; a ping with a full-size,
+      don't-fragment packet fails.
+    leak_terms: [mtu, padding, size]
+    scope: ["isis:{link}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: the IS-IS adjacency between {dev} and {peer} is down. Small pings across the link work."
+    hints:
+      - "Does each side see the other in `show isis neighbors`? In which state?"
+      - "Small pings work — try a full-size ping with the don't-fragment bit across the {dev}–{peer} link."
+      - "{dev}'s {dev_if} has a reduced MTU. Remove it."
+    config:
+      iosxr:
+        inject: |
+          interface {dev_if}
            mtu 1400
           !
-      revert:
-        R2: |
-          interface GigabitEthernet0/0/0/1
+        revert: |
+          interface {dev_if}
            no mtu
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 3.3.3.3/32, protocol: i L2, via: 10.0.23.2}
+      iosxe:
+        inject: |
+          interface {dev_if}
+           clns mtu 1400
+          !
+        revert: |
+          interface {dev_if}
+           no clns mtu
+          !
+    symptoms:
+      - {type: route, device: "{peer}", prefix: "{dev_lo}/32", protocol: i L2, via: "{dev_addr}"}
 
-# ============================== IS-IS — route advertisement ==============================
-- id: isis-loopback
-  protocol: isis
-  category: advertisement
-  title: Loopback no longer advertised in IS-IS
-  explanation: |
-    The loopback dropped out of IS-IS. Every iBGP session and every BGP next hop of that router
-    is its loopback — so with the loopback unreachable, its iBGP sessions fall, and every
-    route that router learned from its eBGP neighbors disappears from the rest of the AS.
-    One missing /32 in the IGP takes out a whole edge.
-  find: |
-    `show route 1.1.1.1` / `show ip route 3.3.3.3` elsewhere: gone. On the router itself,
-    `show isis database detail <router>` doesn't list the loopback prefix; the iBGP sessions in
-    `show bgp ... summary` sit in Active/Idle.
-  leak_terms: [passive, loopback0 is not, address-family]
-  variants:
-    - id: r1-xr
-      scope: [isis:R1, bgp:R1-R2]
-      reporter: Customer A (AS 65100)
-      ticket: "Our office (192.0.2.0/24) has lost Internet access completely. Our BGP session with you is up and we still receive routes, but nothing gets through."
-      hints:
-        - "Customer A's session is up — so look inside AS 65000. Are R1's iBGP sessions to R2 up?"
-        - "The iBGP sessions run between loopbacks. Can R2 reach 1.1.1.1? `show route 1.1.1.1/32` on R2."
-        - "R1's Loopback0 lost `address-family ipv4 unicast` under `router isis CORE` → `interface Loopback0`. Put it back."
-      inject:
-        R1: |
+  - id: isis-ipv4-off
+    protocol: isis
+    category: adjacency
+    target: isis_link
+    sides: [a, b]
+    label: "{dev} {dev_if} (towards {peer})"
+    key: "{dev}:{dev_if}"
+    title: IS-IS IPv4 disabled on one end of a link
+    explanation: |
+      IS-IS was disabled for IPv4 on {dev}'s interface to {peer}, but IPv6 still runs there.
+      With multi-topology the adjacency stays up for IPv6 — the IPv4 topology simply loses the
+      link, so IPv4 between {dev} and {peer} takes the long way round while IPv6 doesn't.
+    find: |
+      `show isis neighbors` still shows the neighbor, but `show isis topology` (IPv4) and `show
+      route` disagree with the IPv6 view; `show isis interface {dev_if}` lists only IPv6.
+    leak_terms: [address-family, ip router isis, ipv4 unicast]
+    scope: ["isis:{link}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: IPv4 traffic between {dev} and {peer} no longer uses their direct link; IPv6 still does."
+    hints:
+      - "The adjacency is up — so compare the IPv4 and IPv6 routing tables on {peer} for {dev}'s loopbacks."
+      - "Which address families run IS-IS on {dev}'s {dev_if}?"
+      - "IPv4 IS-IS was removed from {dev}'s {dev_if}. Enable it again."
+    config:
+      iosxr:
+        inject: |
+          router isis CORE
+           interface {dev_if}
+            no address-family ipv4 unicast
+           !
+          !
+        revert: |
+          router isis CORE
+           interface {dev_if}
+            address-family ipv4 unicast
+            !
+           !
+          !
+      iosxe:
+        inject: |
+          interface {dev_if}
+           no ip router isis CORE
+          !
+        revert: |
+          interface {dev_if}
+           ip router isis CORE
+          !
+    symptoms:
+      - {type: route, device: "{peer}", prefix: "{dev_lo}/32", protocol: i L2, via: "{dev_addr}"}
+
+  # ============================== IS-IS — route advertisement ==============================
+  - id: isis-loopback
+    protocol: isis
+    category: advertisement
+    target: isis_router
+    label: "{dev} Loopback0"
+    key: "{dev}"
+    title: Loopback no longer advertised in IS-IS
+    explanation: |
+      {dev}'s loopback {lo} dropped out of IS-IS. Every iBGP session and BGP next hop of {dev} is
+      that loopback — with it unreachable, {dev}'s iBGP sessions fall and every route it brings
+      into the AS disappears. One missing /32 in the IGP takes out a whole router.
+    find: |
+      `show route {lo}/32` elsewhere: gone. On {dev}, `show isis database detail` doesn't list it;
+      its iBGP sessions sit in Active / Idle.
+    leak_terms: [passive, loopback0 is not, address-family]
+    scope: ["isisrtr:{dev}", "lo:{dev}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: {dev}'s loopback {lo} is unreachable from the rest of the network."
+    hints:
+      - "Can {observer} reach {lo}? Are {dev}'s iBGP sessions up?"
+      - "Is {lo}/32 in {dev}'s own IS-IS LSP? `show isis database detail` on {observer}."
+      - "{dev}'s Loopback0 isn't advertised in IS-IS anymore. Put it back."
+    config:
+      iosxr:
+        inject: |
           router isis CORE
            interface Loopback0
             no address-family ipv4 unicast
            !
           !
-      revert:
-        R1: |
+        revert: |
           router isis CORE
            interface Loopback0
             address-family ipv4 unicast
             !
            !
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
-        - {type: ping, from: H1, to: 198.51.100.10, count: 5, min_success: 80}
-    - id: r3-xe
-      scope: [isis:R3, bgp:R2-R3]
-      reporter: Upstream A peering desk (AS 65200)
-      ticket: "Your session to us at 10.2.35.1 is up, but traffic from our customers to your customer 192.0.2.0/24 is being dropped inside your network."
-      hints:
-        - "Upstream A's session is fine — check R3's iBGP sessions to R2."
-        - "Is 3.3.3.3 (and 2001:db8::3) in R2's routing table?"
-        - "R3 stopped advertising its loopback: `passive-interface Loopback0` is gone from `router isis CORE`."
-      inject:
-        R3: |
+      iosxe:
+        inject: |
           router isis CORE
            no passive-interface Loopback0
           !
-      revert:
-        R3: |
+        revert: |
           router isis CORE
            passive-interface Loopback0
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 3.3.3.3/32, protocol: i L2}
-        - {type: route, device: R3, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
+    symptoms:
+      - {type: route, device: "{observer}", prefix: "{lo}/32", protocol: i L2}
 
-- id: isis-metric-style
-  protocol: isis
-  category: advertisement
-  title: Narrow metrics on one router
-  explanation: |
-    One router went back to narrow metrics. Narrow-only routers advertise their prefixes in the
-    old TLVs (128/130) and ignore the wide ones (135/235); wide-only routers ignore the narrow
-    TLVs. The adjacencies stay up — but the router's prefixes vanish from everyone else's
-    tables, and it stops understanding theirs. Multi-topology IPv6 needs wide metrics too:
-    on IOS XE, switching to narrow metrics silently **removes** `multi-topology` from the IPv6
-    address family, so the fix is two commands — wide metrics back, and multi-topology back.
-  find: |
-    Adjacency up, routes missing: `show isis database detail <router>` shows the router's LSP
-    with "IP Reachability" (narrow) instead of "Extended IP Reachability" TLVs. `show isis`
-    / `show isis protocol` shows the metric style.
-  leak_terms: [narrow, wide, metric-style, tlv]
-  variants:
-    - id: r3-xe
-      scope: [isis:R3]
-      reporter: Customer A (AS 65100)
-      ticket: "We can't reach the server at 198.51.100.10 at upstream A anymore. Other Internet destinations behind upstream B work."
-      hints:
-        - "Follow the path: how does AS 65000 reach 198.51.100.0/24, and is its BGP next hop reachable?"
-        - "R3's IS-IS adjacencies are up, yet 3.3.3.3 is missing on R1 and R2. Look at R3's LSP: `show isis database detail R3.00-00` on R2."
-        - "R3 advertises narrow metrics: `metric-style narrow` under `router isis CORE`. Set it back to wide — then check IPv6: IOS XE dropped `multi-topology` from the IPv6 address family when metrics went narrow."
-      inject:
-        R3: |
+  - id: isis-metric-style
+    protocol: isis
+    category: advertisement
+    target: isis_router
+    label: "{dev}"
+    key: "{dev}"
+    title: Narrow metrics on one router
+    explanation: |
+      {dev} went back to narrow metrics. Narrow-only routers advertise in the old TLVs and ignore
+      the wide ones; wide-only routers ignore narrow TLVs. Adjacencies stay up, but {dev}'s
+      prefixes vanish from everyone else's tables. On IOS XE, narrow metrics also silently
+      remove `multi-topology` from the IPv6 address family — the fix there is two commands.
+    find: |
+      Adjacency up, routes missing: `show isis database detail {dev}.00-00` shows "IP Reachability"
+      (narrow) instead of "Extended IP Reachability"; `show isis protocol` shows the metric style.
+    leak_terms: [narrow, wide, metric-style, tlv]
+    scope: ["isisrtr:{dev}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: {dev}'s routes have disappeared from the core although its neighbors are all up."
+    hints:
+      - "{dev}'s IS-IS adjacencies are up, yet {lo} is missing on {observer}. Look at {dev}'s LSP from {observer}."
+      - "Compare the TLVs in {dev}'s LSP with another router's: `show isis database detail`."
+      - "{dev} uses narrow metrics. Set them back to wide (on IOS XE, check IPv6 multi-topology afterwards)."
+    config:
+      iosxr:
+        inject: |
+          router isis CORE
+           address-family ipv4 unicast
+            metric-style narrow
+           !
+          !
+        revert: |
+          router isis CORE
+           address-family ipv4 unicast
+            metric-style wide
+           !
+          !
+      iosxe:
+        inject: |
           router isis CORE
            metric-style narrow
           !
-      revert:
-        R3: |
+        revert: |
           router isis CORE
            metric-style wide
            address-family ipv6
             multi-topology
            exit-address-family
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 3.3.3.3/32, protocol: i L2}
-        - {type: ping, from: H1, to: 198.51.100.10, count: 5, min_success: 80}
-    - id: r2-xr
-      scope: [isis:R2]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: every IPv4 iBGP session on the route reflector R2 is down. IPv6 iBGP sessions are up."
-      hints:
-        - "IPv4 sessions down, IPv6 up, IS-IS adjacencies up. What does R1's routing table say about 2.2.2.2?"
-        - "Look at R2's own LSP from R1: `show isis database detail R2.00-00`. Compare it with R1's."
-        - "R2's IPv4 address family uses `metric-style narrow`. Set it to wide."
-      inject:
-        R2: |
-          router isis CORE
-           address-family ipv4 unicast
-            metric-style narrow
-           !
-          !
-      revert:
-        R2: |
-          router isis CORE
-           address-family ipv4 unicast
-            metric-style wide
-           !
-          !
-      symptoms:
-        - {type: route, device: R1, prefix: 2.2.2.2/32, protocol: i L2}
-        - {type: route, device: R3, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
+    symptoms:
+      - {type: route, device: "{observer}", prefix: "{lo}/32", protocol: i L2}
 
-- id: isis-topology-mismatch
-  protocol: isis
-  category: advertisement
-  title: Single-topology IPv6 on one router
-  explanation: |
-    The core runs IPv6 in its own topology (multi-topology, MT ID 2). One router went back to
-    single topology: it advertises IPv6 in the standard topology and ignores the MT TLVs. The
-    adjacency stays up, IPv4 is fine — but that router's IPv6 prefixes disappear and it can't
-    compute IPv6 paths, so IPv6 iBGP sessions and IPv6 customer traffic through it fail.
-  find: |
-    IPv4 fine, IPv6 broken around one router. `show isis ipv6 topology` lists it missing;
-    `show isis database detail <router>` shows IPv6 Reachability (TLV 236) instead of MT IPv6
-    Reachability (TLV 237). `show isis protocol` shows the topology mode.
-  leak_terms: [topology, multi-topology, single-topology, mt]
-  variants:
-    - id: r3-xe
-      scope: [isis:R3, isis6:R3]
-      reporter: Customer A (AS 65100)
-      ticket: "IPv6 to the server at upstream A (2001:db8:a5:5::10) fails since this morning. IPv4 to the same server (198.51.100.10) still works."
-      hints:
-        - "Only IPv6, only towards upstream A. Is R3's IPv6 iBGP session to R2 up? Can R2 reach 2001:db8::3?"
-        - "R3's IS-IS adjacencies are up. Compare `show isis protocol` on R3 with the XR routers — how is IPv6 handled?"
-        - "R3's `address-family ipv6` under `router isis CORE` lost `multi-topology`. Put it back."
-      inject:
-        R3: |
-          router isis CORE
-           address-family ipv6
-            no multi-topology
-           exit-address-family
-          !
-      revert:
-        R3: |
-          router isis CORE
-           address-family ipv6
-            multi-topology
-           exit-address-family
-          !
-      symptoms:
-        - {type: route, device: R2, prefix: "2001:db8::3/128", protocol: i L2}
-        - {type: ping, from: H1, to: "2001:db8:a5:5::10", count: 5, min_success: 80}
-    - id: r2-xr
-      scope: [isis:R2, isis6:R2]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: all IPv6 iBGP sessions on the route reflector R2 are down. IPv4 is fine."
-      hints:
-        - "IPv6 only, on R2. Can R1 reach 2001:db8::2?"
-        - "Compare R2's IPv6 IS-IS address family with R1's: `show running-config router isis CORE`."
-        - "R2 runs IPv6 as `single-topology`. Remove it (IOS XR defaults to multi-topology)."
-      inject:
-        R2: |
+  - id: isis-topology
+    protocol: isis
+    category: advertisement
+    target: isis_router
+    label: "{dev}"
+    key: "{dev}"
+    title: Single-topology IPv6 on one router
+    explanation: |
+      The core runs IPv6 in its own topology (multi-topology). {dev} went back to single
+      topology: it advertises IPv6 in the standard topology and ignores the multi-topology TLVs.
+      IPv4 is fine, the adjacencies stay up — but {dev}'s IPv6 prefixes disappear, and IPv6 iBGP
+      sessions and traffic through it fail.
+    find: |
+      IPv4 fine, IPv6 broken around {dev}. `show isis ipv6 topology` is missing it; its LSP carries
+      IPv6 Reachability (TLV 236) instead of MT IPv6 Reachability (TLV 237).
+    leak_terms: [topology, multi-topology, single-topology, mt]
+    scope: ["isisrtr:{dev}", "isis6:{dev}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: IPv6 to {dev} ({lo6}) is unreachable from the core; IPv4 to {dev} is fine."
+    hints:
+      - "IPv6 only. Can {observer} reach {lo6}?"
+      - "Compare how IPv6 is handled in IS-IS on {dev} and on its neighbors: `show isis protocol`."
+      - "{dev} runs IPv6 single-topology. Make it multi-topology again."
+    config:
+      iosxr:
+        inject: |
           router isis CORE
            address-family ipv6 unicast
             single-topology
            !
           !
-      revert:
-        R2: |
+        revert: |
           router isis CORE
            address-family ipv6 unicast
             no single-topology
            !
           !
-      symptoms:
-        - {type: route, device: R1, prefix: "2001:db8::2/128", protocol: i L2}
-        - {type: route, device: R1, prefix: "2001:db8:a5::/48", protocol: B, via: "2001:db8::3"}
+      iosxe:
+        inject: |
+          router isis CORE
+           address-family ipv6
+            no multi-topology
+           exit-address-family
+          !
+        revert: |
+          router isis CORE
+           address-family ipv6
+            multi-topology
+           exit-address-family
+          !
+    symptoms:
+      - {type: route, device: "{observer}", prefix: "{lo6}/128", protocol: i L2}
 
-# ============================== BGP — neighbor adjacency ==============================
-- id: bgp-remote-as
-  protocol: bgp
-  category: adjacency
-  title: Wrong remote AS
-  explanation: |
-    The neighbor's remote AS was changed to a wrong number. When the peer's OPEN arrives with
-    its real AS, the session is rejected with a NOTIFICATION ("bad peer AS") and stays down,
-    retrying forever.
-  find: |
-    `show bgp ... summary` shows the neighbor in Active/Idle. `show bgp neighbor X` (XR) /
-    `show bgp ipv4 unicast neighbors X` (XE) shows the configured remote AS and the last
-    NOTIFICATION / reset reason; compare with the AS the peer expects.
-  leak_terms: [remote-as, remote as, 65101, 65202, bad peer]
-  variants:
-    - id: r1-customer-xr
-      scope: [bgp:R1-R4]
-      reporter: Customer A (AS 65100)
-      ticket: "Our BGP session to you (we're 10.1.14.2, AS 65100) dropped and won't come back. We haven't changed anything on our side."
-      hints:
-        - "What state is the session in on R1? `show bgp ipv4 unicast summary`."
-        - "`show bgp neighbor 10.1.14.2` on R1: look at the remote AS and the last reset reason."
-        - "R1 has the customer as AS 65101. It's AS 65100."
-      inject:
-        R1: |
+  # ============================== BGP — neighbor adjacency ==============================
+  - id: ibgp-update-source
+    protocol: bgp
+    category: adjacency
+    target: ibgp
+    label: "{dev} ↔ {rr} ({afi} iBGP)"
+    key: "{dev}:{afi}"
+    title: iBGP sourced from the wrong address
+    explanation: |
+      `update-source Loopback0` was removed from {dev}'s {afi} session to the reflector, and {dev} was
+      set to only open the session itself. {dev} now connects from an interface address; {rr} only
+      knows the neighbor by its loopback and rejects it — and {rr}'s own connection attempts to
+      {dev}'s loopback are refused, so the session never comes back up. (Without the active-only
+      setting the session would re-form from {rr}'s side: that's why a missing update-source on one
+      end often goes unnoticed.)
+    find: |
+      The session sits in Active on both sides; the neighbor detail on {dev} shows an interface
+      address as the local address and the session open mode limited to active.
+    leak_terms: [update-source, source address, sourced, active-only, connection-mode]
+    scope: ["ibgp:{dev}:{afi}", "lo:{dev}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: the {afi} iBGP session between {dev} and the route reflector {rr} is down."
+    hints:
+      - "The loopbacks reach each other (ping {nbr} from {dev}, sourced from Loopback0). So what's different about the session?"
+      - "Which local address does {dev} use for the session to {nbr}? Which address does {rr} expect — and who is allowed to open the connection?"
+      - "{dev}'s neighbor {nbr} lost `update-source Loopback0` and only opens the session actively."
+    config:
+      iosxr:
+        inject: |
           router bgp 65000
-           neighbor 10.1.14.2
-            remote-as 65101
-           !
-          !
-      revert:
-        R1: |
-          router bgp 65000
-           neighbor 10.1.14.2
-            remote-as 65100
-           !
-          !
-      symptoms:
-        - {type: route, device: R2, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
-    - id: r3-upstream-xe
-      scope: [bgp:R3-R5]
-      reporter: Upstream A peering desk (AS 65200)
-      ticket: "Our IPv4 BGP session with you (10.2.35.1 ↔ 10.2.35.2) is down; our logs show your side rejecting us. We're AS 65200 as always."
-      hints:
-        - "`show bgp ipv4 unicast summary` on R3, then the neighbor detail."
-        - "Check the remote AS configured for 10.2.35.2 against what upstream A says."
-        - "`neighbor 10.2.35.2 remote-as 65202` — it should be 65200."
-      inject:
-        R3: |
-          router bgp 65000
-           neighbor 10.2.35.2 remote-as 65202
-          !
-      revert:
-        R3: |
-          router bgp 65000
-           neighbor 10.2.35.2 remote-as 65200
-          !
-      symptoms:
-        - {type: route, device: R5, prefix: 100.64.0.0/16, protocol: B, via: 10.2.35.1}
-
-- id: bgp-update-source
-  protocol: bgp
-  category: adjacency
-  title: iBGP sourced from the wrong address
-  explanation: |
-    `update-source Loopback0` was removed — harmless until the session next resets (here it
-    did, straight away). The router then opens its iBGP session from the
-    outgoing interface's address — but the reflector only has a neighbor configured for the
-    loopback, so it rejects the connection from an unknown address. The session never comes up.
-  find: |
-    The session sits in Active on both sides. `show bgp neighbor X` shows the local address
-    used (an interface address, not the loopback); `show tcp brief` shows connection attempts
-    from the wrong source.
-  leak_terms: [update-source, source address, sourced]
-  variants:
-    - id: r3-v4-xe
-      scope: [bgp:R2-R3]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: IPv4 iBGP between R3 and the route reflector R2 is down. IPv6 iBGP between them is up."
-      hints:
-        - "The loopbacks reach each other (ping 2.2.2.2 source Loopback0 from R3). So what's different about the session?"
-        - "`show bgp ipv4 unicast neighbors 2.2.2.2` on R3: which local address does it use? What does R2 expect?"
-        - "R3 lost `neighbor 2.2.2.2 update-source Loopback0`."
-      inject:
-        R3: |
-          router bgp 65000
-           no neighbor 2.2.2.2 update-source Loopback0
-          !
-          do clear ip bgp 2.2.2.2
-      revert:
-        R3: |
-          router bgp 65000
-           neighbor 2.2.2.2 update-source Loopback0
-          !
-          do clear ip bgp 2.2.2.2
-      symptoms:
-        - {type: route, device: R2, prefix: 198.51.100.0/24, protocol: B, via: 3.3.3.3}
-    - id: r1-v6-xr
-      scope: [bgp6:R1-R2]
-      reporter: AS 65000 monitoring
-      ticket: "Alarm: IPv6 iBGP between R1 and the route reflector R2 is down. IPv4 iBGP is fine."
-      hints:
-        - "IPv6 only, R1–R2 only. Is the session even trying? `show bgp neighbor 2001:db8::2` on R1."
-        - "Which IPv6 address does R1 source the session from, and which does R2 have configured as the neighbor?"
-        - "Neighbor 2001:db8::2 on R1 lost `update-source Loopback0`."
-      inject:
-        R1: |
-          router bgp 65000
-           neighbor 2001:db8::2
+           neighbor {nbr}
             no update-source
+            session-open-mode active-only
            !
           !
-      revert:
-        R1: |
+        revert: |
           router bgp 65000
-           neighbor 2001:db8::2
+           neighbor {nbr}
             update-source Loopback0
+            no session-open-mode
            !
           !
-      symptoms:
-        - {type: route, device: R1, prefix: "2001:db8:a5::/48", protocol: B, via: "2001:db8::3"}
-
-- id: bgp-md5
-  protocol: bgp
-  category: adjacency
-  title: TCP MD5 password on one side only
-  explanation: |
-    An MD5 password was configured on one side of the session. Every TCP segment must now
-    carry a matching MD5 signature (RFC 2385); the peer sends none. The running session
-    survives until its next reset (or its hold timer expires) — then the TCP handshake is
-    silently dropped: no NOTIFICATION, the session just never re-establishes.
-  find: |
-    Neighbor stuck in Active/Connect. `show bgp neighbor X` shows a password configured; logs
-    show TCP MD5 failures (XE: `%TCP-6-BADAUTH`). Compare with the peer.
-  leak_terms: [password, md5, authentication, signature]
-  variants:
-    - id: r1-upstream-b-xr
-      scope: [bgp:R1-R6]
-      reporter: Upstream B peering desk (AS 65300)
-      ticket: "Our IPv4 BGP session with you (10.3.16.2 ↔ 10.3.16.1) is down and stays in Connect on our side. IPv6 is up."
-      hints:
-        - "Ping across the link works. What does R1 say about neighbor 10.3.16.2?"
-        - "Look for differences in the neighbor's TCP settings: `show bgp neighbor 10.3.16.2` on R1."
-        - "R1 has a `password` on neighbor 10.3.16.2; upstream B doesn't. Remove it."
-      inject:
-        R1: |
+      iosxe:
+        inject: |
           router bgp 65000
-           neighbor 10.3.16.2
+           no neighbor {nbr} update-source Loopback0
+           neighbor {nbr} transport connection-mode active
+          !
+          do {clear_hard}
+        revert: |
+          router bgp 65000
+           neighbor {nbr} update-source Loopback0
+           no neighbor {nbr} transport connection-mode active
+          !
+          do {clear_hard}
+    symptoms:
+      - {type: route, device: "{rr}", prefix: "{sample}", protocol: B, via: "{via}"}
+
+  - id: ibgp-md5
+    protocol: bgp
+    category: adjacency
+    target: ibgp
+    label: "{dev} ↔ {rr} ({afi} iBGP, {dev}'s side)"
+    key: "{dev}:{afi}"
+    title: TCP MD5 password on one side of an iBGP session
+    explanation: |
+      {dev} set an MD5 password on its {afi} session to {rr}; {rr} has none. After the session
+      reset, every TCP segment from {rr} lacks the signature {dev} now requires — the handshake is
+      silently dropped and the session never re-establishes.
+    find: |
+      Neighbor stuck in Active / Connect; `show bgp neighbor {nbr}` on {dev} shows a password
+      configured; logs show TCP MD5 failures.
+    leak_terms: [password, md5, authentication, signature]
+    scope: ["ibgp:{dev}:{afi}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: {dev}'s {afi} iBGP session to the route reflector {rr} went down and keeps failing to connect."
+    hints:
+      - "The loopbacks are reachable. What does each side say about the session's state and the TCP connection?"
+      - "Compare the neighbor settings for this session on {dev} and on {rr}."
+      - "{dev} has an MD5 password on neighbor {nbr}; {rr} doesn't. Remove it."
+    config:
+      iosxr:
+        inject: |
+          router bgp 65000
+           neighbor {nbr}
             password clear {SECRET1}
            !
           !
-          do clear bgp 10.3.16.2
-      revert:
-        R1: |
+          do clear bgp {nbr}
+        revert: |
           router bgp 65000
-           neighbor 10.3.16.2
+           neighbor {nbr}
             no password
            !
           !
-      symptoms:
-        - {type: route, device: R6, prefix: 100.64.0.0/16, protocol: B, via: 10.3.16.1}
-    - id: r3-upstream-a-xe
-      scope: [bgp:R3-R5]
-      reporter: Upstream A peering desk (AS 65200)
-      ticket: "Our IPv4 BGP session with you (10.2.35.2 ↔ 10.2.35.1) is down; the TCP connection never completes. IPv6 is fine."
-      hints:
-        - "`show bgp ipv4 unicast summary` on R3, then the neighbor detail and `show logging`."
-        - "The TCP session never forms — what can make TCP segments from the peer unacceptable?"
-        - "`neighbor 10.2.35.2 password` on R3. Remove it."
-      inject:
-        R3: |
+      iosxe:
+        inject: |
           router bgp 65000
-           neighbor 10.2.35.2 password {SECRET1}
+           neighbor {nbr} password {SECRET1}
           !
-          do clear ip bgp 10.2.35.2
-      revert:
-        R3: |
+          do {clear_hard}
+        revert: |
           router bgp 65000
-           no neighbor 10.2.35.2 password
+           no neighbor {nbr} password
           !
-      symptoms:
-        - {type: route, device: R5, prefix: 100.64.0.0/16, protocol: B, via: 10.2.35.1}
+    symptoms:
+      - {type: route, device: "{rr}", prefix: "{sample}", protocol: B, via: "{via}"}
 
-- id: bgp-af-activate
-  protocol: bgp
-  category: adjacency
-  title: Neighbor not active in the address family
-  explanation: |
-    The neighbor was removed from its address family. The TCP session may still come up,
-    but no address family is negotiated, so no routes are exchanged — or the session doesn't
-    come up at all. On IOS XE, `no neighbor X activate` also deletes every per-family setting
-    for that neighbor (next-hop-self, route maps…), so restoring it means putting those back too.
-  find: |
-    `show bgp ipv6 unicast summary` doesn't list the neighbor (or it's Idle);
-    `show bgp ... neighbors X` shows which families were negotiated.
-  leak_terms: [activate, address family, address-family]
-  variants:
-    - id: r3-v6-xe
-      scope: [bgp6:R2-R3]
-      reporter: Customer A (AS 65100)
-      ticket: "IPv6 traffic to the server at upstream A (2001:db8:a5:5::10) fails. IPv4 to 198.51.100.10 works."
-      hints:
-        - "How does AS 65000 learn 2001:db8:a5::/48? Is it in R1's and R2's IPv6 BGP tables?"
-        - "`show bgp ipv6 unicast summary` on R3 — is the reflector there?"
-        - "Neighbor 2001:DB8::2 isn't activated under `address-family ipv6` on R3. Activate it again — and restore its `next-hop-self`."
-      inject:
-        R3: |
+  - id: ibgp-md5-rr
+    protocol: bgp
+    category: adjacency
+    target: ibgp
+    device: "{rr}"
+    label: "{target_dev} ↔ {rr} ({afi} iBGP, {rr}'s side)"
+    key: "{target_dev}:{afi}"
+    title: TCP MD5 password on the route reflector's side
+    explanation: |
+      The route reflector {rr} set an MD5 password on its {afi} session to {target_dev}; {target_dev} has none.
+      After the reset the TCP handshake is silently dropped, and {target_dev}'s routes no longer reach
+      the rest of the AS (nor the AS's routes {target_dev}).
+    find: |
+      Neighbor stuck in Active / Connect on both sides; `show bgp neighbor {rr_nbr}` on {rr} shows a
+      password configured.
+    leak_terms: [password, md5, authentication, signature]
+    scope: ["ibgp:{target_dev}:{afi}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: the {afi} iBGP session between {target_dev} and {rr} is down; {target_dev} keeps retrying."
+    hints:
+      - "What state is the session in on {rr} and on {target_dev}? Does the TCP connection ever complete?"
+      - "Look at the neighbor's settings on the route reflector this time."
+      - "{rr} has an MD5 password on neighbor {rr_nbr}. Remove it."
+    config:
+      iosxr:
+        inject: |
           router bgp 65000
-           address-family ipv6
-            no neighbor 2001:DB8::2 activate
-           exit-address-family
-          !
-      revert:
-        R3: |
-          router bgp 65000
-           address-family ipv6
-            neighbor 2001:DB8::2 activate
-            neighbor 2001:DB8::2 next-hop-self
-           exit-address-family
-          !
-      symptoms:
-        - {type: route, device: R1, prefix: "2001:db8:a5::/48", protocol: B, via: "2001:db8::3"}
-    - id: r2-v4-xr
-      scope: [bgp:R1-R2]
-      reporter: Customer A (AS 65100)
-      ticket: "Our BGP session with you is up, but we only receive routes we can reach through upstream B — 198.51.100.0/24 shows a long AS path now and the server there is slow or unreachable."
-      hints:
-        - "Customer A's session is up. Which IPv4 iBGP sessions does the reflector R2 have, and are they exchanging prefixes?"
-        - "`show bgp ipv4 unicast summary` on R2 — is R1 listed?"
-        - "R2's neighbor 1.1.1.1 lost its `address-family ipv4 unicast` (and with it `route-reflector-client`). Put both back."
-      inject:
-        R2: |
-          router bgp 65000
-           neighbor 1.1.1.1
-            no address-family ipv4 unicast
+           neighbor {rr_nbr}
+            password clear {SECRET1}
            !
           !
-      revert:
-        R2: |
+          do clear bgp {rr_nbr}
+        revert: |
           router bgp 65000
-           neighbor 1.1.1.1
-            address-family ipv4 unicast
-             route-reflector-client
-            !
+           neighbor {rr_nbr}
+            no password
            !
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
+    symptoms:
+      - {type: route, device: "{rr}", prefix: "{sample}", protocol: B, via: "{via}"}
 
-- id: bgp-max-prefix
-  protocol: bgp
-  category: adjacency
-  title: Maximum-prefix limit tripped
-  explanation: |
-    A maximum-prefix limit far below what the peer sends was set on the session. As soon as
-    the peer sends more prefixes than allowed, the router tears the session down and keeps it
-    down. Even after fixing the limit, the session stays down until it's cleared — a classic
-    second trap.
-  find: |
-    `show bgp ... summary` shows Idle with "PfxCt" (XE) / "Idle (PfxCt)" (XR); the neighbor
-    detail shows the maximum-prefix limit and "Last reset: maximum prefix exceeded".
-  leak_terms: [maximum-prefix, maximum prefix, prefix limit, pfxct]
-  variants:
-    - id: r1-upstream-b-xr
-      scope: [bgp:R1-R6]
-      reporter: Upstream B peering desk (AS 65300)
-      ticket: "Your side keeps our IPv4 session (10.3.16.1 ↔ 10.3.16.2) shut down. It came up briefly, then you sent us a NOTIFICATION and nothing since."
-      hints:
-        - "What state is neighbor 10.3.16.2 in on R1, and what was the last reset reason?"
-        - "`show bgp neighbor 10.3.16.2` on R1 — look at the prefix limits."
-        - "Remove `maximum-prefix` from the neighbor's IPv4 family, then `clear bgp 10.3.16.2` — it won't restart by itself."
-      inject:
-        R1: |
+  - id: ibgp-af-activate
+    protocol: bgp
+    category: adjacency
+    target: ibgp
+    label: "{dev} ↔ {rr} ({afi} iBGP)"
+    key: "{dev}:{afi}"
+    title: Neighbor not active in its address family
+    explanation: |
+      {dev}'s neighbor {nbr} was removed from its {afi} address family. The session no longer
+      exchanges {afi} routes (or doesn't come up at all). Removing a neighbor from a family also
+      deletes its per-family settings — `next-hop-self` among them — so restoring it means
+      putting those back too.
+    find: |
+      The {afi} BGP summary on {dev} doesn't list the neighbor or shows it Idle;
+      the neighbor detail lists the families negotiated.
+    leak_terms: [activate, address family, address-family]
+    scope: ["ibgp:{dev}:{afi}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: no {afi} routes are exchanged between {dev} and the route reflector {rr}."
+    hints:
+      - "Is the {afi} session between {dev} and {rr} up? Does it carry the {afi} family?"
+      - "Look at the {afi} BGP summary on both — is the other side listed?"
+      - "{dev}'s neighbor {nbr} isn't active in the {afi} family anymore. Activate it again — with next-hop-self."
+    config:
+      iosxr:
+        inject: |
           router bgp 65000
-           neighbor 10.3.16.2
-            address-family ipv4 unicast
-             maximum-prefix 2 75
-            !
+           neighbor {nbr}
+            no address-family {xr_af}
            !
           !
-      revert:
-        R1: |
+        revert: |
           router bgp 65000
-           neighbor 10.3.16.2
-            address-family ipv4 unicast
-             no maximum-prefix
-            !
-           !
-          !
-          do clear bgp 10.3.16.2
-      symptoms:
-        - {type: route, device: R6, prefix: 100.64.0.0/16, protocol: B, via: 10.3.16.1}
-    - id: r3-upstream-a-xe
-      scope: [bgp:R3-R5]
-      reporter: Upstream A peering desk (AS 65200)
-      ticket: "You dropped our IPv4 session (10.2.35.1 ↔ 10.2.35.2) right after it came up and haven't let it back since."
-      hints:
-        - "`show bgp ipv4 unicast summary` on R3 — what's in the State/PfxRcd column?"
-        - "The neighbor detail shows why it was reset and which limit applies."
-        - "Remove `neighbor 10.2.35.2 maximum-prefix`, then `clear ip bgp 10.2.35.2`."
-      inject:
-        R3: |
-          router bgp 65000
-           address-family ipv4
-            neighbor 10.2.35.2 maximum-prefix 2
-           exit-address-family
-          !
-      revert:
-        R3: |
-          router bgp 65000
-           address-family ipv4
-            no neighbor 10.2.35.2 maximum-prefix 2
-           exit-address-family
-          !
-          do clear ip bgp 10.2.35.2
-      symptoms:
-        - {type: route, device: R5, prefix: 100.64.0.0/16, protocol: B, via: 10.2.35.1}
-
-# ============================== BGP — route advertisement ==============================
-- id: bgp-next-hop
-  protocol: bgp
-  category: advertisement
-  title: Next hop unreachable (next-hop-self removed)
-  explanation: |
-    `next-hop-self` was removed from the edge router's session to the reflector. Its eBGP
-    routes now reach the rest of the AS with the external peer's address as next hop — an
-    address that isn't in IS-IS. The routes are in everyone's BGP table but marked
-    inaccessible, never installed, and never advertised on.
-  find: |
-    `show bgp ipv4 unicast <prefix>` on R2/R3 shows the path with next hop 10.x.x.x
-    "(inaccessible)" / not valid; `show route <next hop>` has nothing.
-  leak_terms: [next-hop-self, next hop, inaccessible, unreachable next]
-  variants:
-    - id: r1-xr
-      scope: [bgp:R1-R2]
-      reporter: Upstream A peering desk (AS 65200)
-      ticket: "We no longer receive 192.0.2.0/24 (your customer A) from you directly at 10.2.35.1 — only via a third party. Can you check?"
-      hints:
-        - "Does R3 have 192.0.2.0/24 in its BGP table? Is it valid and best?"
-        - "Look at the next hop of that path on R3 or R2 — can they reach it?"
-        - "R1's neighbor 2.2.2.2 lost `next-hop-self` in its IPv4 family."
-      inject:
-        R1: |
-          router bgp 65000
-           neighbor 2.2.2.2
-            address-family ipv4 unicast
-             no next-hop-self
-            !
-           !
-          !
-      revert:
-        R1: |
-          router bgp 65000
-           neighbor 2.2.2.2
-            address-family ipv4 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              next-hop-self
             !
            !
           !
-      symptoms:
-        - {type: route, device: R5, prefix: 192.0.2.0/24, protocol: B, via: 10.2.35.1}
-        - {type: route, device: R3, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
-    - id: r3-xe
-      scope: [bgp:R2-R3]
-      reporter: Customer A (AS 65100)
-      ticket: "Traffic to the server at 198.51.100.10 now takes a much longer path through another provider, and it's slow. Nothing changed on our side."
-      hints:
-        - "Which exit does R1 use for 198.51.100.0/24, and why not R3?"
-        - "Look at the IPv4 path from R3 in R2's BGP table: is its next hop reachable?"
-        - "R3 lost `neighbor 2.2.2.2 next-hop-self` under `address-family ipv4`. Put it back (then `clear ip bgp 2.2.2.2 soft out`)."
-      inject:
-        R3: |
+      iosxe:
+        inject: |
           router bgp 65000
-           address-family ipv4
-            no neighbor 2.2.2.2 next-hop-self
+           address-family {xe_af}
+            no neighbor {nbr} activate
            exit-address-family
           !
-          do clear ip bgp 2.2.2.2 soft out
-      revert:
-        R3: |
+        revert: |
           router bgp 65000
-           address-family ipv4
-            neighbor 2.2.2.2 next-hop-self
+           address-family {xe_af}
+            neighbor {nbr} activate
+            neighbor {nbr} next-hop-self
            exit-address-family
           !
-          do clear ip bgp 2.2.2.2 soft out
-      symptoms:
-        - {type: route, device: R1, prefix: 198.51.100.0/24, protocol: B, via: 3.3.3.3}
+    symptoms:
+      - {type: route, device: "{rr}", prefix: "{sample}", protocol: B, via: "{via}"}
 
-- id: bgp-xr-no-policy
-  protocol: bgp
-  category: advertisement
-  title: IOS XR eBGP session without a route policy
-  explanation: |
-    A route policy was removed from an IOS XR eBGP session. IOS XR follows RFC 8212: an eBGP
-    session without a policy in a direction accepts / advertises **nothing** in that direction.
-    The session stays up and looks healthy — the routes just stop.
-  find: |
-    `show bgp ipv4 unicast summary` shows the session up but PfxRcd / accepted 0 (or nothing
-    advertised); `show bgp neighbor X` says no policy is configured for that direction;
-    `show bgp neighbor X advertised-count` / `routes`.
-  leak_terms: [route-policy, policy, rfc 8212, pass]
-  variants:
-    - id: r1-customer-in
-      scope: [bgp:R1-R4]
-      reporter: Customer A (AS 65100)
-      ticket: "Since this afternoon nobody on the Internet can reach our servers in 192.0.2.0/24. Our BGP session with you is up, and we still get your routes."
-      hints:
-        - "The session is up — but is R1 accepting the customer's prefixes? `show bgp ipv4 unicast summary` on R1."
-        - "`show bgp neighbor 10.1.14.2` on R1: what policies apply to this session, inbound and outbound?"
-        - "The inbound `route-policy PASS in` is gone from neighbor 10.1.14.2's IPv4 family."
-      inject:
-        R1: |
+  - id: ebgp-remote-as
+    protocol: bgp
+    category: adjacency
+    target: ebgp
+    label: "{dev} ↔ {peer} ({who}, {afi})"
+    key: "{dev}:{nbr}"
+    title: Wrong remote AS on an eBGP session
+    explanation: |
+      {dev}'s {afi} session to {who} now expects AS {wrong_as}; the peer is AS {peer_as}. Its OPEN
+      is rejected with a "bad peer AS" NOTIFICATION, and the session stays down, retrying forever.
+    find: |
+      `show bgp ... summary` shows {nbr} Idle / Active; the neighbor detail shows the configured
+      remote AS and the last NOTIFICATION.
+    leak_terms: [remote-as, remote as, "{wrong_as}", bad peer]
+    scope: ["ebgp:{dev}:{nbr}"]
+    reporter: "{party}"
+    ticket: "Our {afi} BGP session with you ({nbr} ↔ {local}) dropped and won't come back. We're AS {peer_as} as always; nothing changed on our side."
+    hints:
+      - "What state is the session to {nbr} in on {dev}, and why was it last reset?"
+      - "Compare the remote AS configured for {nbr} with the AS the peer uses."
+      - "{dev} expects AS {wrong_as} from {nbr}; it's AS {peer_as}."
+    config:
+      iosxr:
+        inject: |
           router bgp 65000
-           neighbor 10.1.14.2
-            address-family ipv4 unicast
+           neighbor {nbr}
+            remote-as {wrong_as}
+           !
+          !
+        revert: |
+          router bgp 65000
+           neighbor {nbr}
+            remote-as {peer_as}
+           !
+          !
+      iosxe:
+        inject: |
+          router bgp 65000
+           neighbor {nbr} remote-as {wrong_as}
+          !
+        revert: |
+          router bgp 65000
+           neighbor {nbr} remote-as {peer_as}
+          !
+    symptoms:
+      - {type: route, device: R2, prefix: "{in_prefix}", protocol: B, via: "{in_via}"}
+
+  - id: ebgp-md5
+    protocol: bgp
+    category: adjacency
+    target: ebgp
+    label: "{dev} ↔ {peer} ({who}, {afi})"
+    key: "{dev}:{nbr}"
+    title: TCP MD5 password on one side of an eBGP session
+    explanation: |
+      {dev} set an MD5 password on its {afi} session to {who}, which has none. After the reset
+      the peer's TCP segments lack the signature, the handshake is silently dropped — no
+      NOTIFICATION, the session just never re-establishes.
+    find: |
+      Neighbor stuck in Active / Connect; the neighbor detail on {dev} shows a password; logs show
+      TCP MD5 failures.
+    leak_terms: [password, md5, authentication, signature]
+    scope: ["ebgp:{dev}:{nbr}"]
+    reporter: "{party}"
+    ticket: "Our {afi} BGP session with you ({nbr} ↔ {local}) is down and stays in Connect on our side."
+    hints:
+      - "Pings across the link work. What does {dev} say about neighbor {nbr}?"
+      - "The TCP session never forms — what can make the peer's TCP segments unacceptable?"
+      - "{dev} has an MD5 password on neighbor {nbr}. Remove it."
+    config:
+      iosxr:
+        inject: |
+          router bgp 65000
+           neighbor {nbr}
+            password clear {SECRET1}
+           !
+          !
+          do clear bgp {nbr}
+        revert: |
+          router bgp 65000
+           neighbor {nbr}
+            no password
+           !
+          !
+      iosxe:
+        inject: |
+          router bgp 65000
+           neighbor {nbr} password {SECRET1}
+          !
+          do {clear_hard}
+        revert: |
+          router bgp 65000
+           no neighbor {nbr} password
+          !
+    symptoms:
+      - {type: route, device: R2, prefix: "{in_prefix}", protocol: B, via: "{in_via}"}
+
+  - id: ebgp-max-prefix
+    protocol: bgp
+    category: adjacency
+    target: ebgp
+    requires: [many]
+    label: "{dev} ↔ {peer} ({who}, {afi})"
+    key: "{dev}:{nbr}"
+    title: Maximum-prefix limit tripped
+    explanation: |
+      A maximum-prefix limit of 2 was put on {dev}'s {afi} session to {who}, which sends more.
+      The session was torn down and stays down — even after the limit is fixed, it needs a clear.
+    find: |
+      `show bgp ... summary` shows {nbr} Idle (PfxCt); the neighbor detail shows the limit and
+      "maximum prefix exceeded" as the last reset.
+    leak_terms: [maximum-prefix, maximum prefix, prefix limit, pfxct]
+    scope: ["ebgp:{dev}:{nbr}"]
+    reporter: "{party}"
+    ticket: "You keep our {afi} session ({nbr} ↔ {local}) shut: it came up briefly, then you sent a NOTIFICATION and nothing since."
+    hints:
+      - "What state is neighbor {nbr} in on {dev}, and what was the last reset reason?"
+      - "Look at the prefix limits on that neighbor."
+      - "Remove the maximum-prefix from {nbr}'s {afi} family, then clear the session — it won't restart by itself."
+    config:
+      iosxr:
+        inject: |
+          router bgp 65000
+           neighbor {nbr}
+            address-family {xr_af}
+             maximum-prefix 2 75
+            !
+           !
+          !
+        revert: |
+          router bgp 65000
+           neighbor {nbr}
+            address-family {xr_af}
+             no maximum-prefix
+            !
+           !
+          !
+          do clear bgp {nbr}
+      iosxe:
+        inject: |
+          router bgp 65000
+           address-family {xe_af}
+            neighbor {nbr} maximum-prefix 2
+           exit-address-family
+          !
+        revert: |
+          router bgp 65000
+           address-family {xe_af}
+            no neighbor {nbr} maximum-prefix 2
+           exit-address-family
+          !
+          do {clear_hard}
+    symptoms:
+      - {type: route, device: R2, prefix: "{in_prefix}", protocol: B, via: "{in_via}"}
+
+  # ============================== BGP — route advertisement ==============================
+  - id: ibgp-next-hop
+    protocol: bgp
+    category: advertisement
+    target: ibgp
+    label: "{dev} → {rr} ({afi})"
+    key: "{dev}:{afi}"
+    title: Next hop unreachable (next-hop-self removed)
+    explanation: |
+      `next-hop-self` was removed from {dev}'s {afi} session to the reflector. {dev}'s eBGP routes
+      now reach the AS with the external peer's address as next hop — not in IS-IS. They sit in
+      everyone's BGP table as inaccessible: never installed, never advertised on.
+    find: |
+      `show bgp {sample}` (XR) / `show bgp {afi} unicast {sample}` (XE) on {rr} shows the path's next hop as an external
+      address, "inaccessible" / not valid; `show route` for that next hop has nothing.
+    leak_terms: [next-hop-self, next hop, inaccessible, unreachable next]
+    scope: ["ibgp:{dev}:{afi}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: {sample}, which reaches us at {dev}, is no longer usable anywhere else in the network."
+    hints:
+      - "Is {sample} in {rr}'s BGP table? Is it valid and best?"
+      - "Look at the next hop of that path — can {rr} reach it?"
+      - "{dev}'s {afi} session to the reflector lost `next-hop-self`."
+    config:
+      iosxr:
+        inject: |
+          router bgp 65000
+           neighbor {nbr}
+            address-family {xr_af}
+             no next-hop-self
+            !
+           !
+          !
+        revert: |
+          router bgp 65000
+           neighbor {nbr}
+            address-family {xr_af}
+             next-hop-self
+            !
+           !
+          !
+      iosxe:
+        inject: |
+          router bgp 65000
+           address-family {xe_af}
+            no neighbor {nbr} next-hop-self
+           exit-address-family
+          !
+          do {clear_out}
+        revert: |
+          router bgp 65000
+           address-family {xe_af}
+            neighbor {nbr} next-hop-self
+           exit-address-family
+          !
+          do {clear_out}
+    symptoms:
+      - {type: route, device: "{rr}", prefix: "{sample}", protocol: B, via: "{via}"}
+
+  - id: ebgp-no-policy-in
+    protocol: bgp
+    category: advertisement
+    target: ebgp
+    label: "{dev} ← {peer} ({who}, {afi})"
+    key: "{dev}:{nbr}"
+    title: IOS XR eBGP session without an inbound policy
+    explanation: |
+      The inbound route policy was removed from {dev}'s {afi} session to {who}. IOS XR follows
+      RFC 8212: no policy, no routes accepted. The session stays up and looks healthy — the
+      routes just stop.
+    find: |
+      The {afi} BGP summary shows the session up with 0 accepted prefixes;
+      `show bgp neighbor {nbr}` shows no inbound policy.
+    leak_terms: [route-policy, policy, rfc 8212, pass]
+    scope: ["ebgp:{dev}:{nbr}"]
+    reporter: "{party}"
+    ticket: "Since this afternoon nobody can reach our network {in_prefix} through you. Our BGP session with you at {local} is up."
+    hints:
+      - "The session is up — but is {dev} accepting {who}'s prefixes?"
+      - "Which policies apply to neighbor {nbr}, in and out?"
+      - "The inbound `route-policy PASS in` is gone from {nbr}'s {afi} family."
+    config:
+      iosxr:
+        inject: |
+          router bgp 65000
+           neighbor {nbr}
+            address-family {xr_af}
              no route-policy PASS in
             !
            !
           !
-      revert:
-        R1: |
+        revert: |
           router bgp 65000
-           neighbor 10.1.14.2
-            address-family ipv4 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              route-policy PASS in
             !
            !
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
-    - id: r1-upstream-b-out
-      scope: [bgp:R1-R6]
-      reporter: Upstream B peering desk (AS 65300)
-      ticket: "Our IPv4 session with you at 10.3.16.1 is up, but we receive no prefixes from you anymore. We reach your networks only through another provider."
-      hints:
-        - "R1 receives upstream B's prefixes fine. What does it send? `show bgp neighbor 10.3.16.2 advertised-count`."
-        - "Check the outbound policy of that neighbor's IPv4 family."
-        - "`route-policy PASS out` is missing on neighbor 10.3.16.2."
-      inject:
-        R1: |
+    symptoms:
+      - {type: route, device: R2, prefix: "{in_prefix}", protocol: B, via: "{in_via}"}
+
+  - id: ebgp-no-policy-out
+    protocol: bgp
+    category: advertisement
+    target: ebgp
+    label: "{dev} → {peer} ({who}, {afi})"
+    key: "{dev}:{nbr}"
+    title: IOS XR eBGP session without an outbound policy
+    explanation: |
+      The outbound route policy was removed from {dev}'s {afi} session to {who}. Under RFC 8212
+      IOS XR then advertises nothing to that neighbor — the session is up, the peer just stops
+      receiving our routes.
+    find: |
+      `show bgp neighbor {nbr} advertised-count` is 0; the neighbor detail shows no outbound policy.
+    leak_terms: [route-policy, policy, rfc 8212, pass]
+    scope: ["ebgp:{dev}:{nbr}"]
+    reporter: "{party}"
+    ticket: "Our {afi} session with you at {local} is up, but we receive no prefixes from you anymore — {out_prefix} comes only through another provider."
+    hints:
+      - "{dev} receives the peer's routes fine. What does it send? Count the advertised routes."
+      - "Check the outbound policy of neighbor {nbr}'s {afi} family."
+      - "`route-policy PASS out` is missing on neighbor {nbr}."
+    config:
+      iosxr:
+        inject: |
           router bgp 65000
-           neighbor 10.3.16.2
-            address-family ipv4 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              no route-policy PASS out
             !
            !
           !
-      revert:
-        R1: |
+        revert: |
           router bgp 65000
-           neighbor 10.3.16.2
-            address-family ipv4 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              route-policy PASS out
             !
            !
           !
-      symptoms:
-        - {type: route, device: R6, prefix: 100.64.0.0/16, protocol: B, via: 10.3.16.1}
+    symptoms:
+      - {type: route, device: "{peer}", prefix: "{out_prefix}", protocol: B, via: "{out_via}"}
 
-- id: bgp-aggregate-anchor
-  protocol: bgp
-  category: advertisement
-  title: Aggregate no longer in the routing table
-  explanation: |
-    The static routes to Null0 that anchor AS 65000's aggregate 100.64.0.0/16 were removed on
-    both edges. A `network` statement only originates a prefix that's in the routing table
-    with exactly that mask, so neither edge originates it anymore and it's withdrawn from the
-    Internet.
-  find: |
-    `show bgp ipv4 unicast 100.64.0.0/16` is empty on the edges; the `network` statement is
-    still there; `show route 100.64.0.0/16` / `show ip route 100.64.0.0 255.255.0.0` has no route.
-  leak_terms: [null0, static route, anchor, network statement]
-  variants:
-    - id: both-edges
-      scope: [adv:100.64]
-      reporter: Upstream A peering desk (AS 65200)
-      ticket: "We no longer see your aggregate 100.64.0.0/16 — from you or from anyone else. Your other prefixes are still there."
-      hints:
-        - "Is 100.64.0.0/16 in R1's and R3's BGP tables? Are the `network` statements still configured?"
-        - "What must be true for a `network` statement to originate a prefix?"
-        - "The static routes 100.64.0.0/16 → Null0 are gone on R1 and R3. Put them back."
-      inject:
-        R1: |
-          router static
-           address-family ipv4 unicast
-            no 100.64.0.0/16 Null0
-           !
-          !
-        R3: |
-          no ip route 100.64.0.0 255.255.0.0 Null0
-      revert:
-        R1: |
-          router static
-           address-family ipv4 unicast
-            100.64.0.0/16 Null0
-           !
-          !
-        R3: |
-          ip route 100.64.0.0 255.255.0.0 Null0
-      symptoms:
-        - {type: route, device: R5, prefix: 100.64.0.0/16, protocol: B}
-        - {type: route, device: R6, prefix: 100.64.0.0/16, protocol: B}
-
-- id: bgp-prefix-filter
-  protocol: bgp
-  category: advertisement
-  title: Prefix filtered by a policy
-  explanation: |
-    A policy now filters a prefix it shouldn't: either a prefix list was edited so it no
-    longer matches the route (a /25 instead of a /24), or a new inbound policy drops the
-    customer's prefix. The session is fine; the one route is gone.
-  find: |
-    Follow the route hop by hop with `show bgp ... <prefix>`; where it stops, check the
-    policies: `show route-map` / `show ip prefix-list` (XE) or `show rpl route-policy` and
-    `show bgp neighbor X` (XR) — and what the neighbor actually sent (`... routes`).
-  leak_terms: [prefix-list, prefix list, filter, route-map, policy, /25]
-  variants:
-    - id: r3-static-xe
-      scope: [adv:static-customer]
-      reporter: Static customer (100.70.20.0/24)
-      ticket: "Our network 100.70.20.0/24 has been unreachable from the Internet since this morning. You route it to us statically."
-      hints:
-        - "Is 100.70.20.0/24 in R3's routing table? In its BGP table?"
-        - "It's redistributed through a route map — what does that route map match?"
-        - "`ip prefix-list STATIC-CUST` now permits 100.70.20.0/25 instead of /24."
-      inject:
-        R3: |
-          no ip prefix-list STATIC-CUST seq 5 permit 100.70.20.0/24
-          ip prefix-list STATIC-CUST seq 5 permit 100.70.20.0/25
-      revert:
-        R3: |
-          no ip prefix-list STATIC-CUST seq 5 permit 100.70.20.0/25
-          ip prefix-list STATIC-CUST seq 5 permit 100.70.20.0/24
-      symptoms:
-        - {type: route, device: R5, prefix: 100.70.20.0/24, protocol: B}
-        - {type: route, device: R2, prefix: 100.70.20.0/24, protocol: B, via: 3.3.3.3}
-    - id: r1-customer-xr
-      scope: [bgp:R1-R4]
-      reporter: Customer A (AS 65100)
-      ticket: "Nobody can reach 192.0.2.0/24 from the Internet anymore. Our BGP session with you is up and we announce the prefix as always."
-      hints:
-        - "Does R1 accept 192.0.2.0/24 from the customer? Compare `show bgp neighbor 10.1.14.2 routes` with what's accepted."
-        - "Which inbound route policy is attached to neighbor 10.1.14.2 now? `show rpl route-policy <name>`."
-        - "A new inbound policy drops 192.0.2.0/24. Attach `route-policy PASS in` again (and delete the other policy)."
-      inject:
-        R1: |
+  - id: ebgp-inbound-filter
+    protocol: bgp
+    category: advertisement
+    target: ebgp
+    label: "{dev} ← {peer} ({who}, {afi})"
+    key: "{dev}:{nbr}"
+    title: A peer's prefix filtered on the way in
+    explanation: |
+      A new inbound policy on {dev}'s {afi} session to {who} drops {in_prefix}. The session is
+      fine and every other route still arrives — that one prefix just never enters AS 65000.
+    find: |
+      Compare what the neighbor sent (`show bgp ... neighbors {nbr} routes` / received) with what
+      was accepted, then read the inbound policy attached to {nbr}.
+    leak_terms: [prefix-list, prefix list, filter, route-map, route-policy, policy, drop]
+    scope: ["ebgp:{dev}:{nbr}"]
+    reporter: "{party}"
+    ticket: "Traffic to our network {in_prefix} doesn't make it through you anymore. We announce it to you at {local} as always."
+    hints:
+      - "Does {dev} have {in_prefix} from {nbr}? Does the neighbor send it?"
+      - "Which inbound policy is attached to {nbr}'s {afi} family now — and what does it match?"
+      - "A new inbound policy drops {in_prefix}. Put the original back (and delete the new one)."
+    config:
+      iosxr:
+        inject: |
           route-policy {POLICY1}
-            if destination in (192.0.2.0/24) then
+            if destination in ({in_prefix}) then
               drop
             else
               pass
@@ -976,167 +1006,247 @@
           end-policy
           !
           router bgp 65000
-           neighbor 10.1.14.2
-            address-family ipv4 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              route-policy {POLICY1} in
             !
            !
           !
-      revert:
-        R1: |
+        revert: |
           no route-policy {POLICY1}
           router bgp 65000
-           neighbor 10.1.14.2
-            address-family ipv4 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              route-policy PASS in
             !
            !
           !
-      symptoms:
-        - {type: route, device: R2, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
+      iosxe:
+        inject: |
+          {pl} {PREFIXLIST1} seq 5 deny {in_prefix}
+          {pl} {PREFIXLIST1} seq 10 permit {any}
+          route-map {ROUTEMAP1} permit 10
+           match {match} prefix-list {PREFIXLIST1}
+          !
+          router bgp 65000
+           address-family {xe_af}
+            neighbor {nbr} route-map {ROUTEMAP1} in
+           exit-address-family
+          !
+          do {clear_in}
+        revert: |
+          router bgp 65000
+           address-family {xe_af}
+            no neighbor {nbr} route-map {ROUTEMAP1} in
+           exit-address-family
+          !
+          no route-map {ROUTEMAP1}
+          no {pl} {PREFIXLIST1}
+          do {clear_in}
+    symptoms:
+      - {type: route, device: R2, prefix: "{in_prefix}", protocol: B, via: "{in_via}"}
 
-- id: bgp-no-export
-  protocol: bgp
-  category: advertisement
-  title: Routes tagged NO_EXPORT
-  explanation: |
-    An inbound policy tags an upstream's routes with the well-known NO_EXPORT community. They
-    still work inside AS 65000 — but no router may advertise them to an eBGP peer. Where such
-    a route is the best path, the customer (and the other upstream) simply stop receiving it.
-  find: |
-    The route is in AS 65000's tables but missing at the customer: `show bgp ... <prefix>` on
-    the edge shows "Community: no-export" and "not advertised to any EBGP peer"; check the
-    inbound policy of the session it came from.
-  leak_terms: [no-export, no_export, community]
-  variants:
-    - id: r1-upstream-b-xr
-      scope: [bgp:R1-R6]
-      reporter: Customer A (AS 65100)
-      ticket: "We can't reach 6.6.6.6 (upstream B) or the anycast service 203.0.113.1 anymore — those routes disappeared from our BGP table. Everything else is fine."
-      hints:
-        - "Does R1 have 6.6.6.6/32? Does it advertise it to the customer? `show bgp neighbor 10.1.14.2 advertised-routes`."
-        - "`show bgp ipv4 unicast 6.6.6.6/32` on R1 — look at the communities and the advertisement status."
-        - "The inbound policy on neighbor 10.3.16.2 now sets `no-export`. Attach `PASS in` again (IPv4 and IPv6) and delete the other policy."
-      inject:
-        R1: |
+  - id: ebgp-no-export
+    protocol: bgp
+    category: advertisement
+    target: ebgp
+    label: "{dev} ← {peer} ({who}, {afi})"
+    key: "{dev}:{nbr}"
+    title: A peer's routes tagged NO_EXPORT
+    explanation: |
+      An inbound policy on {dev}'s {afi} session to {who} tags everything with the well-known
+      NO_EXPORT community. The routes work inside AS 65000, but no router may pass them to an
+      eBGP neighbor — where they're the best path, other customers and peers just stop
+      receiving them.
+    find: |
+      The route is in AS 65000's tables but missing at the other neighbors: `show bgp ... {export_prefix}`
+      on the edge shows "no-export" and "not advertised to any EBGP peer"; check the inbound policy
+      of the session it came from.
+    leak_terms: [no-export, no_export, community]
+    scope: ["ebgp:{dev}:{nbr}", "ibgp:R3:{afi}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: {export_prefix} has disappeared from what we send to our other eBGP neighbors; it's still reachable from inside the network."
+    hints:
+      - "Is {export_prefix} still in AS 65000's tables? Is it advertised to the other eBGP neighbors?"
+      - "`show bgp ... {export_prefix}` on the edge router — look at its communities."
+      - "The inbound policy on {dev}'s session to {nbr} sets `no-export`. Remove it."
+    config:
+      iosxr:
+        inject: |
           route-policy {POLICY1}
             set community (no-export) additive
             pass
           end-policy
           !
           router bgp 65000
-           neighbor 10.3.16.2
-            address-family ipv4 unicast
-             route-policy {POLICY1} in
-            !
-           !
-           neighbor 2001:db8:3:16::2
-            address-family ipv6 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              route-policy {POLICY1} in
             !
            !
           !
-      revert:
-        R1: |
+        revert: |
           no route-policy {POLICY1}
           router bgp 65000
-           neighbor 10.3.16.2
-            address-family ipv4 unicast
-             route-policy PASS in
-            !
-           !
-           neighbor 2001:db8:3:16::2
-            address-family ipv6 unicast
+           neighbor {nbr}
+            address-family {xr_af}
              route-policy PASS in
             !
            !
           !
-      symptoms:
-        - {type: ping, from: H1, to: 6.6.6.6, count: 5, min_success: 80}
-    - id: r3-upstream-a-xe
-      scope: [bgp:R3-R5, bgp:R2-R3]
-      reporter: Customer A (AS 65100)
-      ticket: "The server at 198.51.100.10 (upstream A) is unreachable — 198.51.100.0/24 is gone from the routes you send us. Upstream B's networks still work."
-      hints:
-        - "Does R1 have 198.51.100.0/24? Is it advertised to the customer?"
-        - "Look at the path's communities on R1, then at how R3 receives the route from upstream A."
-        - "R3 has a new inbound route map on 10.2.35.2 that sets `no-export` (and now sends communities to R2). Remove both."
-      inject:
-        R3: |
+      iosxe:
+        inject: |
           route-map {ROUTEMAP1} permit 10
            set community no-export additive
           !
           router bgp 65000
-           address-family ipv4
-            neighbor 10.2.35.2 route-map {ROUTEMAP1} in
-            neighbor 2.2.2.2 send-community
+           address-family {xe_af}
+            neighbor {nbr} route-map {ROUTEMAP1} in
+            neighbor {rr_nbr} send-community
            exit-address-family
           !
-          do clear ip bgp 10.2.35.2 soft in
-          do clear ip bgp 2.2.2.2 soft out
-      revert:
-        R3: |
+          do {clear_in}
+          do {clear_rr_out}
+        revert: |
           router bgp 65000
-           address-family ipv4
-            no neighbor 10.2.35.2 route-map {ROUTEMAP1} in
-            no neighbor 2.2.2.2 send-community
+           address-family {xe_af}
+            no neighbor {nbr} route-map {ROUTEMAP1} in
+            no neighbor {rr_nbr} send-community
            exit-address-family
           !
           no route-map {ROUTEMAP1}
-          do clear ip bgp 10.2.35.2 soft in
-          do clear ip bgp 2.2.2.2 soft out
-      symptoms:
-        - {type: ping, from: H1, to: 198.51.100.10, count: 5, min_success: 80}
+          do {clear_in}
+          do {clear_rr_out}
+    symptoms:
+      - {type: route, device: "{export_observer}", prefix: "{export_prefix}", protocol: B, via: "{export_via}"}
 
-- id: bgp-rr-client
-  protocol: bgp
-  category: advertisement
-  title: Route reflector clients no longer reflected
-  explanation: |
-    `route-reflector-client` was removed from both clients on R2. R2 is now just an iBGP peer
-    — and iBGP split horizon forbids passing an iBGP-learned route to another iBGP peer. R1
-    and R3 stop learning each other's routes; their eBGP routes no longer cross the AS.
-  find: |
-    R2 has every route, R1 and R3 only their own. `show bgp ipv4 unicast neighbors X` on R2
-    no longer shows "Route-Reflector Client"; the prefixes are "not advertised to any peer".
-  leak_terms: [route-reflector, reflector client, split horizon]
-  variants:
-    - id: r2-v4-xr
-      scope: [bgp:R1-R2, bgp:R2-R3]
-      reporter: Upstream A peering desk (AS 65200)
-      ticket: "We now learn your customer's 192.0.2.0/24 only through a third party, with a longer AS path — not from you directly at 10.2.35.1."
-      hints:
-        - "Does R3 have 192.0.2.0/24? Does R2?"
-        - "R2 has it but doesn't pass it on. Why would an iBGP speaker not advertise an iBGP-learned route?"
-        - "R2's neighbors 1.1.1.1 and 3.3.3.3 lost `route-reflector-client` (IPv4)."
-      inject:
-        R2: |
+  - id: aggregate-anchor
+    protocol: bgp
+    category: advertisement
+    target: aggregate
+    label: "AS 65000's {afi} aggregate {prefix}"
+    key: "{afi}"
+    title: Aggregate no longer in the routing table
+    explanation: |
+      The static routes to Null0 that anchor AS 65000's aggregate {prefix} were removed on both
+      edges. A `network` statement only originates a prefix that's in the routing table with that
+      exact mask, so neither edge originates it and it's withdrawn from the Internet.
+    find: |
+      `show bgp ... {prefix}` is empty on the edges while the `network` statements are still
+      configured; `show route` has no {prefix}.
+    leak_terms: [null0, static route, anchor, network statement]
+    scope: ["agg:{afi}"]
+    reporter: Upstream A peering desk (AS 65200)
+    ticket: "We no longer see your aggregate {prefix} — from you or from anyone else. Your other prefixes are still there."
+    hints:
+      - "Is {prefix} in R1's and R3's BGP tables? Are the `network` statements still there?"
+      - "What must be true for a `network` statement to originate a prefix?"
+      - "The static routes for {prefix} to Null0 are gone on R1 and R3. Put them back."
+    config:
+      iosxr:
+        inject: |
+          router static
+           address-family {xr_af}
+            no {xr_route}
+           !
+          !
+        revert: |
+          router static
+           address-family {xr_af}
+            {xr_route}
+           !
+          !
+      iosxe:
+        inject: |
+          no {xe_route}
+        revert: |
+          {xe_route}
+    symptoms:
+      - {type: route, device: R5, prefix: "{prefix}", protocol: B}
+      - {type: route, device: R6, prefix: "{prefix}", protocol: B}
+
+  - id: redistribution-filter
+    protocol: bgp
+    category: advertisement
+    target: static_customer
+    label: "the static customer's {afi} prefix {prefix}"
+    key: "{afi}"
+    title: Redistribution filter no longer matches
+    explanation: |
+      The prefix list that selects the static customer's routes for redistribution was edited to
+      {wrong} — it no longer matches {prefix}, so the route stays out of BGP.
+    find: |
+      The static route is in R3's routing table but not in its BGP table; read the route map used by
+      `redistribute static` and the prefix list it matches.
+    leak_terms: [prefix-list, prefix list, filter, route-map, redistribut, "{wrong}"]
+    scope: ["static:{afi}"]
+    reporter: Static customer (100.70.20.0/24)
+    ticket: "Our network {prefix} has been unreachable from the Internet since this morning. You route it to us statically at R3."
+    hints:
+      - "Is {prefix} in R3's routing table? In its BGP table?"
+      - "It's redistributed through a route map — what does that route map match?"
+      - "The prefix list now has {wrong} instead of {right}."
+    config:
+      iosxe:
+        inject: |
+          no {plist} seq 5 permit {right}
+          {plist} seq 5 permit {wrong}
+        revert: |
+          no {plist} seq 5 permit {wrong}
+          {plist} seq 5 permit {right}
+    symptoms:
+      - {type: route, device: R5, prefix: "{prefix}", protocol: B}
+      - {type: route, device: R2, prefix: "{prefix}", protocol: B, via: "{via}"}
+
+  - id: rr-clients
+    protocol: bgp
+    category: advertisement
+    target: route_reflector
+    label: "{dev} ({afi} route reflection)"
+    key: "{afi}"
+    title: Route reflector clients no longer reflected
+    explanation: |
+      `route-reflector-client` was removed from both {afi} clients on {dev}. It's now a plain iBGP
+      peer, and iBGP split horizon forbids passing an iBGP-learned route to another iBGP peer —
+      R1 and R3 stop learning each other's {afi} routes.
+    find: |
+      {dev} has every route, the clients only their own; the neighbor detail on {dev} no longer
+      shows "Route-Reflector Client".
+    leak_terms: [route-reflector, reflector client, split horizon]
+    scope: ["ibgp:R1:{afi}", "ibgp:R3:{afi}", "rr:{afi}"]
+    reporter: AS 65000 monitoring
+    ticket: "Alarm: R1 and R3 no longer learn each other's {afi} external routes; {sample} is missing on {observer}."
+    hints:
+      - "Does {observer} have {sample}? Does {dev}?"
+      - "{dev} has it but doesn't pass it on. Why would an iBGP speaker not advertise an iBGP-learned route?"
+      - "{dev}'s {afi} neighbors {c1} and {c2} lost `route-reflector-client`."
+    config:
+      iosxr:
+        inject: |
           router bgp 65000
-           neighbor 1.1.1.1
-            address-family ipv4 unicast
+           neighbor {c1}
+            address-family {xr_af}
              no route-reflector-client
             !
            !
-           neighbor 3.3.3.3
-            address-family ipv4 unicast
+           neighbor {c2}
+            address-family {xr_af}
              no route-reflector-client
             !
            !
           !
-      revert:
-        R2: |
+        revert: |
           router bgp 65000
-           neighbor 1.1.1.1
-            address-family ipv4 unicast
+           neighbor {c1}
+            address-family {xr_af}
              route-reflector-client
             !
            !
-           neighbor 3.3.3.3
-            address-family ipv4 unicast
+           neighbor {c2}
+            address-family {xr_af}
              route-reflector-client
             !
            !
           !
-      symptoms:
-        - {type: route, device: R3, prefix: 192.0.2.0/24, protocol: B, via: 1.1.1.1}
-        - {type: route, device: R1, prefix: 198.51.100.0/24, protocol: B, via: 3.3.3.3}
+    symptoms:
+      - {type: route, device: "{observer}", prefix: "{sample}", protocol: B, via: "{via}"}

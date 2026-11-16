@@ -12,5 +12,13 @@ tags: [troubleshooting, isis, bgp, ipv6, iosxr, iosxe, ccnp-spcor]
 protocols: [isis, bgp]
 max_faults: 4
 status: published
-version: "1.0"
+version: "2.1"
 author: Phanero Labs
+# The routers the learner runs (their config changes are judged in the debrief).
+managed: [R1, R2, R3]
+# Who can raise a ticket, and what they own / see.
+parties:
+  - {name: Customer A (AS 65100), owns: "192.0.2.0/24, 2001:db8:c1::/48; office LAN with host H1; BGP to R1 (10.1.14.2 / 2001:db8:1:14::2)"}
+  - {name: Upstream A peering desk (AS 65200), owns: "198.51.100.0/24 (server 198.51.100.10), 2001:db8:a5::/48, 203.0.113.0/24 anycast; BGP to R3 (10.2.35.2 / 2001:db8:2:35::2) and to upstream B"}
+  - {name: Upstream B peering desk (AS 65300), owns: "6.6.6.6/32, 2001:db8:b6::/48, 203.0.113.0/24 anycast; BGP to R1 (10.3.16.2 / 2001:db8:3:16::2) and to upstream A"}
+  - {name: Static customer (100.70.20.0/24), owns: "100.70.20.0/24, 2001:db8:c2::/48, routed statically at R3"}

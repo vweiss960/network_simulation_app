@@ -164,6 +164,12 @@ export default function TroubleshootPanel({ onClose }: { onClose: () => void }) 
                       {busy === 'check' ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />} Check the network
                     </button>
                     {a.health_summary && <HealthView a={a} />}
+                    {a.rebuilt
+                      ? <p className="text-[11.5px] text-sky-200/90 px-1">The lab was rebuilt from the healthy baseline. Once every device is up again, Check the network — a rebuild counts as a fix (just not the quickest one).</p>
+                      : <button onClick={() => { if (confirm('Rebuild the whole lab from the healthy baseline? Every device is wiped and reboots (several minutes). It counts as a fix — but finding the faults is the point.')) act('rebuild', () => api.chaosRebuild(a.id)); }}
+                          disabled={busy === 'rebuild'} className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[12px] text-surface-400 hover:text-surface-200">
+                          <RotateCcw size={13} /> Rebuild the lab from scratch
+                        </button>}
                     <button onClick={() => { if (confirm('Give up and see what Chaos did?')) act('giveup', () => api.chaosGiveUp(a.id)); }}
                       className="w-full flex items-center justify-center gap-1.5 py-1.5 text-[12px] text-surface-400 hover:text-surface-200">
                       <Flag size={13} /> Give up and show the faults
@@ -212,7 +218,7 @@ function TicketCard({ n, t, difficulty, active, onHint, hinting }:
           </button>
           {open && (
             <div className="px-3 pb-3 space-y-2 text-[12.5px]">
-              <div className="text-[11px] uppercase tracking-wide text-surface-400">{t.debrief.protocol.toUpperCase()} · {t.debrief.category === 'adjacency' ? 'neighbor adjacency' : 'route advertisement'}</div>
+              <div className="text-[11px] uppercase tracking-wide text-surface-400">{t.debrief.protocol.toUpperCase()} · {t.debrief.category === 'adjacency' ? 'neighbor adjacency' : 'route advertisement'}{t.debrief.where ? ` · ${t.debrief.where}` : ''}</div>
               <Markdown text={t.debrief.explanation} dark />
               <ConfigBlock title="Chaos changed" cfg={t.debrief.changed} tone="text-rose-200" />
               <ConfigBlock title="The fix" cfg={t.debrief.fix} tone="text-emerald-200" />
@@ -277,6 +283,38 @@ function RoundSummary({ a }: { a: ScenarioAttemptView }) {
         <span>{a.checks_run} check{a.checks_run === 1 ? '' : 's'}</span>
         {a.difficulty !== 'expert' && <span>{a.hints_used} hint{a.hints_used === 1 ? '' : 's'}</span>}
       </div>
+      {(a.theme || a.story) && (
+        <div className="mt-2 text-[12.5px] text-surface-200">
+          {a.theme && <div className="font-semibold text-rose-200">{a.theme}</div>}
+          {a.story && <p className="leading-relaxed">{a.story}</p>}
+        </div>
+      )}
+      {a.rebuilt
+        ? <p className="mt-2 text-[12px] text-sky-200">You rebuilt the lab from scratch. That restored the network — next time, try finding the faults: it's faster, and in production you can't wipe the routers.</p>
+        : a.changes && <ChangesView changes={a.changes} />}
+    </div>
+  );
+}
+
+function ChangesView({ changes }: { changes: Record<string, string> }) {
+  const [open, setOpen] = useState(false);
+  const devs = Object.keys(changes);
+  if (!devs.length) return <p className="mt-2 text-[12px] text-surface-400">No configuration changes recorded on your routers.</p>;
+  return (
+    <div className="mt-2">
+      <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1 text-[12px] font-semibold text-surface-200">
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} What you changed ({devs.join(', ')})
+      </button>
+      {open && devs.map(d => (
+        <div key={d} className="mt-1">
+          <div className="text-[11px] text-surface-400">{d}</div>
+          <pre className="whitespace-pre-wrap rounded bg-black/30 p-2 font-mono text-[11px] leading-snug">
+            {changes[d].split('\n').map((l, i) => (
+              <div key={i} className={l.startsWith('+') ? 'text-emerald-300' : l.startsWith('-') ? 'text-rose-300' : l.startsWith('@@') ? 'text-surface-500' : 'text-surface-300'}>{l}</div>
+            ))}
+          </pre>
+        </div>
+      ))}
     </div>
   );
 }

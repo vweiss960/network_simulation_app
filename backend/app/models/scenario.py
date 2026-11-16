@@ -31,7 +31,8 @@ class Scenario(Base):
     topology_yaml = Column(Text, default="")            # the healthy baseline
     docs_md = Column(Text, default="")                  # network documentation (Guided)
     health_json = Column(Text, default="[]")            # checks that pass on a healthy network
-    faults_json = Column(Text, default="[]")            # the fault catalog
+    faults_json = Column(Text, default="{}")            # the fault catalog: targets + templates
+    extra_json = Column(Text, default="{}")             # managed routers, ticket parties
     edited_in_app = Column(Integer, default=0)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -52,8 +53,28 @@ class Scenario(Base):
         return self._get("health_json", [])
 
     @property
-    def faults(self) -> list:
-        return self._get("faults_json", [])
+    def catalog(self) -> dict:
+        return self._get("faults_json", {})
+
+    @property
+    def managed(self) -> list:
+        return (self._get("extra_json", {}) or {}).get("managed") or []
+
+    @property
+    def parties(self) -> list:
+        return (self._get("extra_json", {}) or {}).get("parties") or []
+
+    @property
+    def ineffective(self) -> list:
+        """Candidate faults that didn't keep the network broken in a real round
+        (the network healed by itself, or nothing showed): never drawn again
+        until the scenario is saved / re-imported."""
+        return (self._get("extra_json", {}) or {}).get("ineffective") or []
+
+    def mark_ineffective(self, cid: str) -> None:
+        extra = self._get("extra_json", {}) or {}
+        extra["ineffective"] = sorted({*(extra.get("ineffective") or []), cid})
+        self.extra_json = json.dumps(extra)
 
 
 class ScenarioAttempt(Base):

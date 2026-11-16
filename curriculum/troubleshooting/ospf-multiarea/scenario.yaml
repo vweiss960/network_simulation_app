@@ -12,5 +12,13 @@ tags: [troubleshooting, ospf, ospfv3, ipv6, iosxr, iosxe, ccnp-spcor]
 protocols: [ospf]
 max_faults: 4
 status: published
-version: "1.0"
+version: "2.0"
 author: Phanero Labs
+# The routers the learner runs (their config changes are judged in the debrief).
+managed: [R1, R2, R3, R4, R5]
+# Who can raise a ticket, and what they own / see.
+parties:
+  - {name: Site 1 (10.1.4.0/24), owns: "LAN 10.1.4.0/24 and 2001:db8:1:4::/64 behind R4 (area 1), host H1 10.1.4.10"}
+  - {name: Site 2 (10.2.5.0/24), owns: "LAN 10.2.5.0/24 and 2001:db8:2:5::/64 behind R5 (area 2), host H2 10.2.5.10"}
+  - {name: Partner (198.51.100.0/24), owns: "198.51.100.0/24 and 2001:db8:beef::/48, connected statically behind R5"}
+  - {name: Customer (203.0.113.0/24), owns: "203.0.113.0/24 and 2001:db8:cafe::/48, routed statically at R2"}

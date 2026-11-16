@@ -28,6 +28,9 @@ Two equivalent ways; don't run both (they share ports 8100 / 8880).
   logs: `journalctl -u plabs-backend -f`.
 - **Containers:** `./scripts/build-frontend.sh && docker compose up -d --build`
   (backend privileged + host network; nginx `web` on :8880).
+  https on **:8443** (self-signed, `./scripts/make-cert.sh` → `nginx/certs/`,
+  run once before the first start): browsers only allow clipboard reads —
+  the console's right-click paste — on https.
   After backend changes: `docker compose restart backend`.
 
 Lab images: `./scripts/build-images.sh` builds `plabs/host`, `plabs/frr` and
@@ -263,27 +266,46 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   `scripts/build_troubleshooting_baselines.py` from a lesson + all its verified
   solutions; no annotations / notes / link labels), `health.yaml` (checks that
   all pass when healthy; `scope: service` = customer-visible), `docs.md`
-  (Guided only) and `faults.yaml`: the **catalog** — faults by protocol ×
-  category (adjacency | advertisement), each with XR / XE variants: `inject`,
-  `revert`, `symptoms`, `scope` (overlapping scopes never combine), ticket,
-  hints. Config placeholders `{POLICY1} {ROUTEMAP1} {PREFIXLIST1} {KEYCHAIN1}
-  {SECRET1}` get neutral names per round; validation rejects named objects
-  that aren't placeholders or baseline names, and descriptions in injects.
+  (Guided only), `scenario.yaml` (+ `managed` routers — diffed for the debrief —
+  and `parties` who can raise tickets) and `faults.yaml`: a **template catalog**.
+  `targets` = parts of the network (`{kind: [instance vars…]}`; link instances
+  have `a_*`/`b_*`, `devices: [..]` hits several routers); `templates` =
+  generic breaks (protocol × category adjacency | advertisement) with `target`,
+  `sides: [a, b]` (each end → `dev_*` / `peer_*`), `device` (e.g. `"{rr}"`,
+  the target's own dev stays `{target_dev}`), `requires`, per-OS
+  `config.{iosxr|iosxe}.{inject,revert}`, symptoms, hints, scope, ticket.
+  `expand()` = every template × instance × side whose device's OS has a
+  config → **candidates** (id `template@key`, cached per scenario version);
+  add a router / link / session by adding a target instance. Placeholders
+  `{POLICY1} {ROUTEMAP1} {PREFIXLIST1} {KEYCHAIN1} {SECRET1}` get neutral names
+  per round; validation rejects named objects that aren't placeholders or
+  baseline names, and descriptions in injects.
 - A round (`start_round` → background `_job`): wait for devices → revert the
-  previous round → health must pass → `choose_faults` (N, disjoint scopes,
-  spread over protocol × category) → inject → wait for symptoms → tickets.
-  Check = every fault's symptoms + every health check pass → solved; Give up
-  → revealed; both show the debrief (what changed, the fix, how to spot it).
+  previous round → health must pass → **the Chaos model plans it**
+  (`chaos_ai.plan_round`: picks N candidates from the menu + the learner's
+  history, theme + back-story) → `choose_faults` keeps valid picks (distinct
+  templates, disjoint scopes) and fills up randomly (spread over protocol ×
+  category) → inject → wait for symptoms → `_confirm`: settle
+  (`SETTLE_SECONDS`) and re-check `CONFIRM_PASSES` times — a fault the network
+  heals by itself (e.g. BGP re-forming from the other side) is reverted,
+  `Scenario.mark_ineffective` (never drawn again until the pack is saved /
+  re-imported; `live_candidates`) and replaced, and the story re-told →
+  snapshot managed configs → `write_tickets` from the checks *still* failing
+  after the settle (never the cause; leak guard, reporter must be a party;
+  detail per difficulty: guided = experience + "NOC notes", standard =
+  experience only, expert = one sentence). Check = every fault's symptoms + every
+  health check pass → solved, however it was fixed: **Rebuild during a round**
+  keeps the round (`rebuilt`) and counts. Give up → revealed; both show the
+  debrief (what changed, the fix, how to spot it, story, the learner's config
+  diff) and `write_debrief` judges the fix from that diff.
 - Labs: `Topology.lesson_role = "troubleshoot"` (+ `scenario_id`); admins
-  verify catalogs on a `troubleshoot_test` lab: `python3 scripts/chaos_catalog_test.py
-  <jwt> <slug> [--only fault] [--keep]` (inject → symptom shows → revert → healthy).
+  verify every candidate on a `troubleshoot_test` lab: `python3 scripts/chaos_catalog_test.py
+  <jwt> <slug> [--only template|candidate,…] [--skip …] [--keep]` (inject → symptom shows → revert → healthy).
 - Difficulty: guided (docs, full health, hints, AI coach = lab agent `hints`
   policy with a troubleshooting prompt), standard (service checks only,
   counted hints, no AI), expert (tickets only).
-- The Chaos model (`PLABS_CHAOS_MODEL`, default `claude-sonnet-5-5`) only
-  rewrites tickets in the reporter's voice and writes the debrief — never picks
-  faults. Its tickets are rejected (catalog text used) if they leak a cause term
-  or drop an address / prefix / AS of the original.
+- The Chaos model (`PLABS_CHAOS_MODEL`, default `claude-sonnet-5-5`); with AI
+  off every step falls back (random draw, catalog ticket text, no narrative).
 
 ### Lab agent (`services/lab_agent.py`, `services/llm.py`, `routes/agent.py`)
 - Chat on the canvas (Ask AI bar → `components/agent/AIChatPanel`), streamed as

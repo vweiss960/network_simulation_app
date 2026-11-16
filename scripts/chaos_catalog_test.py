@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Prove a troubleshooting scenario's fault catalog on real devices.
 
-    python3 scripts/chaos_catalog_test.py <jwt> <scenario-slug> [--only FAULT[/VARIANT]] [--keep]
+    python3 scripts/chaos_catalog_test.py <jwt> <scenario-slug> [--only ID,…] [--skip ID,…] [--keep]
+
+--only / --skip take template ids (isis-auth) or candidate ids
+(isis-auth@R1:GigabitEthernet0/0/0/0), comma-separated.
 
 Uses the scenario's admin test lab: deploys the healthy baseline, checks that
-every health check passes, then for each fault variant:
+every health check passes, then for each candidate fault (template × target):
   1. inject it — the configs must apply without errors;
   2. at least one of its symptom checks must start failing (≤ 150 s);
   3. revert it — every health check must pass again (≤ 5 min).
@@ -45,7 +48,9 @@ def main():
         raise SystemExit(__doc__)
     tok, slug = sys.argv[1], sys.argv[2]
     keep = "--keep" in sys.argv
-    only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
+    def ids(flag):
+        return set(sys.argv[sys.argv.index(flag) + 1].split(",")) if flag in sys.argv else set()
+    only, skip = ids("--only"), ids("--skip")
     sc = next((s for s in api(tok, "GET", "/troubleshooting") if s["slug"] == slug), None)
     if not sc:
         raise SystemExit(f"No scenario {slug!r}")
@@ -80,44 +85,44 @@ def main():
             raise SystemExit("The baseline isn't healthy")
         print(f"Baseline healthy ({time.time() - t0:.0f}s)\n")
 
-        for f in full["faults"]:
-            for v in f["variants"]:
-                key = f"{f['id']}/{v['id']}"
-                if only and not (key == only or f["id"] == only):
-                    continue
-                t1 = time.time()
-                print(f"[{key}] {f['protocol']} · {f['category']}")
-                r = api(tok, "POST", f"/troubleshooting/{sid}/test-lab/fault",
-                        {"fault": f["id"], "variant": v["id"], "action": "inject"})
-                names = r["names"]
-                status = "ok"
-                if r["errors"]:
-                    print(f"  ✗ inject errors: {r['errors']}")
-                    status = "inject-error"
+        cands = [c for c in full["candidates"]
+                 if (not only or c["id"] in only or c["template"] in only)
+                 and c["id"] not in skip and c["template"] not in skip]
+        print(f"{len(cands)} candidate fault(s)\n")
+        for n, c in enumerate(cands, 1):
+            key = c["id"]
+            t1 = time.time()
+            print(f"[{n}/{len(cands)}] {key} — {c['protocol']} · {c['category']} · {c['family']}", flush=True)
+            r = api(tok, "POST", f"/troubleshooting/{sid}/test-lab/fault", {"fault": key, "action": "inject"})
+            names, symptoms = r["names"], r["symptoms"]
+            status = "ok"
+            if r["errors"]:
+                print(f"  ✗ inject errors: {r['errors']}")
+                status = "inject-error"
 
-                def symptom():
-                    res = api(tok, "POST", f"/troubleshooting/{sid}/test-lab/checks", {"checks": v["symptoms"]})["results"]
-                    return any(not x["ok"] for x in res), res
-                showed, res = wait(symptom, 150)
-                if showed:
-                    print(f"  ✓ symptom showed ({time.time() - t1:.0f}s): "
-                          + "; ".join(x["describe"] for x in res if not x["ok"]))
-                else:
-                    print("  ✗ no symptom showed within 150 s")
-                    status = "silent" if status == "ok" else status
-                r = api(tok, "POST", f"/troubleshooting/{sid}/test-lab/fault",
-                        {"fault": f["id"], "variant": v["id"], "action": "revert", "names": names})
-                if r["errors"]:
-                    print(f"  ✗ revert errors: {r['errors']}")
-                    status = "revert-error"
-                ok, bad = wait(health, 300, 15)
-                if ok:
-                    print(f"  ✓ healthy again ({time.time() - t1:.0f}s)")
-                else:
-                    print("  ✗ not healthy after revert: " + "; ".join(b["describe"] for b in bad))
-                    status = "not-healthy" if status == "ok" else status
-                    ok, bad = wait(health, 300, 20)            # give it one more chance before the next fault
-                results.append((key, status))
+            def symptom():
+                res = api(tok, "POST", f"/troubleshooting/{sid}/test-lab/checks", {"checks": symptoms})["results"]
+                return any(not x["ok"] for x in res), res
+            showed, res = wait(symptom, 150)
+            if showed:
+                print(f"  ✓ symptom showed ({time.time() - t1:.0f}s): "
+                      + "; ".join(x["describe"] for x in res if not x["ok"]))
+            else:
+                print("  ✗ no symptom showed within 150 s")
+                status = "silent" if status == "ok" else status
+            r = api(tok, "POST", f"/troubleshooting/{sid}/test-lab/fault",
+                    {"fault": key, "action": "revert", "names": names})
+            if r["errors"]:
+                print(f"  ✗ revert errors: {r['errors']}")
+                status = "revert-error"
+            ok, bad = wait(health, 300, 15)
+            if ok:
+                print(f"  ✓ healthy again ({time.time() - t1:.0f}s)", flush=True)
+            else:
+                print("  ✗ not healthy after revert: " + "; ".join(b["describe"] for b in bad), flush=True)
+                status = "not-healthy" if status == "ok" else status
+                ok, bad = wait(health, 300, 20)            # give it one more chance before the next fault
+            results.append((key, status))
     finally:
         print("\nSummary:")
         for key, status in results:

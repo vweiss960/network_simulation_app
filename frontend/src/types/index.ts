@@ -187,7 +187,7 @@ export interface ScenarioDetail extends ScenarioSummary {
   modules: { id: number; slug: string; title: string; section: string }[];
 }
 export interface TicketDebrief {
-  title: string; protocol: string; category: string; explanation: string; find: string;
+  title: string; protocol: string; category: string; where: string; explanation: string; find: string;
   changed: Record<string, string>; fix: Record<string, string>; silent: boolean;
 }
 export interface Ticket {
@@ -199,5 +199,9 @@ export interface ScenarioAttemptView {
   checks_run: number; hints_used: number; last_check_at: number | null;
   health: { describe: string; ok: boolean; scope: string }[] | null; health_summary: { ok: number; total: number } | null;
   docs_md: string; debrief_ai: string | null; outdated: boolean;
-  history: { difficulty: Difficulty; faults: number; outcome: string; started_at: number | null; ended_at: number; hints: number; checks: number }[];
+  /** The lab was rebuilt from scratch during the round (a blunt but valid fix). */
+  rebuilt: boolean;
+  /** Shown once the round is over: Chaos's theme / back-story and the learner's config changes (diff per router). */
+  theme: string | null; story: string | null; changes: Record<string, string> | null;
+  history: { difficulty: Difficulty; faults: number; outcome: string; started_at: number | null; ended_at: number; hints: number; checks: number; rebuilt?: boolean; theme?: string }[];
 }

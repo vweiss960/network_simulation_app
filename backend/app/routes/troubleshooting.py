@@ -59,7 +59,9 @@ def get_scenario(sid: int, full: bool = False, user=Depends(get_current_user), d
     out = {**_summary(db, s, user), "topology": view, "difficulties": DIFFICULTY_INFO, "can_edit": bool(user.is_admin),
            "modules": module_svc.modules_for(db, "scenario", s.slug)}
     if full and user.is_admin:
-        out.update(faults=s.faults, health=s.health, docs_md=s.docs_md, topology_yaml=s.topology_yaml)
+        out.update(catalog=s.catalog, health=s.health, docs_md=s.docs_md, topology_yaml=s.topology_yaml,
+                   candidates=[{k: c[k] for k in ("id", "template", "protocol", "category", "title", "label", "family")}
+                               for c in svc.candidates(s)])
     return out
 
 
@@ -224,26 +226,25 @@ def test_checks(sid: int, body: TestChecksIn, user=Depends(require_admin), db: S
 
 
 class TestFaultIn(BaseModel):
-    fault: str
-    variant: str
+    fault: str                          # a candidate id (template@target)
     action: str = "inject"              # inject | revert
     names: dict = {}
 
 
 @router.post("/troubleshooting/{sid}/test-lab/fault")
 def test_fault(sid: int, body: TestFaultIn, user=Depends(require_admin), db: Session = Depends(get_db)):
-    """Inject or revert one catalog variant on the test lab (names: reuse the
-    ones returned by inject when reverting)."""
+    """Inject or revert one candidate fault on the test lab (names: reuse
+    the ones returned by inject when reverting)."""
     import random
     s = _scenario(db, sid, user)
     t = _test_lab(db, s)
     if not t:
         raise HTTPException(400, "Open the scenario's test lab first")
     try:
-        f, v = svc._find(s, body.fault, body.variant)
-    except StopIteration:
-        raise HTTPException(404, "No such fault / variant")
-    names = body.names or svc.make_names(v, random.Random(), set())
-    part = v["inject"] if body.action == "inject" else v["revert"]
-    errors = svc.apply_configs(db, t.id, {d: svc.render(c, names) for d, c in part.items()})
-    return {"names": names, "errors": errors, "symptoms": v["symptoms"]}
+        c = svc.get_candidate(s, body.fault)
+    except svc.ScenarioError as e:
+        raise HTTPException(404, str(e))
+    names = body.names or svc.make_names(c, random.Random(), set())
+    part = c["inject"] if body.action == "inject" else c["revert"]
+    errors = svc.apply_configs(db, t.id, {d: svc.render(cfg, names) for d, cfg in part.items()})
+    return {"names": names, "errors": errors, "symptoms": c["symptoms"]}

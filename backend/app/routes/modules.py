@@ -10,6 +10,7 @@ from app.models.database import get_db
 from app.models.lesson import Lesson
 from app.models.module import Module
 from app.models.scenario import Scenario
+from app.services import troubleshooting as ts_svc
 from app.services import lessons as lesson_svc, modules as svc
 
 router = APIRouter(prefix="/api", tags=["modules"])
@@ -51,7 +52,7 @@ def get_module(module_id: int, user=Depends(get_current_user), db: Session = Dep
             items.append({**it, "lesson_title": sc.title if sc else "", "lesson_summary": sc.summary if sc else "",
                           "level": sc.level if sc else None, "minutes": svc.SCENARIO_MINUTES if sc else None,
                           "task_count": 0, "protocols": sc.protocols if sc else [],
-                          "fault_count": sum(len(f.get("variants") or []) for f in sc.faults) if sc else 0,
+                          "fault_count": len(ts_svc.candidates(sc)) if sc else 0,
                           "topology_summary": lesson_svc.topology_summary(sc.topology_yaml) if sc else ""})
             continue
         l = db.get(Lesson, it["lesson_id"]) if it["lesson_id"] else None
