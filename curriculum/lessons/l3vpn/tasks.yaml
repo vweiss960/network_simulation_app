@@ -1,0 +1,439 @@
+- id: vpnv4
+  title: Build the VPNv4 control plane through a route reflector
+  body: |
+    The MPLS core is up: IS-IS carries the loopbacks and LDP has built label
+    switched paths between all of them. What's missing is a way for the PEs
+    to tell each other about **customer** routes.
+
+    That's **MP-BGP** with the **VPNv4** address family: a VPNv4 route is a
+    customer IPv4 prefix made unique by a *route distinguisher*, carrying
+    *route targets* (extended communities) and a *VPN label*. Every PE needs
+    VPNv4 sessions — and rather than a full mesh, they all peer with a
+    **route reflector**.
+
+    | Router | OS | Role |
+    |---|---|---|
+    | R1 | IOS XR | P router and VPNv4 route reflector (no VRFs) |
+    | R2 | IOS XR | PE (provider services) |
+    | R3, R4 | IOS XE | PEs (customers A and B) |
+
+    Configure iBGP AS **65000** between the loopbacks: R1 reflects to R2, R3
+    and R4, for the **VPNv4 unicast** address family only (no IPv4 unicast:
+    this core is BGP-free for plain IP). IOS XE activates IPv4 unicast for
+    every neighbor by default — turn that off.
+  hints:
+    - "XR RR: `router bgp 65000` → `bgp router-id 1.1.1.1` → `address-family vpnv4 unicast`; a `neighbor-group PE` with `remote-as 65000`, `update-source Loopback0`, `address-family vpnv4 unicast` → `route-reflector-client`; then `neighbor 2.2.2.2` → `use neighbor-group PE` (and 3.3.3.3, 4.4.4.4)."
+    - "XR PE (R2): `router bgp 65000` → `address-family vpnv4 unicast`; `neighbor 1.1.1.1` → `remote-as 65000`, `update-source Loopback0`, `address-family vpnv4 unicast`."
+    - "XE: `router bgp 65000` → `no bgp default ipv4-unicast` → `neighbor 1.1.1.1 remote-as 65000` / `update-source Loopback0` → `address-family vpnv4` → `neighbor 1.1.1.1 activate` and `send-community extended` (route targets are extended communities)."
+    - "Verify: XR `show bgp vpnv4 unicast summary`, XE `show bgp vpnv4 unicast all summary` — a number (prefixes) instead of a state means Established."
+  solution:
+    R1: |
+      router bgp 65000
+       bgp router-id 1.1.1.1
+       address-family vpnv4 unicast
+       !
+       neighbor-group PE
+        remote-as 65000
+        update-source Loopback0
+        address-family vpnv4 unicast
+         route-reflector-client
+        !
+       !
+       neighbor 2.2.2.2
+        use neighbor-group PE
+       !
+       neighbor 3.3.3.3
+        use neighbor-group PE
+       !
+       neighbor 4.4.4.4
+        use neighbor-group PE
+       !
+      !
+    R2: |
+      router bgp 65000
+       bgp router-id 2.2.2.2
+       address-family vpnv4 unicast
+       !
+       neighbor 1.1.1.1
+        remote-as 65000
+        update-source Loopback0
+        address-family vpnv4 unicast
+        !
+       !
+      !
+    R3: |
+      router bgp 65000
+       bgp router-id 3.3.3.3
+       bgp log-neighbor-changes
+       no bgp default ipv4-unicast
+       neighbor 1.1.1.1 remote-as 65000
+       neighbor 1.1.1.1 update-source Loopback0
+       address-family vpnv4
+        neighbor 1.1.1.1 activate
+        neighbor 1.1.1.1 send-community extended
+       exit-address-family
+      !
+    R4: |
+      router bgp 65000
+       bgp router-id 4.4.4.4
+       bgp log-neighbor-changes
+       no bgp default ipv4-unicast
+       neighbor 1.1.1.1 remote-as 65000
+       neighbor 1.1.1.1 update-source Loopback0
+       address-family vpnv4
+        neighbor 1.1.1.1 activate
+        neighbor 1.1.1.1 send-community extended
+       exit-address-family
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show bgp vpnv4 unicast summary
+      expect:
+        - {regex: '^2\.2\.2\.2\s+0\s+65000\s.*\s\d+\s*$'}
+        - {regex: '^3\.3\.3\.3\s+0\s+65000\s.*\s\d+\s*$'}
+        - {regex: '^4\.4\.4\.4\s+0\s+65000\s.*\s\d+\s*$'}
+      describe: "R1 (XR RR): VPNv4 sessions to R2, R3 and R4 established"
+    - type: cli
+      device: R3
+      command: show bgp vpnv4 unicast all summary
+      expect:
+        - {regex: '^1\.1\.1\.1\s+4\s+65000\s.*\s\d+\s*$'}
+      describe: "R3 (XE): VPNv4 session to the route reflector established"
+    - type: cli
+      device: R4
+      command: show bgp vpnv4 unicast all summary
+      expect:
+        - {regex: '^1\.1\.1\.1\s+4\s+65000\s.*\s\d+\s*$'}
+      describe: "R4 (XE): VPNv4 session to the route reflector established"
+
+- id: vrf-a
+  title: Connect customer A's two sites (VRF, RD, RT)
+  body: |
+    Customer A has a site behind R3 (A1, `10.1.1.0/24`) and one behind R4
+    (A2, `10.1.2.0/24`). Give the customer its own routing table on each PE —
+    a **VRF** — and join the two:
+
+    | | Value | What it does |
+    |---|---|---|
+    | VRF | `CUST-A` | The customer's routing and forwarding table on the PE |
+    | RD | `65000:100` | Prepended to the customer's prefixes in VPNv4, so they stay unique when another customer uses the same addresses |
+    | RT | export and import `65000:100` | Which VRFs a route is *imported into* — the RD doesn't decide that, the RT does |
+
+    | PE | Interface | Address |
+    |---|---|---|
+    | R3 | Gi3 → A1 | `10.1.1.1/24` |
+    | R4 | Gi3 → A2 | `10.1.2.1/24` |
+
+    Then announce each site's connected subnet into the VPN: under BGP's IPv4
+    address family **for the VRF**, redistribute connected routes.
+
+    Note: putting an IOS XE interface into a VRF (`vrf forwarding`) removes
+    its IP address — configure the VRF first, the address second.
+  hints:
+    - "XE: `vrf definition CUST-A` → `rd 65000:100` → `address-family ipv4` → `route-target export 65000:100` / `route-target import 65000:100`."
+    - "XE: `interface GigabitEthernet3` → `vrf forwarding CUST-A` → `ip address 10.1.1.1 255.255.255.0`; then `router bgp 65000` → `address-family ipv4 vrf CUST-A` → `redistribute connected`."
+    - "Verify: `show ip route vrf CUST-A` (the remote site as a B route via the other PE's loopback), `show bgp vpnv4 unicast vrf CUST-A`, and `show ip cef vrf CUST-A 10.1.2.0/24 detail` — two labels: the VPN label and the LDP label to the egress PE."
+  solution:
+    R3: |
+      vrf definition CUST-A
+       rd 65000:100
+       address-family ipv4
+        route-target export 65000:100
+        route-target import 65000:100
+       exit-address-family
+      !
+      interface GigabitEthernet3
+       vrf forwarding CUST-A
+       ip address 10.1.1.1 255.255.255.0
+      !
+      router bgp 65000
+       address-family ipv4 vrf CUST-A
+        redistribute connected
+       exit-address-family
+      !
+    R4: |
+      vrf definition CUST-A
+       rd 65000:100
+       address-family ipv4
+        route-target export 65000:100
+        route-target import 65000:100
+       exit-address-family
+      !
+      interface GigabitEthernet3
+       vrf forwarding CUST-A
+       ip address 10.1.2.1 255.255.255.0
+      !
+      router bgp 65000
+       address-family ipv4 vrf CUST-A
+        redistribute connected
+       exit-address-family
+      !
+  checks:
+    - type: cli
+      device: R3
+      command: show ip route vrf CUST-A 10.1.2.0
+      expect:
+        - {contains: 'Routing entry for 10.1.2.0/24'}
+        - {contains: 'Known via "bgp 65000"'}
+      describe: "R3 (XE): customer A's East subnet in VRF CUST-A, learned by BGP"
+    - type: cli
+      device: R3
+      command: show ip cef vrf CUST-A 10.1.2.0/24 detail
+      expect:
+        - {regex: 'recursive via 4\.4\.4\.4 label \d+'}
+        - {regex: 'nexthop 10\.0\.13\.1 GigabitEthernet2 label \d+'}
+      describe: "R3 (XE): two labels — the VPN label (from R4) and the LDP label to 4.4.4.4"
+    - {type: ping, from: A1, to: 10.1.2.10, count: 5, min_success: 80, describe: "A1 reaches A2 across the VPN"}
+
+- id: vrf-b
+  title: Add customer B — with the same addresses
+  body: |
+    Customer B also has a site on each PE — and uses **exactly the same
+    addresses** as customer A (B1 `10.1.1.10` behind R3, B2 `10.1.2.10` behind
+    R4). That's the point of a VPN: each customer's addressing is its own.
+
+    | | Value |
+    |---|---|
+    | VRF | `CUST-B` |
+    | RD | `65000:200` |
+    | RT | export and import `65000:200` |
+    | R3 Gi4 → B1 | `10.1.1.1/24` |
+    | R4 Gi4 → B2 | `10.1.2.1/24` |
+
+    On the route reflector, `10.1.1.0/24` now exists **twice** — as
+    `65000:100:10.1.1.0/24` and `65000:200:10.1.1.0/24`. Without different
+    RDs the RR would see one prefix, pick one best path, and one customer would
+    lose its site.
+  hints:
+    - "Same as customer A, with CUST-B, `rd 65000:200`, RT `65000:200`, on Gi4."
+    - "Verify on R1: `show bgp vpnv4 unicast rd 65000:100` and `show bgp vpnv4 unicast rd 65000:200` — the same prefixes under two RDs."
+  solution:
+    R3: |
+      vrf definition CUST-B
+       rd 65000:200
+       address-family ipv4
+        route-target export 65000:200
+        route-target import 65000:200
+       exit-address-family
+      !
+      interface GigabitEthernet4
+       vrf forwarding CUST-B
+       ip address 10.1.1.1 255.255.255.0
+      !
+      router bgp 65000
+       address-family ipv4 vrf CUST-B
+        redistribute connected
+       exit-address-family
+      !
+    R4: |
+      vrf definition CUST-B
+       rd 65000:200
+       address-family ipv4
+        route-target export 65000:200
+        route-target import 65000:200
+       exit-address-family
+      !
+      interface GigabitEthernet4
+       vrf forwarding CUST-B
+       ip address 10.1.2.1 255.255.255.0
+      !
+      router bgp 65000
+       address-family ipv4 vrf CUST-B
+        redistribute connected
+       exit-address-family
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show bgp vpnv4 unicast rd 65000:200
+      expect:
+        - {regex: '10\.1\.1\.0/24\s+3\.3\.3\.3'}
+        - {regex: '10\.1\.2\.0/24\s+4\.4\.4\.4'}
+      describe: "R1 (RR): customer B's prefixes under RD 65000:200"
+    - type: cli
+      device: R1
+      command: show bgp vpnv4 unicast rd 65000:100
+      expect:
+        - {regex: '10\.1\.1\.0/24\s+3\.3\.3\.3'}
+      describe: "R1 (RR): customer A's identical 10.1.1.0/24 still there under RD 65000:100"
+    - {type: ping, from: B1, to: 10.1.2.10, count: 5, min_success: 80, describe: "B1 reaches B2 (same addresses as customer A, separate VPN)"}
+    - {type: ping, from: A1, to: 10.1.2.10, count: 5, min_success: 80, describe: "A1 still reaches A2"}
+
+- id: shared
+  title: "Extranet: give customer A the provider's shared services (IOS XR PE)"
+  body: |
+    The provider hosts a managed service — server **SVC** (`10.100.0.10`)
+    behind PE **R2** (IOS XR) — and customer A has bought access to it.
+    Customer B hasn't.
+
+    That's an **extranet**: two VPNs exchange routes because their route
+    targets say so, nothing else.
+
+    - On R2, create VRF **SHARED** (RD `65000:500`) with Gi0/0/0/1
+      (`10.100.0.1/24`) in it. It **exports** `65000:500` and **imports**
+      `65000:500` and customer A's `65000:100`. Advertise its connected subnet.
+    - On R3 and R4, make **CUST-A** also **import** `65000:500`.
+
+    Customer B doesn't import `65000:500`, so it never learns the server's
+    subnet. And customer B couldn't share this VRF with A anyway: their
+    addresses overlap, and one VRF can hold only one `10.1.1.0/24`.
+
+    Note: imported routes aren't re-exported. SHARED learns customer A's
+    routes but exports only its *own* (`10.100.0.0/24`) with `65000:500` — the
+    extranet doesn't make A reachable from anyone else.
+  hints:
+    - "XR: `vrf SHARED` → `address-family ipv4 unicast` → `import route-target` → `65000:100`, `65000:500` → `export route-target` → `65000:500`."
+    - "XR: `interface GigabitEthernet0/0/0/1` → `vrf SHARED` → `ipv4 address 10.100.0.1 255.255.255.0`; then `router bgp 65000` → `vrf SHARED` → `rd 65000:500` → `address-family ipv4 unicast` → `redistribute connected`."
+    - "XE: under `vrf definition CUST-A` → `address-family ipv4` → `route-target import 65000:500`."
+    - "Verify: XR `show bgp vpnv4 unicast vrf SHARED`, `show route vrf SHARED`; XE `show ip route vrf CUST-A 10.100.0.0`."
+  solution:
+    R2: |
+      vrf SHARED
+       address-family ipv4 unicast
+        import route-target
+         65000:100
+         65000:500
+        !
+        export route-target
+         65000:500
+        !
+       !
+      !
+      interface GigabitEthernet0/0/0/1
+       vrf SHARED
+       ipv4 address 10.100.0.1 255.255.255.0
+      !
+      router bgp 65000
+       vrf SHARED
+        rd 65000:500
+        address-family ipv4 unicast
+         redistribute connected
+        !
+       !
+      !
+    R3: |
+      vrf definition CUST-A
+       address-family ipv4
+        route-target import 65000:500
+       exit-address-family
+      !
+    R4: |
+      vrf definition CUST-A
+       address-family ipv4
+        route-target import 65000:500
+       exit-address-family
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show bgp vpnv4 unicast vrf SHARED
+      expect:
+        - {regex: '10\.1\.1\.0/24\s+3\.3\.3\.3'}
+        - {regex: '10\.1\.2\.0/24\s+4\.4\.4\.4'}
+        - {regex: '10\.100\.0\.0/24\s+0\.0\.0\.0'}
+      describe: "R2 (XR): VRF SHARED has customer A's sites and its own server subnet"
+    - type: cli
+      device: R4
+      command: show ip route vrf CUST-B 10.100.0.10
+      expect:
+        - {regex: '(Network|Subnet) not in table'}
+      describe: "R4 (XE): customer B has no route to the shared server"
+    - {type: ping, from: A1, to: 10.100.0.10, count: 5, min_success: 80, describe: "A1 reaches the shared server SVC"}
+    - {type: ping, from: A2, to: 10.100.0.10, count: 5, min_success: 80, describe: "A2 reaches the shared server SVC"}
+
+- id: internet
+  title: "Internet access from an Internet VRF (IOS XR PE)"
+  body: |
+    Customer B buys **Internet access**. The provider's Internet edge is on
+    R2: Gi0/0/0/2 to the upstream INET (`198.51.100.1`), which reaches the
+    Internet — here, `8.8.8.8`.
+
+    One common design keeps the Internet table in its own VRF and lets
+    customers in by route targets, like any extranet:
+
+    - On R2, VRF **INTERNET** (RD `65000:999`) with Gi0/0/0/2
+      (`198.51.100.2/30`) and a **static default route** to `198.51.100.1`.
+      Export **only the default** with `65000:999` — redistribute static, not
+      connected. BGP never redistributes a **default route** unless told to:
+      add `default-information originate` too. Import customer B's
+      `65000:200`, so return traffic finds B's sites.
+    - On R3 and R4, make **CUST-B** also **import** `65000:999`.
+
+    Customer A doesn't get a default route: the Internet is a separate product.
+    (In real life B's private addresses would also be NATed at the Internet
+    edge — the readings cover the options.)
+  hints:
+    - "XR: `vrf INTERNET` → `address-family ipv4 unicast` → `import route-target 65000:200` → `export route-target 65000:999`."
+    - "XR: `router static` → `vrf INTERNET` → `address-family ipv4 unicast` → `0.0.0.0/0 198.51.100.1`; `router bgp 65000` → `vrf INTERNET` → `rd 65000:999` → `default-information originate` → `address-family ipv4 unicast` → `redistribute static`."
+    - "XE: under `vrf definition CUST-B` → `address-family ipv4` → `route-target import 65000:999`."
+    - "The static default is in R2's VRF table but not in BGP? `show bgp vpnv4 unicast vrf INTERNET` on R2 — without `default-information originate`, 0.0.0.0/0 is silently left out of the redistribution."
+    - "Verify: XE `show ip route vrf CUST-B 0.0.0.0` (a B route via 2.2.2.2); XR `show route vrf INTERNET`."
+  solution:
+    R2: |
+      vrf INTERNET
+       address-family ipv4 unicast
+        import route-target
+         65000:200
+        !
+        export route-target
+         65000:999
+        !
+       !
+      !
+      interface GigabitEthernet0/0/0/2
+       vrf INTERNET
+       ipv4 address 198.51.100.2 255.255.255.252
+      !
+      router static
+       vrf INTERNET
+        address-family ipv4 unicast
+         0.0.0.0/0 198.51.100.1
+        !
+       !
+      !
+      router bgp 65000
+       vrf INTERNET
+        rd 65000:999
+        default-information originate
+        address-family ipv4 unicast
+         redistribute static
+        !
+       !
+      !
+    R3: |
+      vrf definition CUST-B
+       address-family ipv4
+        route-target import 65000:999
+       exit-address-family
+      !
+    R4: |
+      vrf definition CUST-B
+       address-family ipv4
+        route-target import 65000:999
+       exit-address-family
+      !
+  checks:
+    - type: cli
+      device: R3
+      command: show ip route vrf CUST-B 0.0.0.0
+      expect:
+        - {contains: 'Known via "bgp 65000"'}
+        - {regex: '2\.2\.2\.2'}
+      describe: "R3 (XE): customer B has a default route from R2's Internet VRF"
+    - type: cli
+      device: R3
+      command: show ip route vrf CUST-A 0.0.0.0
+      expect:
+        - {regex: '(Network|Subnet) not in table'}
+      describe: "R3 (XE): customer A has no default route"
+    - type: cli
+      device: R2
+      command: show route vrf INTERNET
+      expect:
+        - {regex: 'B\s+10\.1\.1\.0/24 .*via 3\.3\.3\.3'}
+        - {regex: 'B\s+10\.1\.2\.0/24 .*via 4\.4\.4\.4'}
+        - {regex: 'S\*\s+0\.0\.0\.0/0 .*via 198\.51\.100\.1'}
+      describe: "R2 (XR): the Internet VRF has the default and customer B's sites"
+    - {type: ping, from: B1, to: 8.8.8.8, count: 5, min_success: 80, describe: "B1 reaches the Internet (8.8.8.8)"}
+    - {type: ping, from: B2, to: 8.8.8.8, count: 5, min_success: 80, describe: "B2 reaches the Internet (8.8.8.8)"}

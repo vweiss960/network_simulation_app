@@ -1,0 +1,20 @@
+slug: mpls-ldp
+title: "MPLS and LDP: neighbors, IGP sync, session protection, OAM and LDP security"
+summary: >-
+  Turn a BGP-free core into an MPLS network on IOS XR and IOS XE: bring up LDP
+  so the PEs' customer traffic is label-switched through P routers that know
+  nothing about it, verify the label switched paths with MPLS OAM (LSP ping and
+  traceroute), keep the IGP and LDP in step with LDP–IGP synchronization, keep
+  sessions and labels through link failures with session protection, and
+  secure LDP with MD5 authentication and label allocation filtering. Covers
+  CCNP SPCOR 3.1 a, b, c, e and 1.5.d.
+level: intermediate
+track: service_provider
+topic: MPLS
+tags: [mpls, ldp, ldp-sync, session-protection, mpls-oam, ldp-security, isis, iosxr, iosxe, ccnp-spcor]
+minutes: 90
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

@@ -26,6 +26,10 @@ This module follows the CCNP SPCOR blueprint's Networking section:
    breaks a working network with faults from each protocol's usual suspects,
    and you work the tickets with show commands until it's healthy again. A
    scenario counts as done once you've solved a round; play as many as you like.
+7. **High availability (2.8)** — LACP bundles (XR–XR and XR–XE, fast rate,
+   minimum links), BFD for sub-second failure detection, BGP graceful restart
+   and IS-IS NSF exercised by restarting the routing processes under traffic,
+   and nonstop routing on IOS XR.
 
 The BGP lessons build on each other: lessons 4 and 5 start from the network
 lesson 3 builds. The troubleshooting scenarios use the same networks, fully

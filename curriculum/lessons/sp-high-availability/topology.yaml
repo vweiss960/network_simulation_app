@@ -1,0 +1,248 @@
+name: High availability in the SP core
+description: >-
+  Two IOS XR core routers (R1 route reflector, R2) joined by a two-link bundle,
+  a two-link XR–XE bundle to PE R3, PE R4 on a single link to R1, and an
+  "express" link between the two IOS XE PEs. IS-IS CORE (level 2) runs on the
+  plain links, iBGP (R1 reflects to R2, R3, R4) carries the customer LANs.
+nodes:
+  - name: H1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 380]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.3.1.10/24 dev eth1
+      ip route add 10.0.0.0/8 via 10.3.1.1
+  - name: R3
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 4
+    position: [240, 380]
+    startup_config: |
+      interface Loopback0
+       ip address 3.3.3.3 255.255.255.255
+       ip router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R2 Gi0/0/0/2 (bundle member)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description to R2 Gi0/0/0/3 (bundle member)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description express link to R4
+       ip address 10.0.34.1 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       no shutdown
+      !
+      interface GigabitEthernet5
+       description to H1 (customer West)
+       ip address 10.3.1.1 255.255.255.0
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0003.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+      !
+      router bgp 65000
+       bgp router-id 3.3.3.3
+       bgp log-neighbor-changes
+       neighbor 1.1.1.1 remote-as 65000
+       neighbor 1.1.1.1 update-source Loopback0
+       !
+       address-family ipv4
+        network 10.3.1.0 mask 255.255.255.0
+        neighbor 1.1.1.1 activate
+       exit-address-family
+      !
+  - name: R2
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 4
+    position: [480, 140]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 2.2.2.2 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R1 Gi0/0/0/0 (bundle member)
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R1 Gi0/0/0/1 (bundle member)
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description to R3 Gi2 (bundle member)
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/3
+       description to R3 Gi3 (bundle member)
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0002.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+      !
+      router bgp 65000
+       bgp router-id 2.2.2.2
+       address-family ipv4 unicast
+       !
+       neighbor 1.1.1.1
+        remote-as 65000
+        update-source Loopback0
+        address-family ipv4 unicast
+        !
+       !
+      !
+  - name: R1
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 3
+    position: [800, 140]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 1.1.1.1 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R2 Gi0/0/0/0 (bundle member)
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R2 Gi0/0/0/1 (bundle member)
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description to R4 Gi2
+       ipv4 address 10.0.14.1 255.255.255.252
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0001.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/2
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+      router bgp 65000
+       bgp router-id 1.1.1.1
+       address-family ipv4 unicast
+       !
+       neighbor-group RR-CLIENTS
+        remote-as 65000
+        update-source Loopback0
+        address-family ipv4 unicast
+         route-reflector-client
+        !
+       !
+       neighbor 2.2.2.2
+        use neighbor-group RR-CLIENTS
+       !
+       neighbor 3.3.3.3
+        use neighbor-group RR-CLIENTS
+       !
+       neighbor 4.4.4.4
+        use neighbor-group RR-CLIENTS
+       !
+      !
+  - name: R4
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 3
+    position: [1040, 380]
+    startup_config: |
+      interface Loopback0
+       ip address 4.4.4.4 255.255.255.255
+       ip router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R1 Gi0/0/0/2
+       ip address 10.0.14.2 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description express link to R3
+       ip address 10.0.34.2 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description to H2 (customer East)
+       ip address 10.4.1.1 255.255.255.0
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0004.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+      !
+      router bgp 65000
+       bgp router-id 4.4.4.4
+       bgp log-neighbor-changes
+       neighbor 1.1.1.1 remote-as 65000
+       neighbor 1.1.1.1 update-source Loopback0
+       !
+       address-family ipv4
+        network 10.4.1.0 mask 255.255.255.0
+        neighbor 1.1.1.1 activate
+       exit-address-family
+      !
+  - name: H2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1240, 380]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.4.1.10/24 dev eth1
+      ip route add 10.0.0.0/8 via 10.4.1.1
+links:
+  - [H1, eth1, R3, GigabitEthernet5]
+  - [R3, GigabitEthernet2, R2, GigabitEthernet0/0/0/2, "Po1 / BE23 member"]
+  - [R3, GigabitEthernet3, R2, GigabitEthernet0/0/0/3, "Po1 / BE23 member"]
+  - [R2, GigabitEthernet0/0/0/0, R1, GigabitEthernet0/0/0/0, "BE12 member"]
+  - [R2, GigabitEthernet0/0/0/1, R1, GigabitEthernet0/0/0/1, "BE12 member"]
+  - [R1, GigabitEthernet0/0/0/2, R4, GigabitEthernet2]
+  - [R3, GigabitEthernet4, R4, GigabitEthernet3, "express · BFD"]
+  - [R4, GigabitEthernet4, H2, eth1]
+annotations:
+  - {id: core, type: group, x: 400, y: 40, w: 520, h: 230, text: "IOS XR CORE · R1 = route reflector", color: blue, locked: true}
+  - {id: west, type: group, x: 0, y: 290, w: 380, h: 200, text: "PE WEST (IOS XE)", color: orange, locked: true}
+  - {id: east, type: group, x: 940, y: 290, w: 380, h: 200, text: "PE EAST (IOS XE)", color: teal, locked: true}
+  - {id: os, type: text, x: 400, y: 440, w: 520, h: 40, text: "AS 65000 · IS-IS CORE level 2 · XRd: R1, R2 · CSR 1000v: R3, R4", color: gray, locked: true}

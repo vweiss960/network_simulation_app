@@ -1,0 +1,18 @@
+slug: l3vpn
+title: "MPLS L3VPN: intra-AS VPNs, extranet shared services and Internet access"
+summary: >-
+  Build MPLS L3VPNs on an IOS XR / IOS XE core: MP-iBGP VPNv4 through an IOS XR
+  route reflector, VRFs with route distinguishers and route targets for two
+  customers whose addresses overlap, then shared services — an extranet that
+  gives one customer a provider-hosted server on an IOS XR PE, and Internet
+  access from an Internet VRF for the other. Covers CCNP SPCOR 4.3 a–b.
+level: intermediate
+track: service_provider
+topic: MPLS VPN
+tags: [mpls, l3vpn, vrf, vpnv4, route-target, route-distinguisher, extranet, shared-services, internet-vrf, iosxr, iosxe, ccnp-spcor]
+minutes: 90
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

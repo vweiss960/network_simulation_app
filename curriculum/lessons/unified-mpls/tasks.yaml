@@ -1,0 +1,296 @@
+- id: bgp-lu
+  title: Advertise the PE loopbacks with BGP labeled unicast
+  body: |
+    This network is split into **three IGP domains**: OSPF in each access
+    domain, IS-IS in the core. The border routers R1 and R3 run both IGPs,
+    but nothing is redistributed between them. A PE loopback is only known in
+    its own domain: check it — R4 has no route to R5's loopback `5.5.5.5`,
+    and the core router R2 doesn't know either PE.
+
+    That's on purpose. Access networks have thousands of small nodes that
+    shouldn't carry the whole network's IGP and LDP state, and a flap in one
+    domain shouldn't trigger SPF everywhere. But MPLS services need an
+    **end-to-end LSP between the PEs**.
+
+    **BGP labeled unicast** (BGP-LU, RFC 8277) carries the PE loopbacks *with
+    a label*, across the domains, while LDP keeps working inside each one.
+    Build the BGP-LU sessions (iBGP, AS 65000, between loopbacks):
+
+    | Session | Notes |
+    |---|---|
+    | R4 ↔ R1 | R1 is R4's route reflector |
+    | R1 ↔ R3 | across the core (R2 runs no BGP) |
+    | R3 ↔ R5 | R3 is R5's route reflector |
+
+    - Each **PE advertises its own loopback** (`network`) in BGP IPv4 with a
+      label.
+    - IOS XE: labels are sent per neighbor with `send-label` in the IPv4
+      address family.
+    - IOS XR: the session uses the `ipv4 labeled-unicast` address family, and
+      `allocate-label all` under `address-family ipv4 unicast` makes the
+      router allocate labels for BGP IPv4 routes.
+
+    Once it's up, look at R1's copy of `5.5.5.5/32`: it arrived from R3 with
+    next hop **5.5.5.5** — which R1 can't reach. The next task fixes that.
+  hints:
+    - "XE PE (R4): `router bgp 65000` → `no bgp default ipv4-unicast` → `neighbor 1.1.1.1 remote-as 65000` / `update-source Loopback0` → `address-family ipv4` → `network 4.4.4.4 mask 255.255.255.255` → `neighbor 1.1.1.1 activate` → `neighbor 1.1.1.1 send-label`."
+    - "XR border router (R1): `router bgp 65000` → `address-family ipv4 unicast` → `allocate-label all`; `neighbor 4.4.4.4` → `remote-as 65000` / `update-source Loopback0` → `address-family ipv4 labeled-unicast` → `route-reflector-client`; `neighbor 3.3.3.3` the same without `route-reflector-client`."
+    - "XE border router (R3): `neighbor 1.1.1.1 send-label` and `neighbor 5.5.5.5 send-label` with `neighbor 5.5.5.5 route-reflector-client`. XR PE (R5): `network 5.5.5.5/32` + `allocate-label all` under `address-family ipv4 unicast`, and the session to 3.3.3.3 in `address-family ipv4 labeled-unicast`."
+    - "Verify: XR `show bgp ipv4 labeled-unicast summary`, `show bgp ipv4 unicast 5.5.5.5/32`; XE `show bgp ipv4 unicast summary`, `show bgp ipv4 unicast labels`."
+  solution:
+    R4: |
+      router bgp 65000
+       bgp router-id 4.4.4.4
+       bgp log-neighbor-changes
+       no bgp default ipv4-unicast
+       neighbor 1.1.1.1 remote-as 65000
+       neighbor 1.1.1.1 update-source Loopback0
+       address-family ipv4
+        network 4.4.4.4 mask 255.255.255.255
+        neighbor 1.1.1.1 activate
+        neighbor 1.1.1.1 send-label
+       exit-address-family
+      !
+    R1: |
+      router bgp 65000
+       bgp router-id 1.1.1.1
+       address-family ipv4 unicast
+        allocate-label all
+       !
+       neighbor 3.3.3.3
+        remote-as 65000
+        update-source Loopback0
+        address-family ipv4 labeled-unicast
+        !
+       !
+       neighbor 4.4.4.4
+        remote-as 65000
+        update-source Loopback0
+        address-family ipv4 labeled-unicast
+         route-reflector-client
+        !
+       !
+      !
+    R3: |
+      router bgp 65000
+       bgp router-id 3.3.3.3
+       bgp log-neighbor-changes
+       no bgp default ipv4-unicast
+       neighbor 1.1.1.1 remote-as 65000
+       neighbor 1.1.1.1 update-source Loopback0
+       neighbor 5.5.5.5 remote-as 65000
+       neighbor 5.5.5.5 update-source Loopback0
+       address-family ipv4
+        neighbor 1.1.1.1 activate
+        neighbor 1.1.1.1 send-label
+        neighbor 5.5.5.5 activate
+        neighbor 5.5.5.5 send-label
+        neighbor 5.5.5.5 route-reflector-client
+       exit-address-family
+      !
+    R5: |
+      router bgp 65000
+       bgp router-id 5.5.5.5
+       address-family ipv4 unicast
+        network 5.5.5.5/32
+        allocate-label all
+       !
+       neighbor 3.3.3.3
+        remote-as 65000
+        update-source Loopback0
+        address-family ipv4 labeled-unicast
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show bgp ipv4 labeled-unicast summary
+      expect:
+        - {regex: '^3\.3\.3\.3\s+0\s+65000\s.*\s\d+\s*$'}
+        - {regex: '^4\.4\.4\.4\s+0\s+65000\s.*\s\d+\s*$'}
+      describe: "R1 (XR): BGP-LU sessions to R3 and R4 established"
+    - type: cli
+      device: R3
+      command: show bgp ipv4 unicast summary
+      expect:
+        - {regex: '^1\.1\.1\.1\s+4\s+65000\s.*\s\d+\s*$'}
+        - {regex: '^5\.5\.5\.5\s+4\s+65000\s.*\s\d+\s*$'}
+      describe: "R3 (XE): BGP-LU sessions to R1 and R5 established"
+    - type: cli
+      device: R3
+      command: show bgp ipv4 unicast labels
+      expect:
+        - {regex: '5\.5\.5\.5/32\s+5\.5\.5\.5\s+\S+/(\d+|imp-null)'}
+      describe: "R3 (XE): R5's loopback received with a label"
+    - type: cli
+      device: R1
+      command: show bgp ipv4 unicast 5.5.5.5/32
+      expect:
+        - {contains: "5.5.5.5 (inaccessible)"}
+      describe: "R1 (XR): 5.5.5.5/32 arrives with next hop 5.5.5.5 — unreachable from the core (fixed next)"
+
+- id: next-hop-self
+  title: Stitch the LSP at the border routers (next-hop-self)
+  body: |
+    Inside a domain, the BGP next hop must be something the IGP and LDP of
+    *that* domain know. So each **border router rewrites the next hop to
+    itself** on the labeled routes it passes on — in both directions — and
+    allocates its own label for them. The end-to-end LSP from R4 to 5.5.5.5
+    becomes a chain:
+
+    | Segment | Label used |
+    |---|---|
+    | R4 → R1 (West OSPF domain) | R1's **BGP-LU** label for 5.5.5.5 (+ LDP label to 1.1.1.1 — implicit null here: R1 is one hop away) |
+    | R1 → R3 (core) | R3's BGP-LU label for 5.5.5.5, under the **LDP label for 3.3.3.3** through R2 |
+    | R3 → R5 (East OSPF domain) | R5's label (implicit null: R5 owns the prefix) |
+
+    Configure **next-hop-self** on both border routers, towards both of their
+    neighbors.
+
+    - IOS XE: these are **reflected** iBGP routes, and a plain `next-hop-self`
+      doesn't touch those — use `next-hop-self all`.
+    - IOS XR: `next-hop-self` under the neighbor's labeled-unicast address
+      family; to apply it to reflected routes too, add `ibgp policy out
+      enforce-modifications` under `router bgp`.
+
+    Then R4 pings R5's loopback **from its own loopback** — through a core
+    router (R2) that has no route to either address.
+  hints:
+    - "XE (R3): `neighbor 1.1.1.1 next-hop-self all` and `neighbor 5.5.5.5 next-hop-self all` in `address-family ipv4`."
+    - "XR (R1): `router bgp 65000` → `ibgp policy out enforce-modifications`; under `neighbor 3.3.3.3` and `neighbor 4.4.4.4` → `address-family ipv4 labeled-unicast` → `next-hop-self`."
+    - "Verify: XE `show ip route 5.5.5.5` on R4 (a B route via 1.1.1.1), `show ip cef 5.5.5.5 detail` (the BGP label), `ping 5.5.5.5 source Loopback0`; XR `show route 4.4.4.4` on R5, `show mpls forwarding` on R1 (the swap for 5.5.5.5/32)."
+  solution:
+    R1: |
+      router bgp 65000
+       ibgp policy out enforce-modifications
+       neighbor 3.3.3.3
+        address-family ipv4 labeled-unicast
+         next-hop-self
+        !
+       !
+       neighbor 4.4.4.4
+        address-family ipv4 labeled-unicast
+         next-hop-self
+        !
+       !
+      !
+    R3: |
+      router bgp 65000
+       address-family ipv4
+        neighbor 1.1.1.1 next-hop-self all
+        neighbor 5.5.5.5 next-hop-self all
+       exit-address-family
+      !
+  checks:
+    - {type: route, device: R4, prefix: 5.5.5.5/32, protocol: B, via: 1.1.1.1, describe: "R4 (XE): R5's loopback by BGP, next hop R1"}
+    - {type: route, device: R5, prefix: 4.4.4.4/32, protocol: B, via: 3.3.3.3, describe: "R5 (XR): R4's loopback by BGP, next hop R3"}
+    - {type: route, device: R2, prefix: 5.5.5.5/32, present: false, describe: "R2 (core P) still has no route to the PEs — it only switches labels"}
+    - type: cli
+      device: R1
+      command: show mpls forwarding
+      expect:
+        - {regex: '\s5\.5\.5\.5/32\s'}
+        - {regex: '\s4\.4\.4\.4/32\s'}
+      describe: "R1 (XR): label swaps for both PE loopbacks"
+    - type: cli
+      device: R4
+      command: ping 5.5.5.5 source Loopback0
+      expect:
+        - {regex: 'Success rate is (100|80) percent'}
+      describe: "R4 reaches R5's loopback end to end over the stitched LSP"
+
+- id: vpn
+  title: Run an L3VPN over Unified MPLS
+  body: |
+    With an LSP between R4 and R5, MPLS services work exactly as in a single
+    domain — the PEs don't care how the LSP was built. Connect the customer's
+    two sites with an L3VPN:
+
+    | | Value |
+    |---|---|
+    | VRF | `CUST`, RD `65000:10`, RT import/export `65000:10` |
+    | R4 Gi3 → H1 | `10.4.1.1/24` |
+    | R5 Gi0/0/0/1 → H2 | `10.5.1.1/24` |
+    | VPNv4 | a direct iBGP session R4 ↔ R5, between loopbacks |
+
+    (A real network would reflect VPNv4 through route reflectors too — often
+    the same border routers — but the PEs' direct session shows the point:
+    it runs over a BGP-LU path.)
+
+    R4 now pushes **three** labels for H2's subnet (or two, where a hop's
+    label is implicit null): the **VPN** label, the **BGP-LU** label for
+    5.5.5.5 and the **LDP** label to the border router.
+  hints:
+    - "XE: `vrf definition CUST` → `rd 65000:10` → `address-family ipv4` → RT import/export `65000:10`; `interface GigabitEthernet3` → `vrf forwarding CUST` → `ip address 10.4.1.1 255.255.255.0`; BGP: `neighbor 5.5.5.5 remote-as 65000` / `update-source Loopback0`, `address-family vpnv4` → `neighbor 5.5.5.5 activate` / `send-community extended`, `address-family ipv4 vrf CUST` → `redistribute connected`."
+    - "XR: `vrf CUST` → `address-family ipv4 unicast` → import / export `route-target 65000:10`; the interface in `vrf CUST`; `router bgp 65000` → `address-family vpnv4 unicast`, `neighbor 4.4.4.4` (remote-as, update-source, `address-family vpnv4 unicast`), `vrf CUST` → `rd 65000:10` → `address-family ipv4 unicast` → `redistribute connected`."
+    - "Verify: `show ip cef vrf CUST 10.5.1.0/24 detail` on R4 — follow the recursion: VPN label via 5.5.5.5, BGP-LU label via 1.1.1.1."
+  solution:
+    R4: |
+      vrf definition CUST
+       rd 65000:10
+       address-family ipv4
+        route-target export 65000:10
+        route-target import 65000:10
+       exit-address-family
+      !
+      interface GigabitEthernet3
+       vrf forwarding CUST
+       ip address 10.4.1.1 255.255.255.0
+      !
+      router bgp 65000
+       neighbor 5.5.5.5 remote-as 65000
+       neighbor 5.5.5.5 update-source Loopback0
+       address-family vpnv4
+        neighbor 5.5.5.5 activate
+        neighbor 5.5.5.5 send-community extended
+       exit-address-family
+       address-family ipv4 vrf CUST
+        redistribute connected
+       exit-address-family
+      !
+    R5: |
+      vrf CUST
+       address-family ipv4 unicast
+        import route-target
+         65000:10
+        !
+        export route-target
+         65000:10
+        !
+       !
+      !
+      interface GigabitEthernet0/0/0/1
+       vrf CUST
+       ipv4 address 10.5.1.1 255.255.255.0
+      !
+      router bgp 65000
+       address-family vpnv4 unicast
+       !
+       neighbor 4.4.4.4
+        remote-as 65000
+        update-source Loopback0
+        address-family vpnv4 unicast
+        !
+       !
+       vrf CUST
+        rd 65000:10
+        address-family ipv4 unicast
+         redistribute connected
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R4
+      command: show ip cef vrf CUST 10.5.1.0/24 detail
+      expect:
+        - {regex: 'recursive via 5\.5\.5\.5 label \d+'}
+      describe: "R4 (XE): H2's subnet resolves through 5.5.5.5 with a VPN label"
+    - type: cli
+      device: R5
+      command: show bgp vpnv4 unicast vrf CUST
+      expect:
+        - {regex: '10\.4\.1\.0/24\s+4\.4\.4\.4'}
+      describe: "R5 (XR): H1's subnet learned from R4 over the direct VPNv4 session"
+    - {type: ping, from: H1, to: 10.5.1.10, count: 5, min_success: 80, describe: "H1 reaches H2 across three IGP domains"}

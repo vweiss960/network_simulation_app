@@ -1,0 +1,18 @@
+slug: sp-high-availability
+title: "High availability: link aggregation, BFD, NSF / graceful restart and NSR"
+summary: >-
+  Make a service-provider core survive failures, on IOS XR and IOS XE: LACP
+  bundles between XR routers and from XR to XE (fast LACP, minimum links), BFD
+  for sub-second failure detection, BGP graceful restart and IS-IS NSF — tested
+  by restarting the routing processes under live traffic — and nonstop routing
+  on IOS XR. Covers CCNP SPCOR 2.8 a–d.
+level: intermediate
+track: service_provider
+topic: High availability
+tags: [high-availability, lacp, bundle, bfd, nsf, graceful-restart, nsr, isis, bgp, iosxr, iosxe, ccnp-spcor]
+minutes: 90
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

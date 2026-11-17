@@ -1,0 +1,289 @@
+name: Carrier Ethernet over MPLS
+description: >-
+  An MPLS core (IS-IS CORE + LDP, already running) with P router R1 (IOS XR)
+  and three IOS XE PEs. Customer A (E-Line) has sites on R3 and R4, tagged
+  with different VLANs; customer B (E-LAN) has untagged sites on all three
+  PEs; customer C (E-Access) has a C-tagged site on R3 and is delivered to a
+  partner network on R5 through an 802.1ad ENNI. R4 and R5 also share a
+  direct Ethernet link (a wholesale circuit) used for Ethernet OAM.
+nodes:
+  - name: A1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 80]
+    startup_config: |
+      ip link set eth1 up
+      ip link add link eth1 name eth1.100 type vlan id 100
+      ip link set eth1.100 up
+      ip addr add 192.168.10.1/24 dev eth1.100
+  - name: B1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 260]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 192.168.50.1/24 dev eth1
+  - name: C1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 440]
+    startup_config: |
+      ip link set eth1 up
+      ip link add link eth1 name eth1.10 type vlan id 10
+      ip link set eth1.10 up
+      ip addr add 192.168.30.1/24 dev eth1.10
+  - name: R3
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 4
+    position: [260, 260]
+    startup_config: |
+      interface Loopback0
+       ip address 3.3.3.3 255.255.255.255
+       ip router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R1 (core)
+       ip address 10.0.13.2 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       mpls ip
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description Customer A - UNI West (VLAN 100)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description Customer B - UNI West (untagged)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet5
+       description Customer C - UNI West (C-VLAN 10)
+       no ip address
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0003.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+      !
+      mpls label protocol ldp
+      mpls ldp router-id Loopback0 force
+      !
+  - name: R1
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 3
+    position: [560, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 1.1.1.1 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R3 Gi2 (core)
+       ipv4 address 10.0.13.1 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R4 Gi2 (core)
+       ipv4 address 10.0.14.1 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description to R5 Gi2 (core)
+       ipv4 address 10.0.15.1 255.255.255.252
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0001.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/2
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+      mpls oam
+      !
+      mpls ldp
+       router-id 1.1.1.1
+       interface GigabitEthernet0/0/0/0
+       !
+       interface GigabitEthernet0/0/0/1
+       !
+       interface GigabitEthernet0/0/0/2
+       !
+      !
+  - name: R4
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 4
+    position: [860, 140]
+    startup_config: |
+      interface Loopback0
+       ip address 4.4.4.4 255.255.255.255
+       ip router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R1 (core)
+       ip address 10.0.14.2 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       mpls ip
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description Customer A - UNI East (VLAN 200)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description Customer B - UNI East (untagged)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet5
+       description wholesale link to R5 Gi5 (Ethernet OAM)
+       no ip address
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0004.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+      !
+      mpls label protocol ldp
+      mpls ldp router-id Loopback0 force
+      !
+  - name: R5
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 4
+    position: [860, 400]
+    startup_config: |
+      interface Loopback0
+       ip address 5.5.5.5 255.255.255.255
+       ip router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R1 (core)
+       ip address 10.0.15.2 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       mpls ip
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description Customer B - UNI North (untagged)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description Customer C - ENNI to partner (S-VLAN 300)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet5
+       description wholesale link to R4 Gi5 (Ethernet OAM)
+       no ip address
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0005.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+      !
+      mpls label protocol ldp
+      mpls ldp router-id Loopback0 force
+      !
+  - name: A2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1080, 60]
+    startup_config: |
+      ip link set eth1 up
+      ip link add link eth1 name eth1.200 type vlan id 200
+      ip link set eth1.200 up
+      ip addr add 192.168.10.2/24 dev eth1.200
+  - name: B2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1080, 220]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 192.168.50.2/24 dev eth1
+  - name: B3
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1080, 380]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 192.168.50.3/24 dev eth1
+  - name: C2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1080, 540]
+    startup_config: |
+      ip link set eth1 up
+      ip link add link eth1 name eth1.300 type vlan proto 802.1ad id 300
+      ip link set eth1.300 up
+      ip link add link eth1.300 name eth1.300.10 type vlan id 10
+      ip link set eth1.300.10 up
+      ip addr add 192.168.30.2/24 dev eth1.300.10
+links:
+  - [A1, eth1, R3, GigabitEthernet3, "VLAN 100"]
+  - [B1, eth1, R3, GigabitEthernet4]
+  - [C1, eth1, R3, GigabitEthernet5, "C-VLAN 10"]
+  - [R3, GigabitEthernet2, R1, GigabitEthernet0/0/0/0]
+  - [R1, GigabitEthernet0/0/0/1, R4, GigabitEthernet2]
+  - [R1, GigabitEthernet0/0/0/2, R5, GigabitEthernet2]
+  - [R4, GigabitEthernet3, A2, eth1, "VLAN 200"]
+  - [R4, GigabitEthernet4, B2, eth1]
+  - [R5, GigabitEthernet3, B3, eth1]
+  - [R5, GigabitEthernet4, C2, eth1, "ENNI · S-VLAN 300 / C-VLAN 10"]
+  - [R4, GigabitEthernet5, R5, GigabitEthernet5, "wholesale link · CFM + 802.3ah"]
+annotations:
+  - {id: core, type: group, x: 220, y: 20, w: 820, h: 560, text: "MPLS CORE · IS-IS + LDP · P: R1 (IOS XR) · PEs: R3, R4, R5 (IOS XE)", color: blue, locked: true}
+  - {id: legend, type: text, x: 0, y: 600, w: 1200, h: 40, text: "Customer A = E-Line (EVPL) · Customer B = E-LAN (VPLS) · Customer C = E-Access over an 802.1ad ENNI", color: gray, locked: true}

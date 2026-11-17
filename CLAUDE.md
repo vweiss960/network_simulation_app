@@ -233,10 +233,21 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   user / SSH bits — `starting_config_from_running`).
 - Plain Linux hosts (not FRR) run their startup config lines as clab `exec`
   commands (`clab_yaml.linux_exec_commands`).
+- FRR nodes (`plabs/frr`): containerlab ignores `startup-config` on Linux nodes, so
+  `clab_yaml.frr_startup` mounts the startup config as `/etc/frr/frr.conf` (bind) and runs
+  its `$ `-prefixed lines as `exec` shell commands (MACsec, `wpa_supplicant` MKA, sysctls).
+  `plabs/frr` includes wpa_supplicant 2.10 built with `macsec_linux`, patched so
+  `MKA_EAPOL_BCAST=1` sends MKPDUs to broadcast (Cisco `eapol destination-address
+  broadcast-address`): VXLAN switches drop EAPoL to 01:80:c2:00:00:03.
 - AI policy: the lab agent appends a lesson block (tasks + progress + rules)
   to its system prompt; `hints` drops the change tools; `off` → 403 + no Ask
   AI bar. Frontend: `pages/LessonsPage`, `LessonPage`, `LessonEditor`,
   `workspace/LessonPanel` (+ `AuthoringBar`), `lesson/TopologyPreview`, `lesson/meta`.
+- Offline check of a pack (no app, no JWT — builds the topology straight in containerlab,
+  applies starting configs, then each task's solution and polls its checks with the app's
+  evaluator): `docker exec plabs-backend-1 sh -c 'cd <repo>/backend && PYTHONPATH=. python -u
+  ../scripts/lesson_offline_test.py ../curriculum/lessons/<slug> [--keep] [--reuse --from TASK]'`.
+  It runs inside the backend container: don't restart the backend while it runs.
 - Live check of a lesson's checks: `python3 scripts/lesson_solve_test.py <jwt> <slug>`
   (starts the lesson, applies each task's reference solution, expects every check to pass;
   `--authoring` uses the lesson's authoring lab instead of the token user's attempt; `--keep`).
@@ -247,6 +258,25 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   reset for new capabilities), which `configure` sends in config mode.
 - Attempts record `lesson_version`; when the bundled lesson gets a newer version the
   attempt is `outdated` and the UI offers Restart (its lab was built from the old topology).
+- Platform limits for lesson design (verified live, `sp-high-availability`): XRd Control
+  Plane runs **no BFD** (no line card: sessions stay DOWN, `BFD_MP_DOWNLOAD_NO_LC`, and IS-IS
+  with `bfd fast-detect` never forms the adjacency) — BFD lessons use XE–XE links; CSR 1000v
+  BFD works (echo mode) but not on a Port-channel. LACP bundles work XR–XR and XR–XE (fast
+  rate, `bundle minimum-active links` / XE `lacp min-bundle`). GR/NSF work (XR `process
+  restart bgp|isis`, XE helper keeps routes stale); XRd has one RP, so NSR is config-only
+  (BGP NSR is on by default there). XR applies a GR change only on the next session reset.
+- Services (verified live): XRd **label-switches** (LDP, L3VPN, EoMPLS PWs and BGP-LU transit
+  through XR P routers all work; XR needs `mpls oam` to answer MPLS ping/traceroute), forwards
+  PIM-SM multicast, enforces interface ACLs, and is a BGP flowspec controller (CSR installs
+  the rules as client). XRd has **no** uRPF, input policing, LPTS policer config, CFM, G.8032
+  or MACsec, and is **no L2VPN PE**: xconnects, bridge domains and VPLS PWs come up
+  (LDP-signalled, state up) but its l2transport ACs never receive a frame — XR is P-only
+  for L2 services (it label-switches other PEs' PWs fine). CSR 1000v does LDP sync / session protection / auth / label filtering, CoPP,
+  uRPF, MQC (police, shape, WRED), PIM SM/SSM/BIDIR, IGMPv3/MLD, EVC rewrite, 802.1ad,
+  EoMPLS xconnect, VPLS VFI (bridge-domain), 802.1ad on EFPs, CFM **down MEPs only** (no `cfm mep` under
+  a service instance → no up MEPs on xconnects), 802.3ah, flowspec client — but is capped at **1 Mb/s**
+  unlicensed (C8000V: 20 Mb/s). No image here does MACsec, G.8032, 802.1ah PBB, E-Tree or
+  BGPsec: readings only.
 
 ### Modules (`models/module.py`, `services/modules.py`, `routes/modules.py`)
 - A module = ordered items `{lesson: slug, section, title, objectives}` (a

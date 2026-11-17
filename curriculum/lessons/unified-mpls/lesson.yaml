@@ -1,0 +1,19 @@
+slug: unified-mpls
+title: "Unified MPLS: BGP labeled unicast across IGP domains"
+summary: >-
+  Scale an MPLS network by splitting it into separate IGP domains — OSPF
+  access domains on each side of an IS-IS core — and join them end to end
+  with BGP labeled unicast (RFC 8277): border routers as inline route
+  reflectors with next-hop-self, label switched paths stitched from LDP and
+  BGP labels, and finally an L3VPN between two PEs that share no IGP. On IOS XR
+  and IOS XE. Covers CCNP SPCOR 3.1.d.
+level: advanced
+track: service_provider
+topic: MPLS
+tags: [mpls, unified-mpls, seamless-mpls, bgp-lu, labeled-unicast, ldp, l3vpn, ospf, isis, iosxr, iosxe, ccnp-spcor]
+minutes: 75
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

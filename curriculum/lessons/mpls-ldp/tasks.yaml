@@ -1,0 +1,403 @@
+- id: ldp
+  title: Bring up LDP and label-switch through a BGP-free core
+  body: |
+    Try it first: from H1, `ping 10.4.1.10` (H2) fails. R3 has a BGP route to
+    H2's LAN with next hop **4.4.4.4** and forwards the packets to R1 — but R1
+    and R2 run **no BGP** and have never heard of 10.4.1.0/24, so they drop
+    them. This is a *BGP-free core*: the P routers only know the IGP.
+
+    MPLS fixes it. With **LDP**, every router binds a label to every IGP
+    prefix and tells its neighbors. R3 then pushes the label for **4.4.4.4**
+    on H1's packets, and R1 and R2 switch them on that label to R4 — without
+    looking at the IP destination at all.
+
+    Enable LDP on **every core link** (including the R3–R4 backup link), on
+    all four routers:
+
+    - **IOS XR:** `mpls ldp` with `router-id` = the loopback and each core
+      interface listed under it.
+    - **IOS XE:** `mpls ip` on each core interface, and make Loopback0 the LDP
+      router ID with `mpls ldp router-id Loopback0 force`. The LDP ID is also
+      the **transport address** the TCP session is built to, so it must be an
+      address the neighbor can reach — the loopback, advertised in IS-IS.
+  hints:
+    - "XR: `mpls ldp` → `router-id 1.1.1.1` → `interface GigabitEthernet0/0/0/0` → `interface GigabitEthernet0/0/0/1`. Commit."
+    - "XE: `mpls label protocol ldp` (the default), `mpls ldp router-id Loopback0 force`; then `mpls ip` on Gi2 and Gi3."
+    - "Verify: XR `show mpls ldp neighbor brief`, `show mpls forwarding`; XE `show mpls ldp neighbor`, `show mpls forwarding-table`. Then ping H2 from H1 again."
+  solution:
+    R1: |
+      mpls ldp
+       router-id 1.1.1.1
+       interface GigabitEthernet0/0/0/0
+       !
+       interface GigabitEthernet0/0/0/1
+       !
+      !
+    R2: |
+      mpls ldp
+       router-id 2.2.2.2
+       interface GigabitEthernet0/0/0/0
+       !
+       interface GigabitEthernet0/0/0/1
+       !
+      !
+    R3: |
+      mpls label protocol ldp
+      mpls ldp router-id Loopback0 force
+      interface GigabitEthernet2
+       mpls ip
+      !
+      interface GigabitEthernet3
+       mpls ip
+      !
+    R4: |
+      mpls label protocol ldp
+      mpls ldp router-id Loopback0 force
+      interface GigabitEthernet2
+       mpls ip
+      !
+      interface GigabitEthernet3
+       mpls ip
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show mpls ldp neighbor brief
+      expect:
+        - {regex: '^2\.2\.2\.2:0\s'}
+        - {regex: '^3\.3\.3\.3:0\s'}
+      describe: "R1 (XR): LDP sessions to R2 and R3"
+    - type: cli
+      device: R4
+      command: show mpls ldp neighbor
+      expect:
+        - {regex: 'Peer LDP Ident: 2\.2\.2\.2:0'}
+        - {regex: 'Peer LDP Ident: 3\.3\.3\.3:0'}
+      describe: "R4 (XE): LDP sessions to R2 and R3"
+    - type: cli
+      device: R2
+      command: show mpls forwarding
+      expect:
+        - {regex: '\s4\.4\.4\.4/32\s+Gi0/0/0/1'}
+        - {regex: '\s3\.3\.3\.3/32\s+Gi0/0/0/0'}
+      describe: "R2 (XR): labels to both PE loopbacks in the LFIB"
+    - {type: ping, from: H1, to: 10.4.1.10, count: 5, min_success: 80, describe: "H1 reaches H2 through the BGP-free core"}
+
+- id: oam
+  title: Verify the label switched paths with MPLS OAM
+  body: |
+    A plain `ping 4.4.4.4` from R3 proves IP reachability — not that the
+    **label switched path** works: if a router on the way had no label, it
+    would just forward the packet unlabelled and the ping would still succeed
+    (until it reached a BGP-free P router with a customer packet…).
+
+    **MPLS OAM** (LSP ping and traceroute, RFC 8029) sends MPLS echo requests
+    *inside the LSP* for a given FEC: every hop checks that it really has a
+    label binding for that FEC, and the reply carries return codes and the
+    downstream label.
+
+    1. IOS XE answers MPLS echo requests out of the box. **IOS XR doesn't**:
+       enable `mpls oam` on R1 and R2.
+    2. From R3, run `ping mpls ipv4 4.4.4.4/32` and `traceroute mpls ipv4
+       4.4.4.4/32`. Each transit hop shows **L** (labelled output) and its
+       outgoing label; the egress answers **!**. Before step 1 the XR hops
+       time out.
+  hints:
+    - "XR: just `mpls oam` in global configuration. Commit."
+    - "XE traceroute codes: `L` labelled output interface, `B` unlabelled, `!` success (egress), `.` timeout — a timed-out hop is often a router with MPLS OAM off."
+  solution:
+    R1: |
+      mpls oam
+      !
+    R2: |
+      mpls oam
+      !
+  checks:
+    - type: cli
+      device: R3
+      command: traceroute mpls ipv4 4.4.4.4/32 timeout 1
+      expect:
+        - {regex: '^L 1 10\.0\.13\.1 '}
+        - {regex: '^L 2 10\.0\.12\.2 '}
+        - {regex: '^! 3 10\.0\.24\.2 '}
+      describe: "R3: traceroute mpls to R4 — R1 and R2 answer as labelled hops, R4 as the egress"
+    - type: cli
+      device: R4
+      command: ping mpls ipv4 3.3.3.3/32
+      expect:
+        - {regex: 'Success rate is 100 percent'}
+      describe: "R4: LSP ping to R3's loopback succeeds"
+
+- id: igp-sync
+  title: Keep IS-IS and LDP in step (LDP–IGP synchronization)
+  body: |
+    In a BGP-free core, IS-IS and LDP must agree. If a link is up in IS-IS but
+    its LDP session isn't (LDP not configured on one end, a session that's
+    still coming up after a reboot, an authentication mismatch…), IS-IS still
+    sends traffic over it — **unlabelled**. The next P router has no route to
+    the customer prefix and drops it: a black hole.
+
+    **LDP–IGP synchronization** makes IS-IS advertise a link with the
+    **maximum metric** as long as LDP isn't operational on it, so traffic
+    avoids it (here: it takes the R3–R4 backup link) until labels are
+    exchanged.
+
+    Enable it for IS-IS on all four routers:
+
+    - **IOS XR:** per interface, under `router isis CORE` → `interface …` →
+      `address-family ipv4 unicast` → `mpls ldp sync`.
+    - **IOS XE:** once, under `router isis CORE` → `mpls ldp sync`.
+
+    **Try it** (not graded): remove `mpls ip` from R3's Gi2. Without sync, H1's
+    ping to H2 stops (R1 gets unlabelled packets for 10.4.1.10). With sync,
+    `show isis database detail R3.00-00` shows the R3–R1 link at metric
+    16777214 and the ping moves to the backup link. Put `mpls ip` back.
+  hints:
+    - "XR: `router isis CORE` → `interface GigabitEthernet0/0/0/0` → `address-family ipv4 unicast` → `mpls ldp sync` (repeat for each core interface)."
+    - "Verify: XR `show isis interface GigabitEthernet0/0/0/1` → *LDPv4 Sync Status: Achieved*; XE `show mpls ldp igp sync` → *sync achieved*."
+  solution:
+    R1: |
+      router isis CORE
+       interface GigabitEthernet0/0/0/0
+        address-family ipv4 unicast
+         mpls ldp sync
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        address-family ipv4 unicast
+         mpls ldp sync
+        !
+       !
+      !
+    R2: |
+      router isis CORE
+       interface GigabitEthernet0/0/0/0
+        address-family ipv4 unicast
+         mpls ldp sync
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        address-family ipv4 unicast
+         mpls ldp sync
+        !
+       !
+      !
+    R3: |
+      router isis CORE
+       mpls ldp sync
+      !
+    R4: |
+      router isis CORE
+       mpls ldp sync
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show isis interface GigabitEthernet0/0/0/1
+      expect:
+        - {regex: 'LDPv4 Sync Status:\s+Achieved'}
+      describe: "R1 (XR): LDP sync achieved towards R3"
+    - type: cli
+      device: R2
+      command: show isis interface GigabitEthernet0/0/0/1
+      expect:
+        - {regex: 'LDPv4 Sync Status:\s+Achieved'}
+      describe: "R2 (XR): LDP sync achieved towards R4"
+    - type: cli
+      device: R3
+      command: show mpls ldp igp sync
+      expect:
+        - {regex: 'GigabitEthernet2:\s*\n\s+LDP configured; LDP-IGP Synchronization enabled\.\s*\n\s+Sync status: sync achieved'}
+        - {regex: 'GigabitEthernet3:\s*\n\s+LDP configured; LDP-IGP Synchronization enabled\.\s*\n\s+Sync status: sync achieved'}
+      describe: "R3 (XE): LDP–IGP sync enabled and achieved on both core links"
+    - type: cli
+      device: R4
+      command: show mpls ldp igp sync
+      expect:
+        - {regex: 'Sync status: sync achieved', count: 2}
+      describe: "R4 (XE): LDP–IGP sync achieved on both core links"
+
+- id: session-protection
+  title: Keep LDP sessions and labels through a link failure (session protection)
+  body: |
+    When the R1–R2 link fails, IS-IS reroutes R1 ↔ R2 traffic around the ring
+    in a moment — but the LDP session between them was built from **link
+    hellos** on that link, so it dies too, and with it every label R2 had
+    sent R1. When the link comes back, the session and all the bindings must
+    be rebuilt before traffic can use the link again.
+
+    **Session protection** keeps the session alive with **targeted hellos**
+    sent to the neighbor's loopback (which stays reachable over the other
+    path) as well as link hellos. If the link fails, the session survives on
+    the targeted hellos, the labels are kept, and when the link returns
+    forwarding resumes immediately.
+
+    Enable LDP session protection on all four routers.
+
+    **Try it** (not graded): right-click the R1–R2 cable → Unplug. On R1,
+    `show mpls ldp neighbor 2.2.2.2 detail` shows the session still up, with
+    session protection in *Protecting* state and only a targeted discovery
+    source left. Plug it back in.
+  hints:
+    - "XR: `mpls ldp` → `session protection`. XE: `mpls ldp session protection` (global)."
+    - "Verify: XR `show mpls ldp neighbor 2.2.2.2 detail` → *Session Protection: Enabled, state: Ready* and a *Targeted Hello* discovery source; XE `show mpls ldp neighbor detail` → *LDP Session Protection enabled, state: Ready*."
+  solution:
+    R1: |
+      mpls ldp
+       session protection
+      !
+    R2: |
+      mpls ldp
+       session protection
+      !
+    R3: |
+      mpls ldp session protection
+    R4: |
+      mpls ldp session protection
+  checks:
+    - type: cli
+      device: R1
+      command: show mpls ldp neighbor 2.2.2.2 detail
+      expect:
+        - {regex: 'Targeted Hello \(1\.1\.1\.1 -> 2\.2\.2\.2'}
+        - {regex: 'Session Protection:\s*\n\s+Enabled, state: Ready'}
+      describe: "R1 (XR): session to R2 protected (targeted hello, state Ready)"
+    - type: cli
+      device: R3
+      command: show mpls ldp neighbor 1.1.1.1 detail
+      expect:
+        - {contains: "LDP Session Protection enabled, state: Ready"}
+      describe: "R3 (XE): session to R1 protected"
+    - type: cli
+      device: R4
+      command: show mpls ldp neighbor 2.2.2.2 detail
+      expect:
+        - {contains: "LDP Session Protection enabled, state: Ready"}
+      describe: "R4 (XE): session to R2 protected"
+
+- id: ldp-auth
+  title: Authenticate the LDP sessions (MD5)
+  body: |
+    LDP runs over TCP port 646. Anyone who can reach a router's transport
+    address could try to open a session and inject label bindings. Protect
+    every session with a **TCP MD5 signature** (RFC 5036, like BGP): both ends
+    need the same password, and segments without a valid signature are
+    dropped before TCP even sees them.
+
+    Use the password **`MPLS-core-1`** on every LDP session — each router
+    configures it per neighbor, by LDP ID.
+
+    A password only takes effect on a **new** TCP connection. IOS XR resets
+    the session when you commit it; IOS XE doesn't — `show mpls ldp neighbor
+    detail` then reads *Password: …, neighbor, **stale*** until you reset the
+    session yourself (`clear mpls ldp neighbor …`). While only one end has the
+    password, the session stays down.
+  hints:
+    - "XR: `mpls ldp` → `neighbor 2.2.2.2:0 password clear MPLS-core-1` (one line per neighbor, LDP ID with `:0`)."
+    - "XE: `mpls ldp neighbor 1.1.1.1 password MPLS-core-1` (one line per neighbor)."
+    - "Neighbors: R1 ↔ R2, R3; R2 ↔ R1, R4; R3 ↔ R1, R4; R4 ↔ R2, R3."
+    - "XE: after configuring the passwords, `do clear mpls ldp neighbor *` (in config mode) so every session restarts signed."
+    - "Verify: XR `show mpls ldp neighbor 2.2.2.2 detail` → *TCP connection: … MD5 on*; XE `show mpls ldp neighbor 1.1.1.1 detail` → *Password: …, neighbor, in use* (not *stale*)."
+  solution:
+    R1: |
+      mpls ldp
+       neighbor 2.2.2.2:0 password clear MPLS-core-1
+       neighbor 3.3.3.3:0 password clear MPLS-core-1
+      !
+    R2: |
+      mpls ldp
+       neighbor 1.1.1.1:0 password clear MPLS-core-1
+       neighbor 4.4.4.4:0 password clear MPLS-core-1
+      !
+    R3: |
+      mpls ldp neighbor 1.1.1.1 password MPLS-core-1
+      mpls ldp neighbor 4.4.4.4 password MPLS-core-1
+      do clear mpls ldp neighbor *
+    R4: |
+      mpls ldp neighbor 2.2.2.2 password MPLS-core-1
+      mpls ldp neighbor 3.3.3.3 password MPLS-core-1
+      do clear mpls ldp neighbor *
+  checks:
+    - type: cli
+      device: R1
+      command: show mpls ldp neighbor 3.3.3.3 detail
+      expect:
+        - {regex: 'TCP connection: .*MD5 on'}
+        - {regex: 'State: Oper'}
+      describe: "R1 (XR): session to R3 up and MD5-signed"
+    - type: cli
+      device: R2
+      command: show mpls ldp neighbor 4.4.4.4 detail
+      expect:
+        - {regex: 'TCP connection: .*MD5 on'}
+        - {regex: 'State: Oper'}
+      describe: "R2 (XR): session to R4 up and MD5-signed"
+    - type: cli
+      device: R3
+      command: show mpls ldp neighbor 4.4.4.4 detail
+      expect:
+        - {regex: 'Password: (not )?required, neighbor, in use'}
+      describe: "R3 (XE): session to R4 up with the neighbor password in use"
+    - {type: ping, from: H1, to: 10.4.1.10, count: 5, min_success: 80, describe: "H1 still reaches H2 (every session came back with the password)"}
+
+- id: label-filter
+  title: Allocate labels only where they're needed (label allocation filtering)
+  body: |
+    By default LDP allocates and advertises a label for **every** prefix in
+    the routing table — including all the point-to-point link subnets. In a
+    real SP that's thousands of labels, LIB entries and LDP messages for
+    prefixes no LSP ever needs: MPLS services only ever target **PE
+    loopbacks** (BGP next hops). Filtering label allocation to host routes
+    (/32s) saves memory and churn, and keeps infrastructure links out of
+    the label space.
+
+    Allocate local labels for **host routes only**, on all four routers. Then
+    compare `show mpls forwarding` on R2 before and after: the link subnets
+    disappear, the loopbacks stay — and H1 still reaches H2.
+  hints:
+    - "XR: `mpls ldp` → `address-family ipv4` → `label` → `local` → `allocate for host-routes`."
+    - "XE: `mpls ldp label` → `allocate global host-routes`."
+  solution:
+    R1: |
+      mpls ldp
+       address-family ipv4
+        label
+         local
+          allocate for host-routes
+         !
+        !
+       !
+      !
+    R2: |
+      mpls ldp
+       address-family ipv4
+        label
+         local
+          allocate for host-routes
+         !
+        !
+       !
+      !
+    R3: |
+      mpls ldp label
+       allocate global host-routes
+    R4: |
+      mpls ldp label
+       allocate global host-routes
+  checks:
+    - type: cli
+      device: R2
+      command: show mpls forwarding
+      expect:
+        - {regex: '\s4\.4\.4\.4/32\s'}
+        - {regex: '\s3\.3\.3\.3/32\s'}
+        - {not_regex: '\s10\.0\.\d+\.0/30\s'}
+      describe: "R2 (XR): labels for the loopbacks only — no link subnets in the LFIB"
+    - type: cli
+      device: R3
+      command: show mpls forwarding-table
+      expect:
+        - {regex: '\s4\.4\.4\.4/32\s'}
+        - {not_regex: '\s10\.0\.\d+\.0/30\s'}
+      describe: "R3 (XE): no labels allocated for link subnets"
+    - {type: ping, from: H1, to: 10.4.1.10, count: 5, min_success: 80, describe: "H1 still reaches H2"}

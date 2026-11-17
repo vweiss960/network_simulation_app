@@ -1,0 +1,275 @@
+name: MPLS L3VPN core
+description: >-
+  An MPLS core (IS-IS CORE + LDP, already running): P router and VPNv4 route
+  reflector R1 (IOS XR), PEs R3 and R4 (IOS XE) with customers A and B — whose
+  addresses overlap — and PE R2 (IOS XR) with the provider's shared-services
+  server and the Internet uplink. No BGP is configured yet.
+nodes:
+  - name: A1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 300]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.1.1.10/24 dev eth1
+      ip route add 10.0.0.0/8 via 10.1.1.1
+      ip route add 8.8.8.8/32 via 10.1.1.1
+  - name: B1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 520]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.1.1.10/24 dev eth1
+      ip route add 10.0.0.0/8 via 10.1.1.1
+      ip route add 8.8.8.8/32 via 10.1.1.1
+  - name: R3
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 3
+    position: [260, 410]
+    startup_config: |
+      interface Loopback0
+       ip address 3.3.3.3 255.255.255.255
+       ip router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R1 Gi0/0/0/1 (core)
+       ip address 10.0.13.2 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       mpls ip
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description Customer A - site West (A1)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description Customer B - site West (B1)
+       no ip address
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0003.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+      !
+      mpls label protocol ldp
+      mpls ldp router-id Loopback0 force
+      !
+  - name: R1
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 3
+    position: [530, 410]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 1.1.1.1 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R2 Gi0/0/0/0 (core)
+       ipv4 address 10.0.12.1 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R3 Gi2 (core)
+       ipv4 address 10.0.13.1 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description to R4 Gi2 (core)
+       ipv4 address 10.0.14.1 255.255.255.252
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0001.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/2
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+      mpls oam
+      !
+      mpls ldp
+       router-id 1.1.1.1
+       interface GigabitEthernet0/0/0/0
+       !
+       interface GigabitEthernet0/0/0/1
+       !
+       interface GigabitEthernet0/0/0/2
+       !
+      !
+  - name: R2
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 3
+    position: [530, 140]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 2.2.2.2 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R1 Gi0/0/0/0 (core)
+       ipv4 address 10.0.12.2 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description Shared services - server SVC
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description Internet uplink (INET)
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0002.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+      mpls oam
+      !
+      mpls ldp
+       router-id 2.2.2.2
+       interface GigabitEthernet0/0/0/0
+       !
+      !
+  - name: SVC
+    kind: linux
+    image: plabs/host:latest
+    icon: server
+    interfaces: 1
+    position: [330, 40]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.100.0.10/24 dev eth1
+      ip route add 10.0.0.0/8 via 10.100.0.1
+  - name: INET
+    kind: linux
+    image: plabs/host:latest
+    icon: cloud
+    interfaces: 1
+    position: [730, 40]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 198.51.100.1/30 dev eth1
+      ip addr add 8.8.8.8/32 dev lo
+      ip route add 10.0.0.0/8 via 198.51.100.2
+  - name: R4
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 3
+    position: [800, 410]
+    startup_config: |
+      interface Loopback0
+       ip address 4.4.4.4 255.255.255.255
+       ip router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R1 Gi0/0/0/2 (core)
+       ip address 10.0.14.2 255.255.255.252
+       ip router isis CORE
+       isis network point-to-point
+       mpls ip
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description Customer A - site East (A2)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet4
+       description Customer B - site East (B2)
+       no ip address
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0004.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+      !
+      mpls label protocol ldp
+      mpls ldp router-id Loopback0 force
+      !
+  - name: A2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1020, 300]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.1.2.10/24 dev eth1
+      ip route add 10.0.0.0/8 via 10.1.2.1
+      ip route add 8.8.8.8/32 via 10.1.2.1
+  - name: B2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1020, 520]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.1.2.10/24 dev eth1
+      ip route add 10.0.0.0/8 via 10.1.2.1
+      ip route add 8.8.8.8/32 via 10.1.2.1
+links:
+  - [A1, eth1, R3, GigabitEthernet3]
+  - [B1, eth1, R3, GigabitEthernet4]
+  - [R3, GigabitEthernet2, R1, GigabitEthernet0/0/0/1]
+  - [R1, GigabitEthernet0/0/0/0, R2, GigabitEthernet0/0/0/0]
+  - [R1, GigabitEthernet0/0/0/2, R4, GigabitEthernet2]
+  - [R2, GigabitEthernet0/0/0/1, SVC, eth1]
+  - [R2, GigabitEthernet0/0/0/2, INET, eth1]
+  - [R4, GigabitEthernet3, A2, eth1]
+  - [R4, GigabitEthernet4, B2, eth1]
+annotations:
+  - {id: a, type: group, x: 0, y: 250, w: 200, h: 130, text: "CUSTOMER A", color: orange, locked: true}
+  - {id: b, type: group, x: 0, y: 470, w: 200, h: 130, text: "CUSTOMER B", color: teal, locked: true}
+  - {id: a2, type: group, x: 980, y: 250, w: 200, h: 130, text: "CUSTOMER A", color: orange, locked: true}
+  - {id: b2, type: group, x: 980, y: 470, w: 200, h: 130, text: "CUSTOMER B", color: teal, locked: true}
+  - {id: svc, type: group, x: 290, y: 0, w: 600, h: 120, text: "PROVIDER SERVICES · shared server + Internet", color: purple, locked: true}
+  - {id: os, type: text, x: 230, y: 610, w: 720, h: 40, text: "AS 65000 · IS-IS + LDP running · XRd: R1 (P, VPNv4 RR), R2 (PE) · CSR 1000v: R3, R4 (PEs)", color: gray, locked: true}

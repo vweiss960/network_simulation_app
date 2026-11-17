@@ -129,6 +129,26 @@ def linux_exec_commands(kind: str, image: str, startup: str) -> list[str] | None
     return out
 
 
+def frr_startup(kind: str, image: str, startup: str) -> tuple[str, list[str]] | None:
+    """For an FRR node (a Linux node with an FRR image): (frr.conf text, shell
+    commands). Lines starting with `$ ` are shell commands run once the
+    container is up (MACsec / wpa_supplicant setup, sysctls…), in order;
+    everything else is FRR configuration, mounted as /etc/frr/frr.conf so the
+    daemons load it at boot (containerlab ignores `startup-config` on Linux
+    nodes). None for every other device."""
+    if kind != "linux" or "frr" not in (image or "").lower():
+        return None
+    conf, shell = [], []
+    for line in (startup or "").splitlines():
+        if line.lstrip().startswith("$ "):
+            cmd = line.lstrip()[2:].strip()
+            if cmd:
+                shell.append(cmd if cmd.startswith(("sh -c", "bash -c")) else "sh -c " + _sh_quote(cmd))
+        else:
+            conf.append(line)
+    return "\n".join(conf).strip("\n"), shell
+
+
 def _sh_quote(s: str) -> str:
     return "'" + s.replace("'", "'\"'\"'") + "'"
 
@@ -171,6 +191,11 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
             if cmds:
                 entry["exec"] = cmds
             body = ""
+        frr = frr_startup(n["lab_kind"], n["lab_image"], body)
+        if frr is not None:
+            body, shell = frr
+            if shell:
+                entry["exec"] = shell
         # In a lesson lab every XRd gets our base config (floating mgmt
         # default), even a blank one — clab's own default would shadow OSPF.
         learning_lab = bool(topology.lesson_id or getattr(topology, "scenario_id", None))
@@ -194,7 +219,10 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
                     old.unlink(missing_ok=True)
             cfg_path.write_text(text)
             # Relative to the YAML so clab resolves it from the lab dir.
-            entry["startup-config"] = f"configs/{cfg_name}"
+            if frr is not None:
+                entry["binds"] = [f"configs/{cfg_name}:/etc/frr/frr.conf"]
+            else:
+                entry["startup-config"] = f"configs/{cfg_name}"
             rendered_config_paths.append(str(cfg_path))
         if mgmt.bridged and n.get("mgmt_ip"):
             entry["mgmt-ipv4"] = n["mgmt_ip"]

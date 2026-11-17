@@ -1,0 +1,295 @@
+- id: e-line
+  title: "E-Line: a pseudowire between two sites, with VLAN translation"
+  body: |
+    Customer A buys an **E-Line**: a point-to-point Ethernet service between
+    its two sites. Each site hands its traffic to the provider **tagged** — but
+    the sites didn't agree on a VLAN: West uses **VLAN 100**, East **VLAN 200**.
+    The provider fixes that at its edges (*VLAN tag manipulation*).
+
+    On IOS XE the building block is an **Ethernet service instance** (EFP):
+    a sub-interface-like object on the UNI that matches frames (`encapsulation`),
+    can rewrite their tags (`rewrite`), and attaches to a service.
+
+    | PE | UNI | Service instance | Matches | Rewrite |
+    |---|---|---|---|---|
+    | R3 | Gi3 → A1 | 100 | `dot1q 100` | pop 1 tag, symmetric |
+    | R4 | Gi3 → A2 | 200 | `dot1q 200` | pop 1 tag, symmetric |
+
+    `pop 1 symmetric` removes the VLAN tag on the way **in** and pushes the
+    instance's own VLAN back on the way **out** — so a frame leaves West
+    tagged 100, crosses the core untagged and arrives East tagged 200.
+
+    Join the two service instances with an **EoMPLS pseudowire** (VPWS):
+    an xconnect from each PE to the other's loopback with **VC ID 100** (the
+    same on both ends). The pseudowire is signalled by a *targeted* LDP session
+    between the PEs and carried over their LDP LSPs.
+  hints:
+    - "XE: `interface GigabitEthernet3` → `service instance 100 ethernet` → `encapsulation dot1q 100` → `rewrite ingress tag pop 1 symmetric`."
+    - "XE: `l2vpn xconnect context EL-A` → `member GigabitEthernet3 service-instance 100` → `member 4.4.4.4 100 encapsulation mpls` (on R4: its own instance 200, peer 3.3.3.3, VC 100)."
+    - "Verify: `show l2vpn atom vc` (status UP), `show mpls l2transport vc 100 detail` (labels, the remote PE), `show ethernet service instance detail`; then ping 192.168.10.2 from A1."
+  solution:
+    R3: |
+      interface GigabitEthernet3
+       service instance 100 ethernet
+        encapsulation dot1q 100
+        rewrite ingress tag pop 1 symmetric
+       !
+      !
+      l2vpn xconnect context EL-A
+       member GigabitEthernet3 service-instance 100
+       member 4.4.4.4 100 encapsulation mpls
+      !
+    R4: |
+      interface GigabitEthernet3
+       service instance 200 ethernet
+        encapsulation dot1q 200
+        rewrite ingress tag pop 1 symmetric
+       !
+      !
+      l2vpn xconnect context EL-A
+       member GigabitEthernet3 service-instance 200
+       member 3.3.3.3 100 encapsulation mpls
+      !
+  checks:
+    - type: cli
+      device: R3
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '4\.4\.4\.4\s+100\s+p2p\s+EL-A\s+UP'}
+      describe: "R3 (XE): pseudowire EL-A to R4 (VC 100) is UP"
+    - type: cli
+      device: R4
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '3\.3\.3\.3\s+100\s+p2p\s+EL-A\s+UP'}
+      describe: "R4 (XE): pseudowire EL-A to R3 (VC 100) is UP"
+    - {type: ping, from: A1, to: 192.168.10.2, count: 5, min_success: 80, describe: "A1 (VLAN 100) reaches A2 (VLAN 200) across the E-Line"}
+
+- id: e-lan
+  title: "E-LAN: a multipoint service with VPLS"
+  body: |
+    Customer B has three sites — on R3, R4 and R5 — and wants them on **one
+    Ethernet LAN** (`192.168.50.0/24`, untagged). That's an **E-LAN**, built
+    with **VPLS**: each PE runs a virtual switch (a *bridge domain*) that
+    learns MAC addresses, joined to the other PEs by a **full mesh of
+    pseudowires** (the *VFI*, virtual forwarding instance).
+
+    On each PE:
+
+    1. A service instance **50** on the UNI (Gi4 on R3 and R4, Gi3 on R5)
+       matching **untagged** frames.
+    2. A VFI **VPLS-B** with VPN ID **50**, with a pseudowire to each of the
+       other two PEs.
+    3. **Bridge domain 50** with both as members.
+
+    VPLS avoids loops with **split horizon**: a frame received from one
+    pseudowire is never sent out another — the full mesh means it never needs
+    to be.
+  hints:
+    - "XE: `interface GigabitEthernet4` → `service instance 50 ethernet` → `encapsulation untagged`."
+    - "XE: `l2vpn vfi context VPLS-B` → `vpn id 50` → `member 4.4.4.4 encapsulation mpls` → `member 5.5.5.5 encapsulation mpls` (each PE: the other two)."
+    - "XE: `bridge-domain 50` → `member GigabitEthernet4 service-instance 50` → `member vfi VPLS-B`."
+    - "Verify: `show l2vpn vfi`, `show l2vpn atom vc` (two VCs per PE), `show bridge-domain 50` (members and learned MACs)."
+  solution:
+    R3: |
+      interface GigabitEthernet4
+       service instance 50 ethernet
+        encapsulation untagged
+       !
+      !
+      l2vpn vfi context VPLS-B
+       vpn id 50
+       member 4.4.4.4 encapsulation mpls
+       member 5.5.5.5 encapsulation mpls
+      !
+      bridge-domain 50
+       member GigabitEthernet4 service-instance 50
+       member vfi VPLS-B
+      !
+    R4: |
+      interface GigabitEthernet4
+       service instance 50 ethernet
+        encapsulation untagged
+       !
+      !
+      l2vpn vfi context VPLS-B
+       vpn id 50
+       member 3.3.3.3 encapsulation mpls
+       member 5.5.5.5 encapsulation mpls
+      !
+      bridge-domain 50
+       member GigabitEthernet4 service-instance 50
+       member vfi VPLS-B
+      !
+    R5: |
+      interface GigabitEthernet3
+       service instance 50 ethernet
+        encapsulation untagged
+       !
+      !
+      l2vpn vfi context VPLS-B
+       vpn id 50
+       member 3.3.3.3 encapsulation mpls
+       member 4.4.4.4 encapsulation mpls
+      !
+      bridge-domain 50
+       member GigabitEthernet3 service-instance 50
+       member vfi VPLS-B
+      !
+  checks:
+    - type: cli
+      device: R3
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '4\.4\.4\.4\s+50\s+\S+\s+VPLS-B\s+UP'}
+        - {regex: '5\.5\.5\.5\s+50\s+\S+\s+VPLS-B\s+UP'}
+      describe: "R3 (XE): VPLS pseudowires to R4 and R5 UP"
+    - type: cli
+      device: R5
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '3\.3\.3\.3\s+50\s+\S+\s+VPLS-B\s+UP'}
+        - {regex: '4\.4\.4\.4\s+50\s+\S+\s+VPLS-B\s+UP'}
+      describe: "R5 (XE): VPLS pseudowires to R3 and R4 UP"
+    - {type: ping, from: B1, to: 192.168.50.2, count: 5, min_success: 80, describe: "B1 reaches B2 on the E-LAN"}
+    - {type: ping, from: B1, to: 192.168.50.3, count: 5, min_success: 80, describe: "B1 reaches B3"}
+    - {type: ping, from: B2, to: 192.168.50.3, count: 5, min_success: 80, describe: "B2 reaches B3"}
+
+- id: e-access
+  title: "E-Access over an 802.1ad ENNI (Q-in-Q)"
+  body: |
+    Customer C's East office isn't on our network: it's connected through a
+    **partner** operator. We reach the partner at an **ENNI** (external NNI)
+    on R5 Gi4, where the partner's network is an **802.1ad provider bridge**:
+    every customer of ours that the partner carries arrives in its own
+    **S-VLAN** (service VLAN, ethertype `0x88A8`), with the customer's own
+    **C-VLAN** (`0x8100`) inside. That's **Q-in-Q** — and the service is an
+    **E-Access** (our UNI at one end, an ENNI at the other).
+
+    | Site | Where | Frames |
+    |---|---|---|
+    | West (C1) | R3 Gi5, our UNI | C-VLAN **10** |
+    | East (C2) | R5 Gi4, the ENNI | S-VLAN **300** (802.1ad) + C-VLAN **10** |
+
+    Build a pseudowire with **VC ID 300**:
+
+    - R3: service instance 30 on Gi5 matching `dot1q 10` — **no rewrite**: the
+      customer's C-tag rides across the pseudowire.
+    - R5: service instance 30 on Gi4 matching `dot1ad 300 dot1q 10`, popping
+      **one** tag (the S-tag) symmetrically — pushed back on frames towards the
+      partner.
+  hints:
+    - "XE (R3): `interface GigabitEthernet5` → `service instance 30 ethernet` → `encapsulation dot1q 10`; `l2vpn xconnect context EA-C` → `member GigabitEthernet5 service-instance 30` → `member 5.5.5.5 300 encapsulation mpls`."
+    - "XE (R5): `interface GigabitEthernet4` → `service instance 30 ethernet` → `encapsulation dot1ad 300 dot1q 10` → `rewrite ingress tag pop 1 symmetric`; xconnect to 3.3.3.3 VC 300."
+    - "Verify: `show ethernet service instance id 30 interface GigabitEthernet4 detail` on R5 (the encapsulation and rewrite), `show l2vpn atom vc`."
+  solution:
+    R3: |
+      interface GigabitEthernet5
+       service instance 30 ethernet
+        encapsulation dot1q 10
+       !
+      !
+      l2vpn xconnect context EA-C
+       member GigabitEthernet5 service-instance 30
+       member 5.5.5.5 300 encapsulation mpls
+      !
+    R5: |
+      interface GigabitEthernet4
+       service instance 30 ethernet
+        encapsulation dot1ad 300 dot1q 10
+        rewrite ingress tag pop 1 symmetric
+       !
+      !
+      l2vpn xconnect context EA-C
+       member GigabitEthernet4 service-instance 30
+       member 3.3.3.3 300 encapsulation mpls
+      !
+  checks:
+    - type: cli
+      device: R5
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '3\.3\.3\.3\s+300\s+p2p\s+EA-C\s+UP'}
+      describe: "R5 (XE): pseudowire EA-C to R3 (VC 300) UP"
+    - {type: ping, from: C1, to: 192.168.30.2, count: 5, min_success: 80, describe: "C1 (C-VLAN 10) reaches C2 behind the partner's 802.1ad ENNI (S-VLAN 300)"}
+
+- id: ethernet-oam
+  title: "Ethernet OAM on a wholesale link: 802.3ah and CFM"
+  body: |
+    R4 and R5 are also joined by a direct Ethernet link — think of it as a
+    circuit leased from a wholesale operator. An Ethernet circuit can be
+    "up" while frames don't get through (a media converter, the wholesaler's
+    switches), so the provider monitors it with **Ethernet OAM**, at two
+    layers:
+
+    1. **802.3ah link OAM (EFM)** between the two ends of the link: discovery
+       of the OAM peer, link monitoring, remote failure indication and remote
+       loopback. Enable it on Gi5 of both routers.
+    2. **CFM** (IEEE 802.1ag / Y.1731): maintenance endpoints (**MEPs**) send
+       continuity check messages (**CCMs**) to each other and answer Ethernet
+       ping (loopback) and traceroute (linktrace).
+
+    | | Value |
+    |---|---|
+    | Maintenance domain | `OPERATOR`, level **2** (an operator-level domain: customers use 5–7, providers 3–4) |
+    | Service | `R4-R5`, a **port** service (the whole link, untagged) |
+    | MEPs | R4 Gi5: MPID **45**; R5 Gi5: MPID **54** (down MEPs: facing the wire) |
+    | Continuity check | every second |
+
+    > **Why not CFM end to end on customer A's E-Line?** That needs **up
+    > MEPs** on the UNI service instances, facing the pseudowire. The CSR
+    > 1000v only implements down MEPs (`cfm mep` under a service instance
+    > doesn't exist on it); carrier access and aggregation routers (ASR 920,
+    > ASR 9000, NCS) have both. The readings show the up-MEP configuration.
+  hints:
+    - "XE 802.3ah: `interface GigabitEthernet5` → `ethernet oam` (both ends, active mode by default)."
+    - "XE CFM: `ethernet cfm global`; `ethernet cfm domain OPERATOR level 2` → `service R4-R5 port` → `continuity-check` → `continuity-check interval 1s`; then `interface GigabitEthernet5` → `ethernet cfm mep domain OPERATOR mpid 45 service R4-R5`."
+    - "Verify: `show ethernet oam summary` (the remote OAM peer), `show ethernet cfm maintenance-points remote` (the far MEP), `ping ethernet mpid 54 domain OPERATOR service R4-R5`, `traceroute ethernet mpid 54 domain OPERATOR service R4-R5`."
+  solution:
+    R4: |
+      ethernet cfm global
+      ethernet cfm domain OPERATOR level 2
+       service R4-R5 port
+        continuity-check
+        continuity-check interval 1s
+      !
+      interface GigabitEthernet5
+       ethernet oam
+       ethernet cfm mep domain OPERATOR mpid 45 service R4-R5
+      !
+    R5: |
+      ethernet cfm global
+      ethernet cfm domain OPERATOR level 2
+       service R4-R5 port
+        continuity-check
+        continuity-check interval 1s
+      !
+      interface GigabitEthernet5
+       ethernet oam
+       ethernet cfm mep domain OPERATOR mpid 54 service R4-R5
+      !
+  checks:
+    - type: cli
+      device: R4
+      command: show ethernet oam summary
+      expect:
+        - {regex: 'Gi5\s+[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\s+\S+\s+(active|passive)'}
+      describe: "R4 (XE): 802.3ah link OAM discovered its peer on Gi5 (remote MAC, OUI, mode)"
+    - type: cli
+      device: R4
+      command: show ethernet cfm maintenance-points remote
+      expect:
+        - {regex: '\b54\b'}
+      describe: "R4 (XE): learns the remote MEP 54 (R5) from its CCMs"
+    - type: cli
+      device: R5
+      command: show ethernet cfm maintenance-points remote
+      expect:
+        - {regex: '\b45\b'}
+      describe: "R5 (XE): learns the remote MEP 45 (R4)"
+    - type: cli
+      device: R4
+      command: ping ethernet mpid 54 domain OPERATOR service R4-R5
+      expect:
+        - {regex: 'Success rate is (100|80) percent'}
+      describe: "R4: Ethernet ping (CFM loopback) to MEP 54 succeeds"

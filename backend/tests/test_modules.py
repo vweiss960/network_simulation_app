@@ -21,7 +21,7 @@ CURRICULUM = Path(__file__).resolve().parents[2] / "curriculum"
 def seeded(db):
     lesson_svc.seed_bundled(db, CURRICULUM)
     ts_svc.seed_bundled(db, CURRICULUM)
-    assert svc.seed_bundled(db, CURRICULUM) == ["spcor-networking"]
+    assert svc.seed_bundled(db, CURRICULUM) == ["spcor-networking", "spcor-services"]
     return db.query(Module).filter_by(slug="spcor-networking").one()
 
 
@@ -32,11 +32,12 @@ def test_bundled_module(db, seeded):
         ("2.1", "lesson", "isis-sp-levels-multitopology"), ("2.2", "lesson", "ospf-xr-multiarea-area-types"),
         ("2.4", "lesson", "bgp-sp-core"), ("2.3 · 2.5", "lesson", "bgp-path-selection-policy"),
         ("2.4", "lesson", "bgp-addpaths-pic"),
-        ("2.6", "scenario", "sp-core-isis-bgp"), ("2.6", "scenario", "ospf-multiarea")]
+        ("2.6", "scenario", "sp-core-isis-bgp"), ("2.6", "scenario", "ospf-multiarea"),
+        ("2.8", "lesson", "sp-high-availability")]
     assert m.items[0]["objectives"][2] == "2.1.c Multitopology"
     assert svc.seed_bundled(db, CURRICULUM) == []                   # same version: left alone
     p = svc.progress(db, m, "learner")
-    assert p["completed"] == 0 and p["total"] == 7 and p["minutes"] == 555 + 2 * svc.SCENARIO_MINUTES
+    assert p["completed"] == 0 and p["total"] == 8 and p["minutes"] == 645 + 2 * svc.SCENARIO_MINUTES
     assert {it["status"]["state"] for it in p["items"]} == {"not_started"}
     isis = db.query(Lesson).filter_by(slug="isis-sp-levels-multitopology").one()
     assert p["next_lesson_id"] == isis.id
@@ -65,7 +66,7 @@ def test_scenario_progress_and_next_item(db, seeded):
     db.commit()
     p = svc.progress(db, seeded, "learner")
     isis_sc = db.query(Scenario).filter_by(slug="sp-core-isis-bgp").one()
-    assert p["completed"] == 5 and p["next_item"] == {"kind": "scenario", "id": isis_sc.id}
+    assert p["completed"] == 6 and p["next_item"] == {"kind": "scenario", "id": isis_sc.id}
     assert p["next_lesson_id"] is None
     a = ScenarioAttempt(scenario_id=isis_sc.id, username="learner", topology_id=t.id)
     a.history = [{"outcome": "revealed"}]
@@ -74,7 +75,7 @@ def test_scenario_progress_and_next_item(db, seeded):
     assert svc.progress(db, seeded, "learner")["items"][5]["status"]["state"] == "in_progress"
     a.history = [{"outcome": "revealed"}, {"outcome": "solved"}]
     db.commit()
-    assert svc.progress(db, seeded, "learner")["completed"] == 6
+    assert svc.progress(db, seeded, "learner")["completed"] == 7
 
 
 def test_validation():
@@ -121,7 +122,7 @@ def test_pack_round_trip_installs_lessons(db, seeded):
     with pytest.raises(svc.ModuleExists):
         svc.import_pack(db, meta, items, overview, packs, spacks)
     c, report = svc.import_pack(db, meta, items, overview, packs, spacks, mode="copy")
-    assert c.slug == "spcor-networking-2" and len(report["kept"]) == 5
+    assert c.slug == "spcor-networking-2" and len(report["kept"]) == 6
     # An admin's export carries the scenarios too, and installs them elsewhere.
     full = svc.export_zip(db, seeded, include_scenarios=True)
     assert "spcor-networking/scenarios/ospf-multiarea/faults.yaml" in zipfile.ZipFile(io.BytesIO(full)).namelist()
@@ -134,7 +135,7 @@ def test_pack_round_trip_installs_lessons(db, seeded):
 
 def test_routes(client, db, seeded):
     lst = client.get("/api/modules").json()
-    assert [m["slug"] for m in lst] == ["spcor-networking"] and lst[0]["lesson_count"] == 7
+    assert [m["slug"] for m in lst] == ["spcor-networking", "spcor-services"] and lst[0]["lesson_count"] == 8
     d = client.get(f"/api/modules/{seeded.id}").json()
     assert [i["lesson_title"] for i in d["items"]][0].startswith("IS-IS")
     assert d["items"][1]["task_count"] == 10 and d["sections"][0]["title"] == "About this module"

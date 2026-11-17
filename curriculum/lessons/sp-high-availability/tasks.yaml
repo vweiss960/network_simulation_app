@@ -1,0 +1,464 @@
+- id: bundle-core
+  title: Bundle the two core links (IOS XR ↔ IOS XR)
+  body: |
+    R1 and R2 are joined by **two** links, Gi0/0/0/0 and Gi0/0/0/1 on both
+    sides. Right now neither carries anything: R2 is cut off from the network.
+    Combine them into one logical link, **Bundle-Ether12**, negotiated with
+    **LACP** (802.3ad), and run IS-IS over the bundle.
+
+    | Router | Bundle | Address | Members |
+    |---|---|---|---|
+    | R1 | Bundle-Ether12 | `10.0.12.1/30` | Gi0/0/0/0, Gi0/0/0/1 |
+    | R2 | Bundle-Ether12 | `10.0.12.2/30` | Gi0/0/0/0, Gi0/0/0/1 |
+
+    - Both ends in LACP **active** mode (`mode on` would bundle without LACP —
+      and without any check that both links really go to the same peer).
+    - The IP address lives on the bundle interface, never on the members.
+    - Add Bundle-Ether12 to IS-IS CORE as a **point-to-point** circuit, like
+      the other core links.
+
+    Once the bundle is up, R2's iBGP session to the route reflector R1 comes
+    up by itself (it was waiting for a path to R1's loopback).
+  hints:
+    - "XR: `interface Bundle-Ether12` → `ipv4 address …`; then on each member `interface GigabitEthernet0/0/0/0` → `bundle id 12 mode active`. Commit."
+    - "IS-IS: `router isis CORE` → `interface Bundle-Ether12` → `point-to-point` → `address-family ipv4 unicast`."
+    - "Verify with `show bundle bundle-ether 12` (status, active links) and `show lacp bundle-ether 12` (both ports `ascdA`: aggregatable, synchronized, collecting, distributing, active)."
+  solution:
+    R1: |
+      interface Bundle-Ether12
+       description to R2 (2 x 1G)
+       ipv4 address 10.0.12.1 255.255.255.252
+      !
+      interface GigabitEthernet0/0/0/0
+       bundle id 12 mode active
+      !
+      interface GigabitEthernet0/0/0/1
+       bundle id 12 mode active
+      !
+      router isis CORE
+       interface Bundle-Ether12
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+    R2: |
+      interface Bundle-Ether12
+       description to R1 (2 x 1G)
+       ipv4 address 10.0.12.2 255.255.255.252
+      !
+      interface GigabitEthernet0/0/0/0
+       bundle id 12 mode active
+      !
+      interface GigabitEthernet0/0/0/1
+       bundle id 12 mode active
+      !
+      router isis CORE
+       interface Bundle-Ether12
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show bundle bundle-ether 12
+      expect:
+        - {regex: '^\s+Status:\s+Up\s*$'}
+        - {regex: 'Local links <active/standby/configured>:\s+2 / 0 / 2'}
+      describe: "R1: Bundle-Ether12 is up with 2 active links"
+    - type: cli
+      device: R2
+      command: show lacp bundle-ether 12
+      expect:
+        - {regex: '^\s+Gi0/0/0/0\s+\S+\s+ascdA'}
+        - {regex: '^\s+Gi0/0/0/1\s+\S+\s+ascdA'}
+      describe: "R2: both members negotiated by LACP (ascdA)"
+    - type: cli
+      device: R2
+      command: show isis adjacency
+      expect:
+        - {regex: '^(R1|0000\.0000\.0001)\s+BE12\s+\S+\s+Up'}
+      describe: "R2: IS-IS adjacency to R1 up over BE12"
+
+- id: bundle-xe
+  title: Bundle the PE uplink (IOS XR ↔ IOS XE) with fast LACP and minimum links
+  body: |
+    R3 (IOS XE) has two links to R2. Bundle them too — on XE a bundle is a
+    **Port-channel** (EtherChannel), on XR a Bundle-Ether: different names, the
+    same 802.3ad on the wire.
+
+    | Router | Bundle | Address | Members |
+    |---|---|---|---|
+    | R2 | Bundle-Ether23 | `10.0.23.1/30` | Gi0/0/0/2, Gi0/0/0/3 |
+    | R3 | Port-channel1 | `10.0.23.2/30` | Gi2, Gi3 |
+
+    Two extras, typical on a PE uplink:
+
+    - **Fast LACP.** By default LACPDUs go every 30 s and a silent member is
+      only declared dead after 90 s. Ask for **fast** rate (1 s, 3 s timeout)
+      on *both* ends — the rate is what you request from your peer.
+    - **Minimum links = 2.** If one member fails, a half-capacity bundle would
+      stay up and attract all the traffic. Take the whole bundle down instead,
+      so IS-IS reroutes around it (over the express link). XR: `bundle
+      minimum-active links`; XE: `lacp min-bundle`.
+
+    Then run IS-IS over the bundle (point-to-point) on both routers.
+  hints:
+    - "XE: `interface Port-channel1` → `ip address …` → `lacp min-bundle 2` → `ip router isis CORE` → `isis network point-to-point`; members: `channel-group 1 mode active` and `lacp rate fast`."
+    - "XR: `interface Bundle-Ether23` → `ipv4 address …` → `bundle minimum-active links 2`; members: `bundle id 23 mode active` and `lacp period short`."
+    - "XE verify: `show etherchannel summary` → `Po1(RU)` with both members `(bndl)`. XR: `show lacp bundle-ether 23` → state `ascdAF` (F = fast) on both the local port and the partner."
+  solution:
+    R2: |
+      interface Bundle-Ether23
+       description to R3 (2 x 1G)
+       ipv4 address 10.0.23.1 255.255.255.252
+       bundle minimum-active links 2
+      !
+      interface GigabitEthernet0/0/0/2
+       bundle id 23 mode active
+       lacp period short
+      !
+      interface GigabitEthernet0/0/0/3
+       bundle id 23 mode active
+       lacp period short
+      !
+      router isis CORE
+       interface Bundle-Ether23
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+    R3: |
+      interface Port-channel1
+       description to R2 (2 x 1G)
+       ip address 10.0.23.2 255.255.255.252
+       lacp min-bundle 2
+       ip router isis CORE
+       isis network point-to-point
+      !
+      interface GigabitEthernet2
+       channel-group 1 mode active
+       lacp rate fast
+      !
+      interface GigabitEthernet3
+       channel-group 1 mode active
+       lacp rate fast
+      !
+  checks:
+    - type: cli
+      device: R3
+      command: show etherchannel summary
+      expect:
+        - {regex: 'Po1\(RU\)\s+LACP\s+Gi2\(bndl\)\s+Gi3\(bndl\)'}
+      describe: "R3 (XE): Po1 up (RU) with Gi2 and Gi3 bundled by LACP"
+    - type: cli
+      device: R2
+      command: show lacp bundle-ether 23
+      expect:
+        - {regex: '^\s+Gi0/0/0/[23]\s+1s\s+ascdAF', count: 2}
+        - {regex: '^\s+Partner\s+1s\s+ascdAF', count: 2}
+      describe: "R2: fast LACP on both members, requested by both ends (ascdAF)"
+    - type: cli
+      device: R2
+      command: show bundle bundle-ether 23
+      expect:
+        - {regex: 'Minimum active links / bandwidth:\s+2 /'}
+        - {regex: 'Local links <active/standby/configured>:\s+2 / 0 / 2'}
+      describe: "R2: Bundle-Ether23 needs 2 active links (and has them)"
+    - type: cli
+      device: R3
+      command: show running-config interface Port-channel1
+      expect:
+        - {contains: "lacp min-bundle 2"}
+      describe: "R3 (XE): Port-channel1 needs 2 members (lacp min-bundle 2)"
+    - type: cli
+      device: R3
+      command: show isis neighbors
+      expect:
+        - {regex: '^R2\s+L2\s+Po1\s+\S+\s+UP'}
+      describe: "R3 (XE): IS-IS neighbor R2 up over Po1"
+
+- id: bfd
+  title: Detect failures in under a second with BFD
+  body: |
+    The **express link** R3–R4 is the preferred path between the two PEs
+    (IS-IS metric 10 versus 30 through the core). When it fails, how long
+    until traffic moves?
+
+    In this lab — like with many real circuits through a carrier's transport
+    network or an optical system — the routers' interfaces **stay up** when the
+    far end disappears. Nothing tells IS-IS: it waits for its hold time (30 s
+    by default) before dropping the adjacency. BGP's hold time is 180 s.
+
+    **BFD** (Bidirectional Forwarding Detection) is a lightweight hello
+    protocol that does nothing but check the forwarding path, fast, and tells
+    its clients (IS-IS, OSPF, BGP, static routes…) the moment it fails.
+
+    Run BFD on the express link (Gi4 on R3, Gi3 on R4) with a **300 ms**
+    interval and a **multiplier of 3** (failure declared after 900 ms), and
+    register IS-IS as its client on both ends.
+
+    > **Why only the IOS XE side?** XRd Control Plane (the IOS XR in this lab)
+    > is a control-plane-only router: BFD sessions are hosted on a line card,
+    > and XRd has none — XR accepts `bfd fast-detect` but the session never
+    > leaves *DOWN* (and IS-IS would then wait for it forever). On physical
+    > ASR 9000 / NCS routers the same configuration works; the XR syntax is in
+    > the readings.
+  hints:
+    - "XE: on the interface `bfd interval 300 min_rx 300 multiplier 3`, then `isis bfd` (or `bfd all-interfaces` under `router isis CORE`)."
+    - "`show bfd neighbors` → the session to 10.0.34.2 (from R3) is Up/Up; `show bfd neighbors details` → Registered protocols include ISIS."
+  solution:
+    R3: |
+      interface GigabitEthernet4
+       bfd interval 300 min_rx 300 multiplier 3
+       isis bfd
+      !
+    R4: |
+      interface GigabitEthernet3
+       bfd interval 300 min_rx 300 multiplier 3
+       isis bfd
+      !
+  checks:
+    - type: cli
+      device: R3
+      command: show bfd neighbors details
+      expect:
+        - {regex: '^10\.0\.34\.2\s+\d+/\d+\s+Up\s+Up\s+Gi4'}
+        - {regex: 'Registered protocols:.*ISIS'}
+      describe: "R3 (XE): BFD session to R4 (10.0.34.2) up, IS-IS registered"
+    - type: cli
+      device: R4
+      command: show bfd neighbors details
+      expect:
+        - {regex: '^10\.0\.34\.1\s+\d+/\d+\s+Up\s+Up\s+Gi3'}
+        - {regex: 'Registered protocols:.*ISIS'}
+      describe: "R4 (XE): BFD session to R3 (10.0.34.1) up, IS-IS registered"
+    - type: cli
+      device: R3
+      command: show running-config interface GigabitEthernet4
+      expect:
+        - {contains: "bfd interval 300 min_rx 300 multiplier 3"}
+      describe: "R3 (XE): 300 ms × 3 on the express link"
+
+- id: graceful-restart
+  title: Keep forwarding through a BGP restart (graceful restart)
+  body: |
+    Every PE learns the other customer's LAN from the route reflector **R1**.
+    If R1's BGP process restarts (a crash, a software upgrade), its sessions
+    drop and every client withdraws the routes it learned from R1 — even though
+    R1's forwarding table, and the network, are perfectly fine. Customers lose
+    traffic for as long as the restart takes.
+
+    **Graceful restart** (RFC 4724) fixes that: the routers announce the GR
+    capability in their BGP OPEN. When a GR-capable peer's session drops, its
+    neighbors (the *helpers*) keep its routes as **stale** and keep forwarding
+    on them for the restart time; when it's back it sends its routes again and
+    an End-of-RIB marker, and anything still stale is flushed.
+
+    1. Enable BGP graceful restart on **all four** routers.
+    2. Capabilities are only exchanged when a session starts: reset the PEs'
+       sessions (a hard `clear ip bgp *` on R3 and R4) so they negotiate it.
+
+    **Try it** (not graded): start a continuous ping from H1 to H2 (`ping
+    10.4.1.10` in H1's console), then on R1 run `process restart bgp`. On R3,
+    `show ip bgp 10.4.1.0` shows the path as **(stale)** while R1 restarts, the
+    ping keeps going, and `show ip bgp neighbors 1.1.1.1 | include reset`
+    reads *NSF peer closed the session*. Without graceful restart, the route
+    disappears and the ping stops until R1 is back.
+  hints:
+    - "XR: `router bgp 65000` → `bgp graceful-restart`. XE: `router bgp 65000` → `bgp graceful-restart`, then `do clear ip bgp *` (in config mode) to renegotiate."
+    - "XE verify: `show ip bgp neighbors 1.1.1.1 | include Graceful` → *Graceful Restart Capability: advertised and received*. XR: `show bgp neighbor 3.3.3.3` → capability advertised and received."
+  solution:
+    R1: |
+      router bgp 65000
+       bgp graceful-restart
+      !
+    R2: |
+      router bgp 65000
+       bgp graceful-restart
+      !
+    R3: |
+      router bgp 65000
+       bgp graceful-restart
+      !
+      do clear ip bgp *
+    R4: |
+      router bgp 65000
+       bgp graceful-restart
+      !
+      do clear ip bgp *
+  checks:
+    - type: cli
+      device: R3
+      command: show ip bgp neighbors 1.1.1.1
+      expect:
+        - {contains: "Graceful Restart Capability: advertised and received"}
+      describe: "R3 (XE): GR negotiated with the route reflector R1"
+    - type: cli
+      device: R4
+      command: show ip bgp neighbors 1.1.1.1
+      expect:
+        - {contains: "Graceful Restart Capability: advertised and received"}
+      describe: "R4 (XE): GR negotiated with the route reflector R1"
+    - type: cli
+      device: R1
+      command: show bgp neighbor 3.3.3.3
+      expect:
+        - {contains: "Graceful Restart capability advertised"}
+        - {contains: "Graceful Restart capability received"}
+      describe: "R1 (XR): GR capability advertised to and received from R3"
+
+- id: nsf
+  title: Keep IS-IS adjacencies through a restart (NSF)
+  body: |
+    Graceful restart for BGP has an IGP counterpart: **NSF** (nonstop
+    forwarding) for IS-IS and OSPF. A restarting IS-IS router signals the
+    restart in its hellos (the IETF *restart TLV*, RFC 5306); its neighbors
+    keep the adjacency **up** and keep using its LSP while it resynchronises
+    its database, so nobody runs SPF around it and nothing is rerouted.
+
+    Two flavours exist: **IETF** (standard, needs helpers that understand the
+    restart TLV) and **Cisco** (proprietary, the restarting router rebuilds its
+    adjacencies itself). Use **IETF** NSF on all four routers.
+
+    **Try it** (not graded): on R1 run `process restart isis`. R1's own
+    adjacencies restart (`show isis adjacency` → *Changed* a few seconds ago),
+    but R2 and R4 keep theirs — no *ADJCHANGE* in their logs — and `show isis
+    protocol` on R1 reads *Most recent startup mode: IETF NSF Restart*.
+  hints:
+    - "XR: `router isis CORE` → `nsf ietf`. XE: `router isis CORE` → `nsf ietf`."
+    - "Verify: XR `show isis protocol` → *Non-stop forwarding: IETF NSF Restart enabled*; XE `show isis nsf` → *NSF is ENABLED, mode 'ietf'*."
+  solution:
+    R1: |
+      router isis CORE
+       nsf ietf
+      !
+    R2: |
+      router isis CORE
+       nsf ietf
+      !
+    R3: |
+      router isis CORE
+       nsf ietf
+      !
+    R4: |
+      router isis CORE
+       nsf ietf
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show isis protocol
+      expect:
+        - {contains: "IETF NSF Restart enabled"}
+      describe: "R1 (XR): IETF NSF enabled"
+    - type: cli
+      device: R2
+      command: show isis protocol
+      expect:
+        - {contains: "IETF NSF Restart enabled"}
+      describe: "R2 (XR): IETF NSF enabled"
+    - type: cli
+      device: R3
+      command: show isis nsf
+      expect:
+        - {contains: "NSF is ENABLED, mode 'ietf'"}
+      describe: "R3 (XE): IETF NSF enabled"
+    - type: cli
+      device: R4
+      command: show isis nsf
+      expect:
+        - {contains: "NSF is ENABLED, mode 'ietf'"}
+      describe: "R4 (XE): IETF NSF enabled"
+
+- id: nsr
+  title: Nonstop routing on the IOS XR core
+  body: |
+    Graceful restart needs the **neighbors' help**: they must support GR and
+    keep stale routes. **NSR** (nonstop routing) needs nobody: the routing
+    process keeps a **standby copy** of its state — sessions, TCP sequence
+    numbers, the database — on the standby route processor. When the active one
+    fails, the standby takes over the sessions *without the neighbors noticing
+    anything*: no session reset, no stale routes, no help needed.
+
+    Configure NSR for IS-IS on R1 and R2, and check BGP's NSR state.
+
+    - On this IOS XR release **BGP NSR is on by default** — `show bgp summary`
+      already says *Non-stop routing is enabled* (`nsr disable` turns it off).
+    - IS-IS NSR needs `nsr` under `router isis`.
+
+    > **What this lab can't show:** NSR protects against a route processor
+    > failover, and an XRd router has a single RP — `show bgp summary` reports
+    > the NSR initial sync as *Not Reached* when there's no standby to sync
+    > with. A `process restart bgp` still resets the sessions: that's what the
+    > graceful restart you configured is for. Real SP routers run both — NSR for
+    > RP failovers, GR as the fallback.
+  hints:
+    - "XR: `router isis CORE` → `nsr`. BGP: nothing to add (`show running-config router bgp` doesn't show the default)."
+    - "`show bgp summary` → *Non-stop routing is enabled*; `show running-config router isis` → `nsr`."
+  solution:
+    R1: |
+      router isis CORE
+       nsr
+      !
+    R2: |
+      router isis CORE
+       nsr
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show running-config router isis CORE
+      expect:
+        - {regex: '^ nsr\s*$'}
+      describe: "R1 (XR): IS-IS NSR configured"
+    - type: cli
+      device: R2
+      command: show running-config router isis CORE
+      expect:
+        - {regex: '^ nsr\s*$'}
+      describe: "R2 (XR): IS-IS NSR configured"
+    - type: cli
+      device: R1
+      command: show bgp summary
+      expect:
+        - {contains: "Non-stop routing is enabled"}
+      describe: "R1 (XR): BGP nonstop routing enabled"
+
+- id: end-to-end
+  title: Prove it end to end — then break things
+  body: |
+    Everything is redundant now. Check that the customers reach each other,
+    then use the lab to see each mechanism at work (right-click a cable →
+    **Unplug**, and plug it back in afterwards).
+
+    **Try it** (not graded), with a continuous ping from H1 to H2 running:
+
+    1. **Unplug the express link** R3–R4. BFD declares it dead in under a
+       second (`show logging` on R3: *BFD session … going Down*, immediately
+       followed by the IS-IS adjacency) and the ping moves to the core with
+       one or two lost packets. Plug it back.
+    2. Remove `isis bfd` from both ends of the express link and repeat: the
+       interface stays up, IS-IS waits for its 30 s hold time, and the ping
+       stops for that long. Put BFD back.
+    3. **Unplug one member of the R2–R3 bundle.** LACP notices within 3 s
+       (fast rate), and because of the minimum of 2 links the whole bundle
+       goes down — `show bundle bundle-ether 23` on R2: *Not enough links
+       available to meet minimum-active threshold*. Unplug one member of
+       BE12 instead: that bundle stays up on one link (no minimum set) and
+       traffic keeps flowing.
+  hints:
+    - "If the ping fails: `show ip route 10.4.1.0` on R3 should be a BGP route via 4.4.4.4 — check the iBGP sessions to R1 and the IS-IS adjacencies first."
+  checks:
+    - {type: ping, from: H1, to: 10.4.1.10, count: 5, min_success: 80, describe: "H1 pings H2 (10.4.1.10)"}
+    - {type: route, device: R3, prefix: 10.4.1.0/24, protocol: B, describe: "R3 learns customer East's LAN by BGP (via the route reflector)"}
+    - {type: route, device: R2, prefix: 10.3.1.0/24, protocol: B, describe: "R2 (core) learns customer West's LAN too — it can carry traffic when the express link fails"}
+    - type: cli
+      device: R2
+      command: show bundle
+      expect:
+        - {regex: '^\s+Status:\s+Up\s*$', count: 2}
+      describe: "R2: both bundles up"

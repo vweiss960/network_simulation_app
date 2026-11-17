@@ -1,0 +1,415 @@
+name: 'Hub & spoke: VXLAN EVPN + MACsec/MKA + IS-IS'
+description: ASR 9903 stand-in (FRR + kernel MACsec + wpa_supplicant MKA on dot1q sub-interfaces = tags in clear) on ONE cable to a hub Catalyst 9300 (Cat9kv); VXLAN EVPN over an L3 provider service to spoke 9300s whose access
+  ports deliver the MACsec frames untagged to Cisco 8011 stand-ins (MACsec/MKA on the physical port). MKA uses broadcast EAPoL (the 9300s drop 01:80:c2:00:00:03). IS-IS runs over the MACsec links. Spoke n = hub VLAN 10n =
+  VNI 1010n.
+nodes:
+- name: HUB-9903
+  kind: linux
+  image: plabs/frr:latest
+  icon: router
+  interfaces: 1
+  position:
+  - 40
+  - 300
+  startup_config: |
+    # --- shell setup (lines starting with '$ ' run once the container is up) ---
+    $ ip link set eth1 address 02:00:99:03:00:01
+    $ ip link set eth1 up
+    $ ip link add link eth1 name eth1.101 type vlan id 101
+    $ ip link set eth1.101 up
+    $ ip link add link eth1 name eth1.102 type vlan id 102
+    $ ip link set eth1.102 up
+    $ ip addr add 10.10.10.1/32 dev lo
+    $ mkdir -p /etc/mka
+    $ printf 'ctrl_interface=/var/run/wpa_supplicant\neapol_version=3\nap_scan=0\nnetwork={\n key_mgmt=NONE\n eapol_flags=0\n macsec_policy=1\n mka_cak=000102030405060708090a0b0c0d0e0f\n mka_ckn=53504f4b45312d4d4b412d303030303030303030303030303030303030303030\n mka_priority=10\n}\n' > /etc/mka/spoke1.conf
+    $ printf 'ctrl_interface=/var/run/wpa_supplicant\neapol_version=3\nap_scan=0\nnetwork={\n key_mgmt=NONE\n eapol_flags=0\n macsec_policy=1\n mka_cak=f0e0d0c0b0a090807060504030201000\n mka_ckn=53504f4b45322d4d4b412d303030303030303030303030303030303030303030\n mka_priority=10\n}\n' > /etc/mka/spoke2.conf
+    # MKA (wpa_supplicant) on each dot1q sub-interface = MACsec with the tag in clear; broadcast EAPoL
+    # (the 9300s drop EAPoL to 01:80:c2:00:00:03) = Cisco 'eapol destination-address broadcast-address'
+    $ MKA_EAPOL_BCAST=1 wpa_supplicant -B -D macsec_linux -i eth1.101 -c /etc/mka/spoke1.conf
+    $ for i in $(seq 1 20); do ip link show macsec0 >/dev/null 2>&1 && break; sleep 1; done
+    $ MKA_EAPOL_BCAST=1 wpa_supplicant -B -D macsec_linux -i eth1.102 -c /etc/mka/spoke2.conf
+    $ for i in $(seq 1 20); do ip link show macsec1 >/dev/null 2>&1 && break; sleep 1; done
+    $ ip link set macsec0 mtu 1400
+    $ ip addr add 172.16.1.1/30 dev macsec0
+    $ ip link set macsec1 mtu 1400
+    $ ip addr add 172.16.2.1/30 dev macsec1
+    # --- FRR configuration (frr.conf) ---
+    !
+    router isis CORE
+     net 49.0001.0000.0000.0001.00
+     is-type level-2-only
+     metric-style wide
+    !
+    interface lo
+     ip router isis CORE
+     isis passive
+    !
+    interface macsec0
+     ip router isis CORE
+     isis network point-to-point
+    !
+    interface macsec1
+     ip router isis CORE
+     isis network point-to-point
+    !
+- name: HUB-SW
+  kind: cisco_cat9kv
+  image: vrnetlab/cisco_cat9kv:17.18.02
+  icon: switch
+  interfaces: 2
+  position:
+  - 300
+  - 300
+  startup_config: |
+    ! hostname set by the lab
+    ! HUB-SW
+    ip routing
+    !
+    l2vpn evpn
+     replication-type ingress
+     router-id Loopback0
+    !
+    l2vpn evpn instance 101 vlan-based
+     encapsulation vxlan
+    !
+    l2vpn evpn instance 102 vlan-based
+     encapsulation vxlan
+    !
+    vlan 101
+     name TO-SPOKE1
+    vlan 102
+     name TO-SPOKE2
+    !
+    vlan configuration 101
+     member evpn-instance 101 vni 10101
+    !
+    vlan configuration 102
+     member evpn-instance 102 vni 10102
+    !
+    interface GigabitEthernet1/0/1
+     description to ASR 9903 (single cable: dot1q 101 = spoke 1, 102 = spoke 2)
+     switchport mode trunk
+     switchport trunk allowed vlan 101,102
+     no shutdown
+    !
+    interface Loopback0
+     ip address 10.255.0.1 255.255.255.255
+    !
+    interface GigabitEthernet1/0/2
+     description to WAN service
+     no switchport
+     ip address 10.0.1.1 255.255.255.252
+     no shutdown
+    !
+    ip route 10.255.0.0 255.255.255.0 10.0.1.2
+    !
+    interface nve1
+     no ip address
+     source-interface Loopback0
+     host-reachability protocol bgp
+     member vni 10101 ingress-replication
+     member vni 10102 ingress-replication
+    !
+    router bgp 65000
+     bgp router-id 10.255.0.1
+     bgp log-neighbor-changes
+     no bgp default ipv4-unicast
+     neighbor 10.255.0.2 remote-as 65000
+     neighbor 10.255.0.2 update-source Loopback0
+     neighbor 10.255.0.3 remote-as 65000
+     neighbor 10.255.0.3 update-source Loopback0
+     address-family l2vpn evpn
+      neighbor 10.255.0.2 activate
+      neighbor 10.255.0.2 send-community both
+      neighbor 10.255.0.2 route-reflector-client
+      neighbor 10.255.0.3 activate
+      neighbor 10.255.0.3 send-community both
+      neighbor 10.255.0.3 route-reflector-client
+     exit-address-family
+    !
+- name: WAN
+  kind: linux
+  image: plabs/host:latest
+  icon: cloud
+  interfaces: 3
+  position:
+  - 560
+  - 300
+  startup_config: |
+    ip link set eth1 up
+    ip link set eth2 up
+    ip link set eth3 up
+    ip addr add 10.0.1.2/30 dev eth1
+    ip addr add 10.0.2.2/30 dev eth2
+    ip addr add 10.0.3.2/30 dev eth3
+    sysctl -w net.ipv4.ip_forward=1
+    ip route add 10.255.0.1/32 via 10.0.1.1
+    ip route add 10.255.0.2/32 via 10.0.2.1
+    ip route add 10.255.0.3/32 via 10.0.3.1
+- name: SP1-SW
+  kind: cisco_cat9kv
+  image: vrnetlab/cisco_cat9kv:17.18.02
+  icon: switch
+  interfaces: 2
+  position:
+  - 820
+  - 160
+  startup_config: |
+    ! hostname set by the lab
+    ! SP1-SW
+    ip routing
+    !
+    l2vpn evpn
+     replication-type ingress
+     router-id Loopback0
+    !
+    l2vpn evpn instance 101 vlan-based
+     encapsulation vxlan
+    !
+    vlan 10
+     name TO-HUB
+    !
+    vlan configuration 10
+     member evpn-instance 101 vni 10101
+    !
+    interface GigabitEthernet1/0/1
+     description to 8011 (untagged)
+     switchport mode access
+     switchport access vlan 10
+     no shutdown
+    !
+    interface Loopback0
+     ip address 10.255.0.2 255.255.255.255
+    !
+    interface GigabitEthernet1/0/2
+     description to WAN service
+     no switchport
+     ip address 10.0.2.1 255.255.255.252
+     no shutdown
+    !
+    ip route 10.255.0.0 255.255.255.0 10.0.2.2
+    !
+    interface nve1
+     no ip address
+     source-interface Loopback0
+     host-reachability protocol bgp
+     member vni 10101 ingress-replication
+    !
+    router bgp 65000
+     bgp router-id 10.255.0.2
+     bgp log-neighbor-changes
+     no bgp default ipv4-unicast
+     neighbor 10.255.0.1 remote-as 65000
+     neighbor 10.255.0.1 update-source Loopback0
+     address-family l2vpn evpn
+      neighbor 10.255.0.1 activate
+      neighbor 10.255.0.1 send-community both
+     exit-address-family
+    !
+- name: SP2-SW
+  kind: cisco_cat9kv
+  image: vrnetlab/cisco_cat9kv:17.18.02
+  icon: switch
+  interfaces: 2
+  position:
+  - 820
+  - 440
+  startup_config: |
+    ! hostname set by the lab
+    ! SP2-SW
+    ip routing
+    !
+    l2vpn evpn
+     replication-type ingress
+     router-id Loopback0
+    !
+    l2vpn evpn instance 102 vlan-based
+     encapsulation vxlan
+    !
+    vlan 10
+     name TO-HUB
+    !
+    vlan configuration 10
+     member evpn-instance 102 vni 10102
+    !
+    interface GigabitEthernet1/0/1
+     description to 8011 (untagged)
+     switchport mode access
+     switchport access vlan 10
+     no shutdown
+    !
+    interface Loopback0
+     ip address 10.255.0.3 255.255.255.255
+    !
+    interface GigabitEthernet1/0/2
+     description to WAN service
+     no switchport
+     ip address 10.0.3.1 255.255.255.252
+     no shutdown
+    !
+    ip route 10.255.0.0 255.255.255.0 10.0.3.2
+    !
+    interface nve1
+     no ip address
+     source-interface Loopback0
+     host-reachability protocol bgp
+     member vni 10102 ingress-replication
+    !
+    router bgp 65000
+     bgp router-id 10.255.0.3
+     bgp log-neighbor-changes
+     no bgp default ipv4-unicast
+     neighbor 10.255.0.1 remote-as 65000
+     neighbor 10.255.0.1 update-source Loopback0
+     address-family l2vpn evpn
+      neighbor 10.255.0.1 activate
+      neighbor 10.255.0.1 send-community both
+     exit-address-family
+    !
+- name: SP1-8011
+  kind: linux
+  image: plabs/frr:latest
+  icon: router
+  interfaces: 1
+  position:
+  - 1080
+  - 160
+  startup_config: |
+    # --- shell setup ---
+    $ ip link set eth1 address 02:00:80:11:00:01
+    $ ip link set eth1 up
+    $ ip addr add 10.10.10.2/32 dev lo
+    $ mkdir -p /etc/mka
+    $ printf 'ctrl_interface=/var/run/wpa_supplicant\neapol_version=3\nap_scan=0\nnetwork={\n key_mgmt=NONE\n eapol_flags=0\n macsec_policy=1\n mka_cak=000102030405060708090a0b0c0d0e0f\n mka_ckn=53504f4b45312d4d4b412d303030303030303030303030303030303030303030\n mka_priority=20\n}\n' > /etc/mka/mka.conf
+    # MKA on the untagged physical port (no WAN MACsec needed); broadcast EAPoL like the hub
+    $ MKA_EAPOL_BCAST=1 wpa_supplicant -B -D macsec_linux -i eth1 -c /etc/mka/mka.conf
+    $ for i in $(seq 1 20); do ip link show macsec0 >/dev/null 2>&1 && break; sleep 1; done
+    $ ip link set macsec0 mtu 1400
+    $ ip addr add 172.16.1.2/30 dev macsec0
+    # --- FRR configuration (frr.conf) ---
+    !
+    router isis CORE
+     net 49.0001.0000.0000.0002.00
+     is-type level-2-only
+     metric-style wide
+    !
+    interface lo
+     ip router isis CORE
+     isis passive
+    !
+    interface macsec0
+     ip router isis CORE
+     isis network point-to-point
+    !
+- name: SP2-8011
+  kind: linux
+  image: plabs/frr:latest
+  icon: router
+  interfaces: 1
+  position:
+  - 1080
+  - 440
+  startup_config: |
+    # --- shell setup ---
+    $ ip link set eth1 address 02:00:80:11:00:02
+    $ ip link set eth1 up
+    $ ip addr add 10.10.10.3/32 dev lo
+    $ mkdir -p /etc/mka
+    $ printf 'ctrl_interface=/var/run/wpa_supplicant\neapol_version=3\nap_scan=0\nnetwork={\n key_mgmt=NONE\n eapol_flags=0\n macsec_policy=1\n mka_cak=f0e0d0c0b0a090807060504030201000\n mka_ckn=53504f4b45322d4d4b412d303030303030303030303030303030303030303030\n mka_priority=20\n}\n' > /etc/mka/mka.conf
+    # MKA on the untagged physical port (no WAN MACsec needed); broadcast EAPoL like the hub
+    $ MKA_EAPOL_BCAST=1 wpa_supplicant -B -D macsec_linux -i eth1 -c /etc/mka/mka.conf
+    $ for i in $(seq 1 20); do ip link show macsec0 >/dev/null 2>&1 && break; sleep 1; done
+    $ ip link set macsec0 mtu 1400
+    $ ip addr add 172.16.2.2/30 dev macsec0
+    # --- FRR configuration (frr.conf) ---
+    !
+    router isis CORE
+     net 49.0001.0000.0000.0003.00
+     is-type level-2-only
+     metric-style wide
+    !
+    interface lo
+     ip router isis CORE
+     isis passive
+    !
+    interface macsec0
+     ip router isis CORE
+     isis network point-to-point
+    !
+links:
+- - HUB-9903
+  - eth1
+  - HUB-SW
+  - GigabitEthernet1/0/1
+  - single cable · dot1q 101, 102 · MACsec tags in clear
+- - HUB-SW
+  - GigabitEthernet1/0/2
+  - WAN
+  - eth1
+  - L3
+- - SP1-SW
+  - GigabitEthernet1/0/2
+  - WAN
+  - eth2
+  - L3
+- - SP2-SW
+  - GigabitEthernet1/0/2
+  - WAN
+  - eth3
+  - L3
+- - SP1-SW
+  - GigabitEthernet1/0/1
+  - SP1-8011
+  - eth1
+  - untagged · MACsec
+- - SP2-SW
+  - GigabitEthernet1/0/1
+  - SP2-8011
+  - eth1
+  - untagged · MACsec
+annotations:
+- id: hub
+  type: group
+  x: 0
+  y: 200
+  w: 440
+  h: 200
+  text: HUB · VLAN 101 → VNI 10101 · VLAN 102 → VNI 10102
+  color: blue
+  locked: true
+- id: svc
+  type: group
+  x: 480
+  y: 200
+  w: 200
+  h: 200
+  text: L3 SERVICE
+  color: gray
+  locked: true
+- id: s1
+  type: group
+  x: 760
+  y: 60
+  w: 440
+  h: 200
+  text: SPOKE 1 · access VLAN 10 → VNI 10101
+  color: orange
+  locked: true
+- id: s2
+  type: group
+  x: 760
+  y: 340
+  w: 440
+  h: 200
+  text: SPOKE 2 · access VLAN 10 → VNI 10102
+  color: teal
+  locked: true
+- id: note
+  type: text
+  x: 0
+  y: 560
+  w: 1200
+  h: 60
+  text: 'FRR stand-ins: vtysh → show isis neighbor / show ip route isis. Shell: ip macsec show (MKA keys), wpa_cli -i eth1 status, tcpdump -nn -e -i eth1 (hub: vlan 101 + 0x88e5 / EAPoL to ff:ff…; spoke: untagged).'
+  color: gray
+  locked: true

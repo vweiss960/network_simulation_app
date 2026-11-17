@@ -86,3 +86,23 @@ def test_changed_startup_config_changes_yaml(db, tmp_path, monkeypatch):
     y2 = generate_clab_yaml(db, t.id)["yaml"]
     assert y1 != y2
     assert len(list((tmp_path / f"plabs-{t.id}-T" / "configs").glob("A-*.cfg"))) == 1
+
+
+def test_frr_startup_config_is_mounted_and_shell_lines_run(db, tmp_path, monkeypatch):
+    """containerlab ignores startup-config on Linux nodes: an FRR node's config
+    is mounted as /etc/frr/frr.conf, and `$ ` lines become exec commands."""
+    import yaml
+    import app.services.clab_yaml as cy
+    monkeypatch.setattr(cy, "LAB_STATE_DIR", tmp_path)
+    t = make_topology(db)
+    make_node(db, t, name="A", image="plabs/frr:latest",
+              startup_config="$ ip link set eth1 up\nrouter isis CORE\n net 49.0001.0000.0000.0001.00\n$ echo 'hi'")
+    entry = yaml.safe_load(generate_clab_yaml(db, t.id)["yaml"])["topology"]["nodes"]["A"]
+    assert "startup-config" not in entry
+    assert entry["exec"] == ["sh -c 'ip link set eth1 up'", "sh -c 'echo '\"'\"'hi'\"'\"''"]
+    (bind,) = entry["binds"]
+    src, dst = bind.split(":")
+    assert dst == "/etc/frr/frr.conf" and src.startswith("configs/A-")
+    text = (tmp_path / f"plabs-{t.id}-T" / src).read_text()
+    assert "router isis CORE" in text and "ip link" not in text
+    assert cy.frr_startup("linux", "plabs/host:latest", "x") is None

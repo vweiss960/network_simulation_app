@@ -1,0 +1,43 @@
+slug: spcor-services
+title: "Service Provider Services: MPLS, VPNs, multicast, QoS and security"
+summary: >-
+  The services a provider builds on its core, from the CCNP Service Provider
+  Core (SPCOR) blueprint: MPLS and LDP, L3VPN and Unified MPLS, L2VPN and
+  Carrier Ethernet, multicast and QoS — and how to secure the control and data
+  planes that carry them. Built and verified on IOS XR and IOS XE side by side.
+level: intermediate
+track: service_provider
+blueprint: "CCNP SPCOR 350-501 · 1.5, 1.7, 3.1, 4.2–4.5"
+tags: [ccnp-spcor, mpls, ldp, l3vpn, l2vpn, multicast, qos, security, iosxr, iosxe]
+status: published
+version: "1.3"
+author: Phanero Labs
+lessons:
+  - lesson: mpls-ldp
+    section: "3.1 · 1.5.d"
+    title: Implement MPLS and LDP
+    objectives:
+      - 3.1.a LDP sync
+      - 3.1.b LDP session protection
+      - 3.1.c LDP neighbors
+      - 3.1.e MPLS OAM
+      - 1.5.d LDP security (authentication and label allocation filtering)
+  - lesson: l3vpn
+    section: "4.3"
+    title: Configure L3VPN
+    objectives:
+      - 4.3.a Intra-AS VPN
+      - 4.3.b Shared services (extranet and Internet)
+  - lesson: unified-mpls
+    section: "3.1.d"
+    title: Implement Unified MPLS
+    objectives:
+      - 3.1.d Unified MPLS
+  - lesson: l2vpn-carrier-ethernet
+    section: "4.2"
+    title: Configure L2VPN and Carrier Ethernet
+    objectives:
+      - 4.2.a Ethernet services (E-Line, E-Tree, E-Access, E-LAN)
+      - 4.2.b IEEE 802.1ad, IEEE 802.1ah, and ITU G.8032
+      - 4.2.c Ethernet OAM
+      - 4.2.d VLAN tag manipulation
