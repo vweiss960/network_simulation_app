@@ -177,3 +177,74 @@ def test_interrupted_tool_calls_are_answered(monkeypatch):
         {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "ping", "input": {}}]}]
     c.add_user("next")
     assert c.messages[2]["content"][0]["tool_use_id"] == "t1" and c.messages[3] == {"role": "user", "content": "next"}
+
+
+class _T:
+    def __init__(self, family, name="R1", image="xrd:1"):
+        self.family, self.name, self.image = family, name, image
+        self.uses_ssh = family != "linux"
+
+
+def _stub_target(monkeypatch, t):
+    monkeypatch.setattr(lab_agent, "_target", lambda db, tid, name: t)
+    monkeypatch.setattr(lab_agent.device_exec, "_is_frr", lambda x: "frr" in x.image)
+
+
+def test_apply_config_validate_and_save(db, lab, monkeypatch):
+    from app.services import device_exec
+    seen = {}
+
+    async def configure(t, config, timeout=120, replace=False, dry_run=False):
+        seen["dry_run"] = dry_run
+        if dry_run and t.family != "iosxr":
+            raise device_exec.ExecError(f"{t.name}: no dry-run on {t.family}; changes there apply line by line")
+        return {"ok": True, "errors": [], "diff": "router ospf 1" if dry_run else ""}
+
+    async def save_config(t, timeout=120):
+        seen["saved"] = True
+        return "write memory"
+
+    monkeypatch.setattr(device_exec, "configure", configure)
+    monkeypatch.setattr(device_exec, "save_config", save_config)
+    _stub_target(monkeypatch, _T("iosxr"))
+    out = call(db, lab.id, "apply_config", {"device": "R1", "config": "router ospf 1", "validate_only": True})
+    assert "nothing was committed" in out and "router ospf 1" in out and "saved" not in seen
+    _stub_target(monkeypatch, _T("iosxe"))
+    with pytest.raises(lab_agent.ToolError, match="no dry-run"):
+        call(db, lab.id, "apply_config", {"device": "R1", "config": "x", "validate_only": True})
+    out = call(db, lab.id, "apply_config", {"device": "R1", "config": "x", "save": True})
+    assert seen["saved"] and "Saved (write memory)" in out
+
+
+def test_apply_config_on_linux_host_runs_shell(db, lab, monkeypatch):
+    from app.services import device_exec
+    ran = []
+
+    async def run_cli(t, commands, timeout=60):
+        ran.extend(commands)
+        return [{"command": c, "output": ""} for c in commands]
+
+    monkeypatch.setattr(device_exec, "run_cli", run_cli)
+    _stub_target(monkeypatch, _T("linux", "H1", image="plabs/host"))
+    out = call(db, lab.id, "apply_config", {"device": "H1", "config": "ip addr add 10.0.0.1/24 dev eth1\nip link set eth1 up"})
+    assert ran == ["ip addr add 10.0.0.1/24 dev eth1", "ip link set eth1 up"] and "restarts" in out
+
+
+def test_wait_for_devices_waits_for_the_cli(db, lab, monkeypatch):
+    from app.services import lab_service
+    call(db, lab.id, "add_devices", {"devices": [{"type": "xrd", "name": "R1"}]})
+    nid = db.query(lab_agent.NodeInstance).filter_by(name="R1").one().id
+    monkeypatch.setattr(lab_service, "get_deployment_state", lambda db_, tid: {
+        "status": "running", "nodes": {nid: {"ready_state": "up"}}})
+    answers = iter([False, False, True])
+    monkeypatch.setattr(lab_agent, "_cli_answers", lambda db_, tid, n: next(answers))
+    monkeypatch.setattr(lab_agent.time, "sleep", lambda s: None)
+    msgs = []
+    out = lab_agent._IMPL["wait_for_devices"](db, lab.id, {}, msgs.append)
+    assert out == "All up: R1 up"
+    assert any("Waiting for R1" in m["text"] for m in msgs)
+
+
+def test_device_types_show_platform_notes(db, lab):
+    out = call(db, lab.id, "list_device_types", {})
+    assert "NO BFD" in out and "services ssh:22" in out

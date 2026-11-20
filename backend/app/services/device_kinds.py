@@ -59,6 +59,8 @@ class DeviceKind:
     max_interfaces: int = 16
     default_interfaces: int = 4
     description: str = ""
+    # Verified platform limits / quirks, shown to the lab agent (list_device_types).
+    notes: str = ""
     # Ports reachable on the mgmt IP, for the UI / automation tooling.
     services: dict[str, int] = field(default_factory=dict)
     # containerlab can add/remove this kind's links while it runs. Every other
@@ -89,6 +91,10 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         max_interfaces=16, default_interfaces=4,
         description="IOS-XR as a container. Control Plane image is container-native; "
                     "the vRouter image adds a forwarding plane but needs hugepages.",
+        notes="Control Plane: label-switches (LDP, L3VPN PE, EoMPLS/BGP-LU transit), PIM-SM, ACLs, LACP bundles, "
+              "GR/NSF, BGP flowspec controller; needs `mpls oam` for MPLS ping. NO BFD (sessions stay down), "
+              "no uRPF, input policing, CFM, G.8032 or MACsec, and NOT an L2VPN PE (xconnects/VPLS come up but "
+              "attachment circuits pass no frames) - use IOS XE PEs for L2 services. One RP: NSR is config-only.",
         services={"ssh": 22, "netconf": 830, "gnmi": 9339},
     ),
     DeviceKind(
@@ -113,6 +119,8 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         boot_seconds=300, min_memory_mb=4096, min_cpu_cores=2, is_vm=True,
         max_interfaces=8, default_interfaces=4,
         description="IOS-XE VM (vrnetlab). NETCONF/RESTCONF/gNMI, MPLS, L3VPN.",
+        notes="Like the CSR 1000v (LDP, L3VPN, EoMPLS/VPLS PE, MQC QoS, CoPP, uRPF, PIM, CFM down MEPs, BFD) "
+              "but throughput is capped at 20 Mb/s unlicensed. No MACsec.",
         services=_XE_SERVICES,
     ),
     DeviceKind(
@@ -125,6 +133,8 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         boot_seconds=720, min_memory_mb=18432, min_cpu_cores=4, is_vm=True,
         max_interfaces=24, default_interfaces=8,
         description="IOS-XE Catalyst 9000 switch VM (vrnetlab, UADP/Q200 ASIC emulation). Heavy: ~18 GB RAM.",
+        notes="Switch: VLANs, SVIs, VXLAN BGP EVPN (ingress replication). Data plane comes up ~90 s after the "
+              "CLI. Drops EAPoL to 01:80:c2:00:00:03 (MKA across it needs broadcast EAPoL).",
         services=_XE_SERVICES,
     ),
     DeviceKind(
@@ -137,6 +147,10 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         boot_seconds=300, min_memory_mb=4096, min_cpu_cores=1, is_vm=True,
         max_interfaces=8, default_interfaces=4,
         description="IOS-XE VM (vrnetlab), predecessor of the Catalyst 8000v.",
+        notes="IOS XE 17.3: LDP (sync, session protection, auth, label filtering), L3VPN, EoMPLS xconnect, VPLS "
+              "VFI, EVC/802.1ad rewrites, CFM DOWN MEPs only (no up MEPs on service instances), 802.3ah, BFD "
+              "(echo; not on Port-channels), LACP, GR/NSF helper, CoPP, uRPF, MQC (police/shape/WRED), PIM "
+              "SM/SSM/BIDIR, IGMPv3/MLD, flowspec client. Capped at 1 Mb/s unlicensed. No MACsec, G.8032, PBB.",
         services=_XE_SERVICES,
     ),
     DeviceKind(
@@ -159,6 +173,11 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         boot_seconds=5, min_memory_mb=512, min_cpu_cores=1,
         max_interfaces=32, default_interfaces=4,
         description="Generic Linux container: FRR, hosts, the automation workstation.",
+        notes="FRR Router (plabs/frr): vtysh config; startup config lines starting with '$ ' run as shell "
+              "commands (kernel MACsec, wpa_supplicant MKA, sysctls). Linux Host (plabs/host): iproute2, ping, "
+              "traceroute, mtr, tcpdump, iperf3, curl, dig, snmpwalk; apply_config runs shell commands and does "
+              "not persist across restarts. Automation Workstation (plabs/workstation): gnmic, ncclient, "
+              "netmiko, scrapli, pyATS, Ansible, pyang.",
     ),
     DeviceKind(
         kind="arista_ceos", label="Arista cEOS", family="eos",
@@ -231,7 +250,7 @@ def kind_catalog() -> list[dict]:
             "min_memory_mb": k.min_memory_mb, "min_cpu_cores": k.min_cpu_cores,
             "requires_hugepages": k.requires_hugepages, "is_vm": k.is_vm,
             "max_interfaces": k.max_interfaces, "default_interfaces": k.default_interfaces,
-            "description": k.description, "services": dict(k.services),
+            "description": k.description, "notes": k.notes, "services": dict(k.services),
             "example_interfaces": k.interfaces(3),
         }
         for k in KINDS.values()

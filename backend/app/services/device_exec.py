@@ -218,11 +218,15 @@ def _config_lines(config: str | list[str]) -> list[str]:
                                                                           "conf t", "commit")]
 
 
-async def configure(t: Target, config: str | list[str], timeout: float = 120, replace: bool = False) -> dict:
+async def configure(t: Target, config: str | list[str], timeout: float = 120, replace: bool = False,
+                    dry_run: bool = False) -> dict:
     """Apply configuration. IOS-XR: candidate + commit (aborted on any error);
     IOS-XE/IOS/EOS: line by line (errors reported, applied lines stay);
-    FRR: vtysh. `replace` (IOS-XR only) replaces the whole running config."""
+    FRR: vtysh. `replace` (IOS-XR only) replaces the whole running config.
+    `dry_run` (IOS-XR only): enter the candidate, return its diff as `diff`, abort."""
     lines = _config_lines(config)
+    if dry_run and t.family != "iosxr":
+        raise ExecError(f"{t.name}: no dry-run on {t.family}; changes there apply line by line")
     if not t.uses_ssh:
         if not _is_frr(t):
             raise ExecError(f"{t.name}: configuration push isn't supported for plain Linux devices — use run commands")
@@ -242,6 +246,10 @@ async def configure(t: Target, config: str | list[str], timeout: float = 120, re
                 transcript.append(f"{l}\n{out}")
             if _CLI_ERRORS.search(out):
                 errors.append(f"{l.strip()}: {out.strip().splitlines()[-1] if out.strip() else 'error'}")
+        if t.family == "iosxr" and dry_run:
+            diff = "" if errors else await s.send("show configuration")
+            transcript.append(await s.send("abort"))
+            return {"ok": not errors, "errors": errors, "diff": diff.strip(), "output": "\n".join(x for x in transcript if x)}
         if t.family == "iosxr":
             if errors:
                 transcript.append(await s.send("abort"))

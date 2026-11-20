@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 import threading
 import time
@@ -68,6 +69,9 @@ then do it end to end: add_devices (lay them out cleanly on the canvas: ~220 px 
 middle, edges outside), connect_devices, add group boxes or notes where they help, start_devices, \
 wait_for_devices, configure every device, then verify (adjacencies, routes, pings) and fix what fails. \
 Choose consistent addressing (e.g. loopbacks 10.0.0.N/32, point-to-point /31s) and tell the user the plan.
+- Platforms: check list_device_types notes before relying on a feature (e.g. BFD, L2VPN PE, MACsec, \
+throughput); don't promise what a platform here can't do. For gnmic / NETCONF / Ansible, use an \
+Automation Workstation device; Linux Hosts have ping/iperf3/tcpdump/snmpwalk.
 - Never change management interfaces, management VRFs, AAA, usernames or SSH settings. Never reload, \
 erase or format devices.
 - If a tool fails, read the error and recover (fix the input, try another approach) rather than stopping. \
@@ -88,7 +92,9 @@ TOOLS: list[dict] = [
                     "Call this first in a conversation and again after changing the topology.",
      "input_schema": _schema({}, [])},
     {"name": "list_device_types",
-     "description": "Device types that can be added to the lab (templates), with whether their image is available.",
+     "description": "Device types that can be added to the lab (templates): image availability, RAM, "
+                    "management services, and verified platform notes (what each OS can and cannot do "
+                    "here). Check the notes before designing around a feature.",
      "input_schema": _schema({}, [])},
     {"name": "get_running_config",
      "description": "The current running configuration of a device (must be started).",
@@ -102,9 +108,14 @@ TOOLS: list[dict] = [
     {"name": "apply_config",
      "description": "Apply configuration to a device. Give the config lines exactly as typed in config mode "
                     "(no 'configure terminal'/'commit'/'end'). IOS XR: applied as one commit, aborted on any "
-                    "error. IOS XE: applied line by line, errors reported. FRR: via vtysh. Only call this after "
-                    "the user agreed or asked you to configure the device.",
-     "input_schema": _schema({"device": DEVICE, "config": {"type": "string"}}, ["device", "config"])},
+                    "error. IOS XE: applied line by line, errors reported. FRR: via vtysh. Plain Linux hosts: each "
+                    "line runs as a shell command (not persistent across restarts). validate_only (IOS XR "
+                    "only): check the lines and show the candidate diff without committing. save: also save "
+                    "the running config as the startup config (write memory). Only call this after the user "
+                    "agreed or asked you to configure the device.",
+     "input_schema": _schema({"device": DEVICE, "config": {"type": "string"},
+                              "validate_only": {"type": "boolean"}, "save": {"type": "boolean"}},
+                             ["device", "config"])},
     {"name": "ping",
      "description": "Ping an address from a device and report the result.",
      "input_schema": _schema({"device": DEVICE, "target": {"type": "string"},
@@ -151,7 +162,8 @@ TOOLS: list[dict] = [
                     "(XRd ~1-2 min, IOS XE VMs ~4-5 min, Cat9000v ~12 min); follow with wait_for_devices.",
      "input_schema": _schema({"devices": {"type": "array", "items": {"type": "string"}}}, [])},
     {"name": "wait_for_devices",
-     "description": "Wait until devices have finished booting (or the timeout passes) and report their state.",
+     "description": "Wait until devices have booted AND answer on their CLI (or the timeout passes) and "
+                    "report each device's state.",
      "input_schema": _schema({"devices": {"type": "array", "items": {"type": "string"}},
                               "timeout_s": {"type": "integer", "minimum": 10, "maximum": 1200}}, [])},
 ]
@@ -670,7 +682,10 @@ def t_list_device_types(db, tid, a, emit) -> str:
         else:
             avail = "available" if (t.image_ref in local or f"{t.image_ref}:latest" in local) else "image not loaded"
         out.append(f"- {t.name}: {k.label} ({k.family}), {t.interface_count} interfaces, {avail}"
-                   + (f", ~{k.min_memory_mb // 1024} GB RAM" if k.min_memory_mb >= 2048 else ""))
+                   + (f", ~{k.min_memory_mb // 1024} GB RAM" if k.min_memory_mb >= 2048 else "")
+                   + (f", services {', '.join(f'{n}:{p}' for n, p in k.services.items())}" if k.services else ""))
+        if k.notes:
+            out.append(f"    notes: {k.notes}")
     return "\n".join(out)
 
 
@@ -687,9 +702,30 @@ def t_run_show(db, tid, a, emit) -> str:
 
 def t_apply_config(db, tid, a, emit) -> str:
     t = _target(db, tid, a["device"])
-    r = asyncio.run(device_exec.configure(t, a["config"], timeout=180))
+    if t.family == "linux" and not device_exec._is_frr(t):
+        if a.get("validate_only"):
+            raise ToolError(f"{t.name}: no dry-run for Linux hosts")
+        lines = device_exec._config_lines(a["config"])
+        res = asyncio.run(device_exec.run_cli(t, lines, timeout=60))
+        body = "\n".join(f"$ {r['command']}" + (f"\n{r['output']}" if r["output"] else "") for r in res)
+        return _clip(f"Ran on {t.name} (shell; lost when the device restarts unless added to its startup "
+                     f"config):\n{body}")
+    try:
+        r = asyncio.run(device_exec.configure(t, a["config"], timeout=180, dry_run=bool(a.get("validate_only"))))
+    except device_exec.ExecError as e:
+        raise ToolError(str(e))
+    if a.get("validate_only"):
+        if r.get("ok"):
+            return _clip(f"{t.name}: the config is valid; nothing was committed. Candidate diff:\n{r.get('diff') or '(no change)'}")
+        raise ToolError(f"{t.name} rejected (nothing was committed):\n" + "\n".join(r.get("errors") or []))
     if r.get("ok"):
-        return f"Applied to {t.name} without errors."
+        msg = f"Applied to {t.name} without errors."
+        if a.get("save"):
+            try:
+                msg += f" Saved ({asyncio.run(device_exec.save_config(t))})."
+            except device_exec.ExecError as e:
+                msg += f" Saving failed: {e}"
+        return msg
     raise ToolError(f"{t.name} reported errors:\n" + "\n".join(r.get("errors") or [])
                     + ("\n(IOS XR: the commit was aborted, nothing was applied.)" if t.family == "iosxr" else ""))
 
@@ -825,6 +861,17 @@ def t_start_devices(db, tid, a, emit) -> str:
     return f"Starting {', '.join(n.name for n in nodes)}. Use wait_for_devices."
 
 
+def _cli_answers(db, tid, n: NodeInstance) -> bool:
+    """A booted device really takes commands (the boot timer alone can't tell)."""
+    try:
+        t = device_exec.target_for(db, tid, n.id)
+        probe = "true" if t.family == "linux" else "show version | include uptime"
+        (r,) = asyncio.run(device_exec.run_cli(t, [probe], timeout=20))
+        return not re.search(r"(?i)error response from daemon|is not running|no such container", r["output"] or "")
+    except Exception:
+        return False
+
+
 def t_wait_for_devices(db, tid, a, emit) -> str:
     deadline = time.time() + (a.get("timeout_s") or 600)
     want = {n.name for n in (_node(db, tid, x) for x in a["devices"])} if a.get("devices") else None
@@ -835,6 +882,7 @@ def t_wait_for_devices(db, tid, a, emit) -> str:
             raise ToolError(f"{', '.join(off)} is off; start it with start_devices first")
     cancel = getattr(_tool_ctx, "cancel", None)
     last = ""
+    cli_ok: set[str] = set()
     while True:
         if cancel is not None and cancel.is_set():
             raise ToolError("Stopped by the user")
@@ -843,6 +891,12 @@ def t_wait_for_devices(db, tid, a, emit) -> str:
                  if not is_bridge(n.kind) and n.enabled != 0 and (want is None or n.name in want)]
         rt = lab_service.get_deployment_state(db, tid).get("nodes", {})
         st = {n.name: _rt(rt, n.id).get("ready_state", "absent") for n in nodes}
+        for n in nodes:
+            if st[n.name] == "up" and n.name not in cli_ok:
+                if _cli_answers(db, tid, n):
+                    cli_ok.add(n.name)
+                else:
+                    st[n.name] = "booted, CLI not answering yet"
         pending = [k for k, v in st.items() if v != "up"]
         summary = ", ".join(f"{k} {v}" for k, v in sorted(st.items()))
         if not pending:
