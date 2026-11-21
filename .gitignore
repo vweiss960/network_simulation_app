@@ -51,6 +51,7 @@ device_images/*
 !device_images/frr-lab/
 !device_images/linux-host/
 !device_images/automation-workstation/
+!device_images/traffic/
 
 # DB backups taken by scripts/upgrade.sh
 backups/
