@@ -280,7 +280,7 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   through XR P routers all work; XR needs `mpls oam` to answer MPLS ping/traceroute), forwards
   multicast as core and last-hop router (`multicast-pim-igmp-mld`: IPv4 PIM-SM, SSM, BIDIR with
   DF election, BSR, IGMPv3; IPv6 PIMv6 SM + SSM, MLDv2 — all with real traffic), enforces interface ACLs, and is a BGP flowspec controller (CSR installs
-  the rules as client). XRd has **no** uRPF, input policing, LPTS policer config, CFM, G.8032
+  the rules as client). XRd has **no QoS data plane** (MQC config incl. HQoS / EXP classes / WRED is accepted and output policies attach — `show policy-map targets` — but report *Service Policy not installed*; input policies fail at commit, NetIO *Invalid argument*; `qos-classify-police-shape` grades XR on config), and **no** uRPF, LPTS policer config, CFM, G.8032
   or MACsec, and is **no L2VPN PE**: xconnects, bridge domains and VPLS PWs come up
   (LDP-signalled, state up) but the bridge domain / xconnect forwards nothing (AC and PW
   counters stay 0; a local host MAC may show, learned on the RP, but never crosses a PW).

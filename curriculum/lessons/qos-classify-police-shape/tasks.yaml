@@ -1,0 +1,336 @@
+- id: classify-mark
+  title: "Classify and mark at the trust boundary"
+  body: |
+    H1 sends two flows to H2, both **unmarked** (DSCP 0): *voice* (UDP port
+    **5004**) and *bulk* data (UDP port **5005**). The provider doesn't trust
+    customer markings: it **classifies** traffic at its edge, the UNI on R3
+    (Gi3), and **marks** it into its own classes, the *trust boundary*. Every
+    router after that only looks at the marking.
+
+    Build it with the **MQC** (Modular QoS CLI), in three parts:
+
+    1. **class-maps** say what a class is (`match access-group`, `match dscp`,
+       `match protocol`…),
+    2. a **policy-map** says what to do per class (`set`, `police`,
+       `priority`, `shape`…),
+    3. a **service-policy** attaches it to an interface, input or output.
+
+    | Class | Matches | Mark |
+    |---|---|---|
+    | VOICE | UDP destination port 5004 | DSCP **EF** (46) |
+    | BULK | UDP destination port 5005 | DSCP **AF11** (10) |
+    | class-default | everything else | DSCP **default** (0) |
+
+    Call the policy **CUSTOMER-IN** and apply it **input** on R3 Gi3.
+  hints:
+    - "XE: `ip access-list extended VOICE-ACL` → `permit udp any any eq 5004` (and BULK-ACL for 5005); `class-map match-any VOICE` → `match access-group name VOICE-ACL`."
+    - "XE: `policy-map CUSTOMER-IN` → `class VOICE` → `set dscp ef`, `class BULK` → `set dscp af11`, `class class-default` → `set dscp default`; `interface GigabitEthernet3` → `service-policy input CUSTOMER-IN`."
+    - "Verify: `show policy-map interface GigabitEthernet3 input` (packets per class); on H2, `tcpdump -nvi eth1 udp port 5004` shows `tos 0xb8` (EF), port 5005 `tos 0x28` (AF11)."
+  solution:
+    R3: |
+      ip access-list extended VOICE-ACL
+       permit udp any any eq 5004
+      ip access-list extended BULK-ACL
+       permit udp any any eq 5005
+      class-map match-any VOICE
+       match access-group name VOICE-ACL
+      class-map match-any BULK
+       match access-group name BULK-ACL
+      policy-map CUSTOMER-IN
+       class VOICE
+        set dscp ef
+       class BULK
+        set dscp af11
+       class class-default
+        set dscp default
+      interface GigabitEthernet3
+       service-policy input CUSTOMER-IN
+  checks:
+    - type: cli
+      device: R3
+      command: show policy-map interface GigabitEthernet3 input
+      expect:
+        - {regex: '(?s)Class-map: VOICE \(match-any\)\s+[1-9]\d* packets'}
+        - {regex: '(?s)Class-map: BULK \(match-any\)\s+[1-9]\d* packets'}
+      describe: "R3 (XE): CUSTOMER-IN classifies voice and bulk traffic on Gi3"
+    - type: cli
+      device: H2
+      command: timeout 6 tcpdump -c 3 -nvi eth1 udp dst port 5004 2>&1
+      expect:
+        - {regex: 'tos 0xb8', count: 3}
+      describe: "H2: voice arrives marked EF (tos 0xb8)"
+    - type: cli
+      device: H2
+      command: timeout 6 tcpdump -c 3 -nvi eth1 udp dst port 5005 2>&1
+      expect:
+        - {regex: 'tos 0x28', count: 3}
+      describe: "H2: bulk arrives marked AF11 (tos 0x28)"
+
+- id: mpls-exp
+  title: "DSCP to MPLS EXP in the core"
+  body: |
+    In the core, R3 pushes an **MPLS label** and the P routers switch on it.
+    They don't look at the IP header, so the class must travel in the label's
+    3-bit **EXP** field (*Traffic Class*, RFC 5462). By default IOS XE copies
+    the top three DSCP bits (the IP precedence) into EXP at imposition: EF →
+    5, AF11 → 1. Make it explicit in CUSTOMER-IN with **`set mpls experimental
+    imposition`**: voice 5, bulk 1, default 0.
+
+    Then build an **output** policy on R3's core link (Gi2) that classifies on
+    the **topmost label's EXP**: the same classification the P routers use.
+
+    | Class | Matches | Action |
+    |---|---|---|
+    | EXP5 | `mpls experimental topmost 5` | `priority percent 20` (LLQ) |
+    | EXP1 | `mpls experimental topmost 1` | `bandwidth remaining percent 60` |
+    | class-default | | (best effort) |
+
+    The core link isn't congested, so the queues stay empty; the counters
+    show which EXP each packet carries.
+  hints:
+    - "XE: under `policy-map CUSTOMER-IN` → `class VOICE` → `set mpls experimental imposition 5` (BULK 1, class-default 0)."
+    - "XE: `class-map match-any EXP5` → `match mpls experimental topmost 5` (EXP1 likewise); `policy-map CORE-OUT` → `class EXP5` → `priority percent 20`, `class EXP1` → `bandwidth remaining percent 60`; `interface GigabitEthernet2` → `service-policy output CORE-OUT`."
+    - "Verify: `show policy-map interface GigabitEthernet2 output`; `show mpls forwarding-table 10.1.4.0` (the label R3 pushes)."
+  solution:
+    R3: |
+      policy-map CUSTOMER-IN
+       class VOICE
+        set mpls experimental imposition 5
+       class BULK
+        set mpls experimental imposition 1
+       class class-default
+        set mpls experimental imposition 0
+      class-map match-any EXP5
+       match mpls experimental topmost 5
+      class-map match-any EXP1
+       match mpls experimental topmost 1
+      policy-map CORE-OUT
+       class EXP5
+        priority percent 20
+       class EXP1
+        bandwidth remaining percent 60
+      interface GigabitEthernet2
+       service-policy output CORE-OUT
+  checks:
+    - type: cli
+      device: R3
+      command: show policy-map interface GigabitEthernet2 output
+      expect:
+        - {regex: '(?s)Class-map: EXP5 \(match-any\)\s+[1-9]\d* packets'}
+        - {regex: '(?s)Class-map: EXP1 \(match-any\)\s+[1-9]\d* packets'}
+      describe: "R3 (XE): labelled voice leaves with EXP 5 and bulk with EXP 1"
+
+- id: xr-core-qos
+  title: "Core QoS on IOS XR (configuration and verification)"
+  body: |
+    The P router R1 must queue on **EXP** too. Build the IOS XR version of the
+    core policy and attach it **output** on both core interfaces. IOS XR's MQC
+    is the same idea with its own syntax:
+
+    | | IOS XE | IOS XR |
+    |---|---|---|
+    | Low-latency queue | `priority percent 20` | `priority level 1` + a policer (`police rate percent 20`) |
+    | Share of the rest | `bandwidth remaining percent 60` | `bandwidth remaining percent 60` |
+    | WRED | `random-detect dscp-based` | `random-detect default` / `random-detect exp 1 …` |
+    | Class-map / policy-map end | `exit` | `end-class-map` / `end-policy-map` |
+
+    Classes: **EXP5** (priority level 1, policed to 20%), **EXP1** (bandwidth
+    remaining 60%, WRED), class-default.
+
+    > **Lab platform note.** XRd Control Plane accepts the whole MQC
+    > configuration (class-maps, hierarchical policy-maps, priority, policers,
+    > WRED, shaping), and output policies attach to interfaces. But it has no
+    > QoS data plane: `show policy-map interface` reports *Service Policy not
+    > installed*, traffic passes unqueued, and **input** policies are refused
+    > at commit (*NetIO … Invalid argument*). The checks verify the
+    > configuration and where it's attached (`show policy-map targets`); the
+    > IOS XE routers show QoS in action. On an ASR 9000, NCS or XRv 9000 the
+    > same policy queues traffic.
+  hints:
+    - "XR: `class-map match-any EXP5` → `match mpls experimental topmost 5` → `end-class-map` (EXP1 likewise)."
+    - "XR: `policy-map CORE-OUT` → `class EXP5` → `priority level 1` + `police rate percent 20`; `class EXP1` → `bandwidth remaining percent 60` + `random-detect default`; `class class-default`; `end-policy-map`."
+    - "XR: `interface GigabitEthernet0/0/0/0` → `service-policy output CORE-OUT` (and Gi0/0/0/1). Verify: `show policy-map targets`, `show running-config policy-map CORE-OUT`."
+  solution:
+    R1: |
+      class-map match-any EXP5
+       match mpls experimental topmost 5
+       end-class-map
+      !
+      class-map match-any EXP1
+       match mpls experimental topmost 1
+       end-class-map
+      !
+      policy-map CORE-OUT
+       class EXP5
+        priority level 1
+        police rate percent 20
+        !
+       !
+       class EXP1
+        bandwidth remaining percent 60
+        random-detect default
+       !
+       class class-default
+       !
+       end-policy-map
+      !
+      interface GigabitEthernet0/0/0/0
+       service-policy output CORE-OUT
+      !
+      interface GigabitEthernet0/0/0/1
+       service-policy output CORE-OUT
+      !
+  checks:
+    - type: cli
+      device: R1
+      command: show policy-map targets
+      expect:
+        - {regex: '(?s)Policymap: CORE-OUT.{0,200}?main policy\):.{0,120}?GigabitEthernet0/0/0/[01] output.{0,80}?GigabitEthernet0/0/0/[01] output'}
+      describe: "R1 (XR): CORE-OUT is attached output on both core interfaces"
+    - type: cli
+      device: R1
+      command: show running-config policy-map CORE-OUT
+      expect:
+        - {regex: 'class EXP5\s+priority level 1\s+police rate percent 20'}
+        - {regex: 'class EXP1\s+bandwidth remaining percent 60\s+random-detect default'}
+      describe: "R1 (XR): EXP5 is a policed priority queue, EXP1 gets 60% of the rest with WRED"
+    - type: cli
+      device: R1
+      command: show running-config class-map
+      expect:
+        - {regex: 'class-map match-any EXP5\s+match mpls experimental topmost 5'}
+        - {regex: 'class-map match-any EXP1\s+match mpls experimental topmost 1'}
+      describe: "R1 (XR): classes match the topmost label's EXP"
+
+- id: policing
+  title: "Police bulk traffic with a two-rate, three-color policer"
+  body: |
+    The customer's contract allows bulk traffic **256 kb/s** guaranteed (CIR),
+    bursting to **384 kb/s** (PIR). H1 sends 600 kb/s. Police the BULK class on
+    R3's input with a **two-rate three-color marker** (RFC 2698):
+
+    | Color | Traffic | Action |
+    |---|---|---|
+    | conform | up to the CIR | transmit as **AF11** |
+    | exceed | between CIR and PIR | **mark down** to **AF12** (same class, higher drop precedence) and transmit |
+    | violate | above the PIR | **drop** |
+
+    A policer **never delays** packets: each one is transmitted, re-marked or
+    dropped immediately, based on token buckets refilled at the CIR and PIR.
+    Replace BULK's fixed `set dscp af11` with the policer.
+  hints:
+    - "XE: `policy-map CUSTOMER-IN` → `class BULK` → `no set dscp af11`, then `police cir 256000 pir 384000` → `conform-action set-dscp-transmit af11` → `exceed-action set-dscp-transmit af12` → `violate-action drop`."
+    - "Verify: `show policy-map interface GigabitEthernet3 input` (conformed / exceeded / violated counters and rates); on H2, `tcpdump -nvi eth1 udp port 5005` shows both `tos 0x28` (AF11) and `tos 0x30` (AF12)."
+  solution:
+    R3: |
+      policy-map CUSTOMER-IN
+       class BULK
+        no set dscp af11
+        police cir 256000 pir 384000
+         conform-action set-dscp-transmit af11
+         exceed-action set-dscp-transmit af12
+         violate-action drop
+  checks:
+    - type: cli
+      device: R3
+      command: show policy-map interface GigabitEthernet3 input
+      expect:
+        - {regex: 'police:\s+cir 256000 bps.*\n.*pir 384000 bps'}
+        - {regex: 'exceeded [1-9]\d* packets'}
+        - {regex: 'violated [1-9]\d* packets'}
+      describe: "R3 (XE): the BULK policer (CIR 256k, PIR 384k) is marking down and dropping"
+    - type: cli
+      device: H2
+      command: timeout 8 tcpdump -c 40 -nvi eth1 udp dst port 5005 2>&1
+      expect:
+        - {regex: 'tos 0x28'}
+        - {regex: 'tos 0x30'}
+      describe: "H2: bulk arrives as AF11 (conform) and AF12 (exceed)"
+
+- id: shaping
+  title: "Shape the customer port: hierarchical QoS with LLQ"
+  body: |
+    Site B bought a **400 kb/s** service on a Gigabit port. On R4's egress
+    (Gi3), **shape** the port to 400 kb/s and, inside the shaper, protect voice
+    with a **low-latency queue**. That's **hierarchical QoS** (HQoS): a parent
+    policy shapes, a child policy queues within the shaped rate.
+
+    Unlike a policer, a **shaper buffers** traffic above the rate and sends it
+    later, so it adds delay but loses less. Packets are dropped only when the
+    queue is full.
+
+    | Policy | Class | Matches | Action |
+    |---|---|---|---|
+    | SITE-OUT (parent) | class-default | everything | `shape average 400000`, `service-policy SITE-CHILD` |
+    | SITE-CHILD | VOICE | DSCP EF | `priority percent 30` (LLQ: strict priority, policed to 30% under congestion) |
+    | SITE-CHILD | BULK | DSCP AF11, AF12 | `bandwidth remaining percent 80` (CBWFQ) |
+    | SITE-CHILD | class-default | | `bandwidth remaining percent 20` |
+
+    Voice (~70 kb/s) plus policed bulk (up to 384 kb/s) is more than 400 kb/s,
+    so the port congests: bulk queues and drops, voice doesn't.
+  hints:
+    - "XE (R4): `class-map match-any VOICE` → `match dscp ef`; `class-map match-any BULK` → `match dscp af11 af12`."
+    - "XE: `policy-map SITE-CHILD` → `class VOICE` → `priority percent 30`, `class BULK` → `bandwidth remaining percent 80`, `class class-default` → `bandwidth remaining percent 20`; `policy-map SITE-OUT` → `class class-default` → `shape average 400000` → `service-policy SITE-CHILD`."
+    - "XE: `interface GigabitEthernet3` → `service-policy output SITE-OUT`. Verify: `show policy-map interface GigabitEthernet3 output` (shape rate, queue depth, drops per class)."
+  solution:
+    R4: |
+      class-map match-any VOICE
+       match dscp ef
+      class-map match-any BULK
+       match dscp af11 af12
+      policy-map SITE-CHILD
+       class VOICE
+        priority percent 30
+       class BULK
+        bandwidth remaining percent 80
+       class class-default
+        bandwidth remaining percent 20
+      policy-map SITE-OUT
+       class class-default
+        shape average 400000
+        service-policy SITE-CHILD
+      interface GigabitEthernet3
+       service-policy output SITE-OUT
+  checks:
+    - type: cli
+      device: R4
+      command: show policy-map interface GigabitEthernet3 output
+      expect:
+        - {regex: 'shape \(average\) cir 400000'}
+        - {regex: '(?s)Class-map: VOICE \(match-any\)\s+[1-9]\d* packets'}
+        - {regex: '(?s)Class-map: BULK \(match-any\).*?\(queue depth/total drops/no-buffer drops\) \d+/[1-9]\d*/\d+'}
+        - {regex: '(?s)Class-map: VOICE \(match-any\).*?b/w exceed drops: 0\s'}
+      describe: "R4 (XE): the port is shaped to 400 kb/s; bulk queues and drops under congestion, voice in the priority queue loses nothing"
+
+- id: wred
+  title: "Congestion avoidance with DSCP-based WRED"
+  body: |
+    When a queue fills, **tail drop** discards every arriving packet at once.
+    TCP flows then all back off together and ramp up together (*global
+    synchronization*), and the link swings between congested and idle.
+
+    **WRED** (weighted random early detection) starts dropping **randomly**,
+    *before* the queue is full: between a minimum and a maximum threshold the
+    drop probability rises linearly, above the maximum everything is dropped.
+    *Weighted*: each marking gets its own thresholds. **DSCP-based** WRED gives
+    higher drop precedence lower thresholds, so **AF12 is dropped before
+    AF11**. That's exactly what the policer's mark-down is for. (ECN, `random-detect
+    ecn`, marks capable TCP packets instead of dropping them.)
+
+    Enable DSCP-based WRED in SITE-CHILD's BULK class on R4.
+  hints:
+    - "XE (R4): `policy-map SITE-CHILD` → `class BULK` → `random-detect dscp-based`."
+    - "Verify: `show policy-map interface GigabitEthernet3 output`: the WRED table lists, per DSCP, transmitted packets, *random drops* and *tail drops*, with each DSCP's minimum / maximum thresholds."
+  solution:
+    R4: |
+      policy-map SITE-CHILD
+       class BULK
+        random-detect dscp-based
+  checks:
+    - type: cli
+      device: R4
+      command: show policy-map interface GigabitEthernet3 output
+      expect:
+        - {regex: '(?i)Exp-weight-constant'}
+        - {regex: '(?im)^\s*af12\s+\d+/\d+\s+[1-9]\d*/\d+'}
+      describe: "R4 (XE): DSCP-based WRED on BULK, randomly dropping AF12 packets"

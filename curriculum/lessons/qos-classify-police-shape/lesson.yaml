@@ -1,0 +1,19 @@
+slug: qos-classify-police-shape
+title: "QoS: classification, marking, MPLS EXP, policing, shaping and WRED"
+summary: >-
+  Build DiffServ QoS across an MPLS core: classify and mark a customer's voice
+  and bulk traffic at the ingress PE, map DSCP to MPLS EXP, police with a
+  two-rate three-color policer that marks down, shape a customer port with a
+  hierarchical (parent shaper / child LLQ) policy, avoid congestion with
+  DSCP-based WRED, and build an IOS XR core policy queuing on EXP. Real voice
+  and bulk flows show every counter move. Covers CCNP SPCOR 4.5 a–b.
+level: advanced
+track: service_provider
+topic: QoS
+tags: [qos, diffserv, mqc, dscp, mpls-exp, classification, marking, policing, shaping, llq, cbwfq, wred, hqos, iosxr, iosxe, ccnp-spcor]
+minutes: 110
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

@@ -10,7 +10,7 @@ track: service_provider
 blueprint: "CCNP SPCOR 350-501 · 1.5, 1.7, 3.1, 4.2–4.5"
 tags: [ccnp-spcor, mpls, ldp, l3vpn, l2vpn, multicast, qos, security, iosxr, iosxe]
 status: published
-version: "1.5"
+version: "1.6"
 author: Phanero Labs
 lessons:
   - lesson: mpls-ldp
@@ -47,3 +47,9 @@ lessons:
     objectives:
       - 4.4.a PIM (PIM-SM, PIM-SSM, and PIM-BIDIR)
       - 4.4.b IGMP v1/v2/v3 and MLD
+  - lesson: qos-classify-police-shape
+    section: "4.5"
+    title: Implement QoS services
+    objectives:
+      - 4.5.a Classification and marking
+      - 4.5.b Congestion avoidance, traffic policing, and shaping

@@ -106,7 +106,8 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         notes="Control Plane: label-switches (LDP, L3VPN PE, EoMPLS/BGP-LU transit), forwards multicast (PIM-SM/SSM/"
               "BIDIR, BSR, IGMPv3, PIMv6 + MLDv2), ACLs, LACP bundles, "
               "GR/NSF, BGP flowspec controller; needs `mpls oam` for MPLS ping. NO BFD (sessions stay down), "
-              "no uRPF, input policing, CFM, G.8032 or MACsec. As an L2VPN PE only the control plane works "
+              "no QoS data plane (MQC config accepted, output policies attach but are not installed, input policies "
+              "refused), no uRPF, CFM, G.8032 or MACsec. As an L2VPN PE only the control plane works "
               "(xconnects/VPLS PWs signal and show up, but nothing is forwarded between AC and PW) - carry "
               "L2 traffic on IOS XE PEs. One RP: NSR is config-only.",
         services={"ssh": 22, "netconf": 830, "gnmi": 9339},

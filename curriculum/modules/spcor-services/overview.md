@@ -25,8 +25,14 @@ This module builds what it *sells* on top of it:
    multicast with PIMv6 and MLDv2, across an IOS XR core with IOS XR and
    IOS XE last-hop routers and real source / receiver traffic.
 
-More lessons follow, in this order: QoS (4.5), control plane security (1.5)
-and data plane security (1.7).
+6. **QoS (4.5)**: classification and marking at the trust boundary, DSCP to
+   MPLS EXP, a two-rate three-color policer that marks down, hierarchical
+   shaping with LLQ, DSCP-based WRED on IOS XE with real voice and bulk
+   flows, and the IOS XR core policy (configuration and verification: XRd
+   has no QoS data plane).
+
+More lessons follow, in this order: control plane security (1.5) and data
+plane security (1.7).
 
 ## How to work through it
 
