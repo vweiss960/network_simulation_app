@@ -240,7 +240,10 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   canvas, saved back (optionally capturing running configs, minus mgmt / clab
   user / SSH bits — `starting_config_from_running`).
 - Plain Linux hosts (not FRR) run their startup config lines as clab `exec`
-  commands (`clab_yaml.linux_exec_commands`).
+  commands (`clab_yaml.linux_exec_commands`). Background traffic: `setsid … >/dev/null 2>&1
+  < /dev/null &` (e.g. iperf2 multicast senders / receivers — `plabs/host` has iperf2 + iperf3);
+  IPv6 addresses need `nodad` or a bind to them fails at boot. Linux hosts stay in IGMPv2
+  compatibility mode ~260 s after their querier moves to v3.
 - FRR nodes (`plabs/frr`): containerlab ignores `startup-config` on Linux nodes, so
   `clab_yaml.frr_startup` mounts the startup config as `/etc/frr/frr.conf` (bind) and runs
   its `$ `-prefixed lines as `exec` shell commands (MACsec, `wpa_supplicant` MKA, sysctls).
@@ -275,7 +278,8 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   (BGP NSR is on by default there). XR applies a GR change only on the next session reset.
 - Services (verified live): XRd **label-switches** (LDP, L3VPN, EoMPLS PWs and BGP-LU transit
   through XR P routers all work; XR needs `mpls oam` to answer MPLS ping/traceroute), forwards
-  PIM-SM multicast, enforces interface ACLs, and is a BGP flowspec controller (CSR installs
+  multicast as core and last-hop router (`multicast-pim-igmp-mld`: IPv4 PIM-SM, SSM, BIDIR with
+  DF election, BSR, IGMPv3; IPv6 PIMv6 SM + SSM, MLDv2 — all with real traffic), enforces interface ACLs, and is a BGP flowspec controller (CSR installs
   the rules as client). XRd has **no** uRPF, input policing, LPTS policer config, CFM, G.8032
   or MACsec, and is **no L2VPN PE**: xconnects, bridge domains and VPLS PWs come up
   (LDP-signalled, state up) but the bridge domain / xconnect forwards nothing (AC and PW

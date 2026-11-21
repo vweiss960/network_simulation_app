@@ -1,0 +1,19 @@
+slug: multicast-pim-igmp-mld
+title: "Multicast: PIM-SM, SSM, BIDIR, IGMP and MLD on IOS XR and IOS XE"
+summary: >-
+  Build multicast across a dual-stack service provider core: PIM sparse mode
+  with a static RP on IOS XR, IGMPv3 on the last-hop routers, source-specific
+  multicast, PIM bidirectional with its own RP and designated-forwarder
+  election, dynamic RP discovery with BSR, and IPv6 multicast with PIMv6 and
+  MLDv2. IOS XR core and last-hop router, IOS XE edges; a source and two
+  receivers send and join real groups. Covers CCNP SPCOR 4.4 a–b.
+level: advanced
+track: service_provider
+topic: Multicast
+tags: [multicast, pim, pim-sm, ssm, bidir, rp, bsr, igmp, igmpv3, mld, ipv6, iosxr, iosxe, ccnp-spcor]
+minutes: 120
+ai_policy: hints
+hints_mode: on_request
+status: published
+version: "1.0"
+author: Phanero Labs

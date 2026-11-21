@@ -103,7 +103,8 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         max_interfaces=16, default_interfaces=4,
         description="IOS-XR as a container. Control Plane image is container-native; "
                     "the vRouter image adds a forwarding plane but needs hugepages.",
-        notes="Control Plane: label-switches (LDP, L3VPN PE, EoMPLS/BGP-LU transit), PIM-SM, ACLs, LACP bundles, "
+        notes="Control Plane: label-switches (LDP, L3VPN PE, EoMPLS/BGP-LU transit), forwards multicast (PIM-SM/SSM/"
+              "BIDIR, BSR, IGMPv3, PIMv6 + MLDv2), ACLs, LACP bundles, "
               "GR/NSF, BGP flowspec controller; needs `mpls oam` for MPLS ping. NO BFD (sessions stay down), "
               "no uRPF, input policing, CFM, G.8032 or MACsec. As an L2VPN PE only the control plane works "
               "(xconnects/VPLS PWs signal and show up, but nothing is forwarded between AC and PW) - carry "

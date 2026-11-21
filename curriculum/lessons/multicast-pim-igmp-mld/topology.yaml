@@ -1,0 +1,345 @@
+name: Multicast in an SP core
+description: >-
+  A dual-stack core (IS-IS CORE, multi-topology for IPv6, already running):
+  IOS XR P routers R1 and R2, IOS XE first-hop router R3 (source SRC),
+  IOS XE last-hop router R4 (receiver RCV1) and IOS XR last-hop router R5
+  (receiver RCV2). SRC sends to 239.1.1.1, 232.1.1.1, 239.2.2.2, ff05::1 and
+  ff3e::1 at 10 packets/s from boot; RCV1 and RCV2 join all five (232.1.1.1
+  and ff3e::1 source-specific). No multicast routing is configured yet.
+nodes:
+  - name: SRC
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [40, 260]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.1.3.10/24 dev eth1
+      ip -6 addr add 2001:db8:1:3::10/64 dev eth1 nodad
+      ip route add 10.0.0.0/8 via 10.1.3.1
+      ip route add 224.0.0.0/4 dev eth1
+      ip -6 route add 2001:db8::/32 via 2001:db8:1:3::1
+      # the source: 10 packets/s to each test group, forever
+      setsid iperf -c 239.1.1.1 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -c 232.1.1.1 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -c 239.2.2.2 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -V -c ff05::1 -B 2001:db8:1:3::10 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -V -c ff3e::1 -B 2001:db8:1:3::10 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
+  - name: R3
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 2
+    position: [260, 260]
+    startup_config: |
+      ipv6 unicast-routing
+      !
+      interface Loopback0
+       ip address 3.3.3.3 255.255.255.255
+       ipv6 address 2001:DB8::3/128
+       ip router isis CORE
+       ipv6 router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R1 (core)
+       ip address 10.0.13.2 255.255.255.252
+       ipv6 address 2001:DB8:0:13::2/64
+       ip router isis CORE
+       ipv6 router isis CORE
+       isis network point-to-point
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description source LAN (SRC)
+       ip address 10.1.3.1 255.255.255.0
+       ipv6 address 2001:DB8:1:3::1/64
+       ip router isis CORE
+       ipv6 router isis CORE
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0003.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+       passive-interface GigabitEthernet3
+       address-family ipv6
+        multi-topology
+       exit-address-family
+      !
+  - name: R1
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 2
+    position: [480, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 1.1.1.1 255.255.255.255
+       ipv6 address 2001:db8::1/128
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R3 Gi2 (core)
+       ipv4 address 10.0.13.1 255.255.255.252
+       ipv6 address 2001:db8:0:13::1/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R2 Gi0/0/0/0 (core)
+       ipv4 address 10.0.12.1 255.255.255.252
+       ipv6 address 2001:db8:0:12::1/64
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0001.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+      !
+  - name: R2
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 3
+    position: [700, 260]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 2.2.2.2 255.255.255.255
+       ipv6 address 2001:db8::2/128
+      !
+      interface Loopback1
+       description BIDIR RP address
+       ipv4 address 2.2.2.22 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R1 Gi0/0/0/1 (core)
+       ipv4 address 10.0.12.2 255.255.255.252
+       ipv6 address 2001:db8:0:12::2/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description to R4 Gi2 (core)
+       ipv4 address 10.0.24.1 255.255.255.252
+       ipv6 address 2001:db8:0:24::1/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description to R5 Gi0/0/0/0 (core)
+       ipv4 address 10.0.25.1 255.255.255.252
+       ipv6 address 2001:db8:0:25::1/64
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0002.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface Loopback1
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/2
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+      !
+  - name: R4
+    kind: cisco_csr1000v
+    image: vrnetlab/cisco_csr1000v:17.03.08
+    icon: router
+    interfaces: 2
+    position: [920, 140]
+    startup_config: |
+      ipv6 unicast-routing
+      !
+      interface Loopback0
+       ip address 4.4.4.4 255.255.255.255
+       ipv6 address 2001:DB8::4/128
+       ip router isis CORE
+       ipv6 router isis CORE
+      !
+      interface GigabitEthernet2
+       description to R2 (core)
+       ip address 10.0.24.2 255.255.255.252
+       ipv6 address 2001:DB8:0:24::2/64
+       ip router isis CORE
+       ipv6 router isis CORE
+       isis network point-to-point
+       no shutdown
+      !
+      interface GigabitEthernet3
+       description receiver LAN (RCV1)
+       ip address 10.1.4.1 255.255.255.0
+       ipv6 address 2001:DB8:1:4::1/64
+       ip router isis CORE
+       ipv6 router isis CORE
+       no shutdown
+      !
+      router isis CORE
+       net 49.0001.0000.0000.0004.00
+       is-type level-2-only
+       metric-style wide
+       passive-interface Loopback0
+       passive-interface GigabitEthernet3
+       address-family ipv6
+        multi-topology
+       exit-address-family
+      !
+  - name: R5
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 2
+    position: [920, 400]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 5.5.5.5 255.255.255.255
+       ipv6 address 2001:db8::5/128
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R2 Gi0/0/0/2 (core)
+       ipv4 address 10.0.25.2 255.255.255.252
+       ipv6 address 2001:db8:0:25::2/64
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description receiver LAN (RCV2)
+       ipv4 address 10.1.5.1 255.255.255.0
+       ipv6 address 2001:db8:1:5::1/64
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0005.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       address-family ipv6 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/1
+        passive
+        address-family ipv4 unicast
+        !
+        address-family ipv6 unicast
+        !
+       !
+      !
+  - name: RCV1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1140, 140]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.1.4.10/24 dev eth1
+      ip -6 addr add 2001:db8:1:4::10/64 dev eth1 nodad
+      ip route add 10.0.0.0/8 via 10.1.4.1
+      ip route add 224.0.0.0/4 dev eth1
+      ip -6 route add 2001:db8::/32 via 2001:db8:1:4::1
+      # receivers: join the test groups (IGMP / MLD reports come from these sockets)
+      setsid iperf -s -u -B 239.1.1.1%eth1 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -B 232.1.1.1%eth1 -H 10.1.3.10 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -B 239.2.2.2%eth1 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -V -B ff05::1%eth1 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -V -B ff3e::1%eth1 -H 2001:db8:1:3::10 >/dev/null 2>&1 < /dev/null &
+  - name: RCV2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1140, 400]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 10.1.5.10/24 dev eth1
+      ip -6 addr add 2001:db8:1:5::10/64 dev eth1 nodad
+      ip route add 10.0.0.0/8 via 10.1.5.1
+      ip route add 224.0.0.0/4 dev eth1
+      ip -6 route add 2001:db8::/32 via 2001:db8:1:5::1
+      # receivers: join the test groups (IGMP / MLD reports come from these sockets)
+      setsid iperf -s -u -B 239.1.1.1%eth1 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -B 232.1.1.1%eth1 -H 10.1.3.10 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -B 239.2.2.2%eth1 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -V -B ff05::1%eth1 >/dev/null 2>&1 < /dev/null &
+      setsid iperf -s -u -V -B ff3e::1%eth1 -H 2001:db8:1:3::10 >/dev/null 2>&1 < /dev/null &
+links:
+  - [SRC, eth1, R3, GigabitEthernet3, "source LAN · 10.1.3.0/24"]
+  - [R3, GigabitEthernet2, R1, GigabitEthernet0/0/0/0]
+  - [R1, GigabitEthernet0/0/0/1, R2, GigabitEthernet0/0/0/0]
+  - [R2, GigabitEthernet0/0/0/1, R4, GigabitEthernet2]
+  - [R2, GigabitEthernet0/0/0/2, R5, GigabitEthernet0/0/0/0]
+  - [R4, GigabitEthernet3, RCV1, eth1, "receiver LAN · 10.1.4.0/24"]
+  - [R5, GigabitEthernet0/0/0/1, RCV2, eth1, "receiver LAN · 10.1.5.0/24"]
+annotations:
+  - {id: core, type: group, x: 220, y: 60, w: 840, h: 480, text: "DUAL-STACK CORE · IS-IS (IPv6 multi-topology) · IOS XR: R1, R2, R5 · IOS XE: R3, R4", color: blue, locked: true}
+  - {id: legend, type: text, x: 0, y: 580, w: 1200, h: 40, text: "Groups: 239.1.1.1 PIM-SM · 232.1.1.1 SSM · 239.2.2.2 BIDIR · ff05::1 PIMv6 SM · ff3e::1 IPv6 SSM — source SRC 10.1.3.10 / 2001:db8:1:3::10", color: gray, locked: true}

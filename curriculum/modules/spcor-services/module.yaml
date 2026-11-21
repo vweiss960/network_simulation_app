@@ -10,7 +10,7 @@ track: service_provider
 blueprint: "CCNP SPCOR 350-501 · 1.5, 1.7, 3.1, 4.2–4.5"
 tags: [ccnp-spcor, mpls, ldp, l3vpn, l2vpn, multicast, qos, security, iosxr, iosxe]
 status: published
-version: "1.4"
+version: "1.5"
 author: Phanero Labs
 lessons:
   - lesson: mpls-ldp
@@ -41,3 +41,9 @@ lessons:
       - 4.2.b IEEE 802.1ad, IEEE 802.1ah, and ITU G.8032
       - 4.2.c Ethernet OAM
       - 4.2.d VLAN tag manipulation
+  - lesson: multicast-pim-igmp-mld
+    section: "4.4"
+    title: Implement multicast services
+    objectives:
+      - 4.4.a PIM (PIM-SM, PIM-SSM, and PIM-BIDIR)
+      - 4.4.b IGMP v1/v2/v3 and MLD

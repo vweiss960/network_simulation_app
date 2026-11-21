@@ -20,8 +20,13 @@ This module builds what it *sells* on top of it:
    XR-to-XE E-Line (signalling only: XRd has no L2 data plane); E-Tree and
    802.1ah PBB on XR as configuration and state; G.8032 in the readings.
 
-More lessons follow, in this order: multicast (4.4), QoS (4.5), control plane
-security (1.5) and data plane security (1.7).
+5. **Multicast (4.4)**: PIM sparse mode with a static RP on IOS XR, IGMPv3,
+   SSM, PIM-BIDIR with its designated-forwarder election, BSR, and IPv6
+   multicast with PIMv6 and MLDv2, across an IOS XR core with IOS XR and
+   IOS XE last-hop routers and real source / receiver traffic.
+
+More lessons follow, in this order: QoS (4.5), control plane security (1.5)
+and data plane security (1.7).
 
 ## How to work through it
 

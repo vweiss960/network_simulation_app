@@ -1,0 +1,500 @@
+- id: pim-sm
+  title: "PIM sparse mode with a static RP on IOS XR"
+  body: |
+    SRC (`10.1.3.10`) is already sending to **239.1.1.1**, and RCV1 and RCV2
+    have joined it, but no router runs multicast yet. Build **PIM sparse mode
+    (PIM-SM)** across the core, with **R1 (`1.1.1.1`) as the rendezvous point
+    (RP)** for every group.
+
+    Sparse mode is explicit-join: nothing is forwarded until a receiver asks.
+
+    1. The last-hop router (R4, R5) hears RCV1's / RCV2's IGMP report and sends
+       a PIM **(\*,G) join** hop by hop towards the **RP**, building the shared
+       tree (RPT).
+    2. The first-hop router (R3) sees SRC's traffic, **registers** it to the RP
+       (unicast-encapsulated), and the RP joins the source: an **(S,G)** tree
+       from R3.
+    3. Once traffic flows, the last-hop routers **switch over to the
+       shortest-path tree (SPT)** straight to the source (default: on the
+       first packet), and prune the source off the shared tree.
+
+    Every join is sent to the **RPF neighbor**: the next hop towards the RP or
+    source in the *unicast* routing table (IS-IS here). Multicast forwarding
+    checks each packet against it (the **RPF check**).
+
+    | | IOS XR (R1, R2, R5) | IOS XE (R3, R4) |
+    |---|---|---|
+    | Enable | `multicast-routing` → `address-family ipv4` → `interface all enable` | `ip multicast-routing distributed` |
+    | PIM on interfaces | automatic on multicast-enabled interfaces | `ip pim sparse-mode` on Loopback0 and each core / LAN interface |
+    | Static RP | `router pim` → `address-family ipv4` → `rp-address 1.1.1.1` | `ip pim rp-address 1.1.1.1` |
+
+    IGMP comes up by itself on every multicast interface.
+  hints:
+    - "XR (all three): `multicast-routing` → `address-family ipv4` → `interface all enable`; `router pim` → `address-family ipv4` → `rp-address 1.1.1.1`. Commit."
+    - "XE (R3, R4): `ip multicast-routing distributed`, `ip pim rp-address 1.1.1.1`, and `ip pim sparse-mode` on Loopback0, Gi2 and Gi3."
+    - "Verify: XR `show pim neighbor`, `show pim topology 239.1.1.1`, `show mrib route 239.1.1.1`; XE `show ip pim neighbor`, `show ip mroute 239.1.1.1`, `show ip pim rp mapping`."
+  solution:
+    R1: |
+      multicast-routing
+       address-family ipv4
+        interface all enable
+       !
+      !
+      router pim
+       address-family ipv4
+        rp-address 1.1.1.1
+       !
+      !
+    R2: |
+      multicast-routing
+       address-family ipv4
+        interface all enable
+       !
+      !
+      router pim
+       address-family ipv4
+        rp-address 1.1.1.1
+       !
+      !
+    R5: |
+      multicast-routing
+       address-family ipv4
+        interface all enable
+       !
+      !
+      router pim
+       address-family ipv4
+        rp-address 1.1.1.1
+       !
+      !
+    R3: |
+      ip multicast-routing distributed
+      ip pim rp-address 1.1.1.1
+      interface Loopback0
+       ip pim sparse-mode
+      interface GigabitEthernet2
+       ip pim sparse-mode
+      interface GigabitEthernet3
+       ip pim sparse-mode
+    R4: |
+      ip multicast-routing distributed
+      ip pim rp-address 1.1.1.1
+      interface Loopback0
+       ip pim sparse-mode
+      interface GigabitEthernet2
+       ip pim sparse-mode
+      interface GigabitEthernet3
+       ip pim sparse-mode
+  checks:
+    - type: cli
+      device: R2
+      command: show pim neighbor
+      expect:
+        - {regex: '10\.0\.12\.1\s'}
+        - {regex: '10\.0\.24\.2\s'}
+        - {regex: '10\.0\.25\.2\s'}
+      describe: "R2 (XR): PIM neighbors R1, R4 and R5"
+    - type: cli
+      device: R4
+      command: show ip mroute 239.1.1.1
+      expect:
+        - {regex: '\(10\.1\.3\.10, 239\.1\.1\.1\)'}
+        - {regex: 'GigabitEthernet3, Forward'}
+      describe: "R4 (XE): (10.1.3.10, 239.1.1.1) state, forwarding to RCV1 on Gi3"
+    - type: cli
+      device: R5
+      command: show mrib route 239.1.1.1
+      expect:
+        - {regex: '\(10\.1\.3\.10,239\.1\.1\.1\)'}
+        - {regex: 'GigabitEthernet0/0/0/1 Flags:.*F'}
+      describe: "R5 (XR): (10.1.3.10, 239.1.1.1) in the MRIB, forwarding to RCV2 on Gi0/0/0/1"
+    - type: cli
+      device: RCV1
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.1.1.1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV1 receives the 239.1.1.1 stream (via R3 → R1 → R2 → R4)"
+    - type: cli
+      device: RCV2
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.1.1.1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV2 receives the 239.1.1.1 stream (via R3 → R1 → R2 → R5)"
+
+- id: igmp
+  title: "IGMP versions on the last-hop routers"
+  body: |
+    Receivers tell their router which groups they want with **IGMP** (IPv4)
+    or **MLD** (IPv6):
+
+    | | Membership report | Leave | Source filtering |
+    |---|---|---|---|
+    | IGMPv1 | Yes | No (membership times out, ~3 minutes) | No |
+    | IGMPv2 | Yes | **Leave Group**, then a group-specific query | No |
+    | IGMPv3 | Yes, with **INCLUDE / EXCLUDE** source lists | State change reports | **Yes**: required for SSM |
+
+    One router per LAN, the **querier** (lowest IP address in v2/v3), sends
+    the queries. A host answers with the version of the queries it hears, so
+    a v2 querier pushes its hosts down to v2 reports.
+
+    IOS XE runs **IGMPv2** by default, IOS XR **IGMPv3**. RCV1 wants a
+    source-specific channel (next task), which needs v3. Make **R4 Gi3**
+    IGMPv3, and check what both last-hop routers now know about their
+    receivers.
+  hints:
+    - "XE (R4): `interface GigabitEthernet3` → `ip igmp version 3`."
+    - "XR (R5) is already v3: `show igmp interface GigabitEthernet0/0/0/1`; you could set it explicitly with `router igmp` → `interface GigabitEthernet0/0/0/1` → `version 3`."
+    - "Verify: XE `show ip igmp interface GigabitEthernet3`, `show ip igmp groups detail` (group mode INCLUDE/EXCLUDE, source list); XR `show igmp groups`, `show igmp groups 232.1.1.1 detail`."
+  solution:
+    R4: |
+      interface GigabitEthernet3
+       ip igmp version 3
+  checks:
+    - type: cli
+      device: R4
+      command: show ip igmp interface GigabitEthernet3
+      expect:
+        - {regex: 'Current IGMP host version is 3'}
+        - {regex: 'Current IGMP router version is 3'}
+      describe: "R4 (XE): IGMPv3 on the receiver LAN"
+    - type: cli
+      device: R4
+      command: show ip igmp groups 239.1.1.1 detail
+      expect:
+        - {regex: 'Group mode:\s+EXCLUDE'}
+      describe: "R4 (XE): RCV1 reports 239.1.1.1 with an IGMPv3 EXCLUDE (any-source) report"
+    - type: cli
+      device: R5
+      command: show igmp groups GigabitEthernet0/0/0/1
+      expect:
+        - {regex: '239\.1\.1\.1'}
+        - {regex: '232\.1\.1\.1'}
+      describe: "R5 (XR): RCV2's groups learned with IGMP on Gi0/0/0/1"
+
+- id: ssm
+  title: "Source-specific multicast (SSM)"
+  body: |
+    With **SSM** a receiver subscribes to a **channel**, *(source, group)*,
+    instead of a group: RCV1 and RCV2 ask for **(10.1.3.10, 232.1.1.1)** with
+    IGMPv3 INCLUDE reports. The last-hop router joins **straight towards the
+    source**: no RP, no shared tree, no register. The default SSM range is
+    **232.0.0.0/8**.
+
+    - IOS XR treats 232/8 as SSM by default (`router pim` → `address-family
+      ipv4` → `ssm range <acl>` changes it).
+    - IOS XE needs `ip pim ssm default` (or `ip pim ssm range <acl>`) on
+      **every** router. Without it, 232.1.1.1 is just another sparse-mode group.
+
+    Enable SSM on R3 and R4.
+
+    > **Wait for RCV1.** A host that heard IGMPv2 queries stays in **IGMPv2
+    > compatibility mode** for a few minutes after the querier moves to v3
+    > (the *older version querier present* timer: robustness × query
+    > interval + response time, about 260 s). Until then RCV1 sends v2
+    > reports, which carry no source, and IOS XE ignores v2 reports for SSM
+    > groups. Watch `show ip igmp groups 232.1.1.1 detail` on R4: the channel
+    > appears (group mode INCLUDE, source 10.1.3.10) once RCV1 switches to v3.
+    > For hosts that can't run v3, IOS XE offers **SSM mapping**
+    > (`ip igmp ssm-map enable` + `ip igmp ssm-map static <acl> <source>`).
+  hints:
+    - "XE (R3, R4): `ip pim ssm default`."
+    - "No 232.1.1.1 on R4 yet? RCV1 may still be in IGMPv2 compatibility mode (see the note): give it a few minutes after the IGMP task."
+    - "Verify: XE `show ip mroute 232.1.1.1` (an (S,G) with flag `s`, and no (*,G) through the RP), `show ip igmp groups 232.1.1.1 detail` (INCLUDE, source 10.1.3.10); XR `show pim topology 232.1.1.1`, `show mrib route 232.1.1.1`."
+  solution:
+    R3: |
+      ip pim ssm default
+    R4: |
+      ip pim ssm default
+  checks:
+    - type: cli
+      device: R4
+      command: show ip mroute 232.1.1.1
+      expect:
+        - {regex: '\(10\.1\.3\.10, 232\.1\.1\.1\), .*flags: s'}
+        - {regex: 'GigabitEthernet3, Forward'}
+      describe: "R4 (XE): an SSM (S,G) for 232.1.1.1, forwarding to RCV1"
+    - type: cli
+      device: R4
+      command: show ip igmp groups 232.1.1.1 detail
+      expect:
+        - {regex: 'Group mode:\s+INCLUDE'}
+        - {regex: '10\.1\.3\.10\s'}
+      describe: "R4 (XE): RCV1's IGMPv3 INCLUDE report for source 10.1.3.10"
+    - type: cli
+      device: R5
+      command: show mrib route 232.1.1.1
+      expect:
+        - {regex: '\(10\.1\.3\.10,232\.1\.1\.1\)'}
+        - {regex: 'GigabitEthernet0/0/0/1 Flags:.*F'}
+      describe: "R5 (XR): (10.1.3.10, 232.1.1.1) forwarding to RCV2"
+    - type: cli
+      device: RCV1
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 232.1.1.1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV1 receives the SSM channel (10.1.3.10, 232.1.1.1)"
+    - type: cli
+      device: RCV2
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 232.1.1.1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV2 receives the SSM channel"
+
+- id: bidir
+  title: "PIM bidirectional (BIDIR) with its own RP"
+  body: |
+    **PIM-BIDIR** is for groups with many sources (many-to-many: trading
+    feeds, conferencing): there are **no (S,G) entries and no registers**. All
+    traffic flows on one shared tree rooted at the RP, *up* towards the RP and
+    *down* to receivers.
+
+    Instead of the RPF check, each link elects a **designated forwarder (DF)**:
+    the router with the best route to the RP, the only one that forwards
+    traffic towards the RP on that link. The RP address only has to be
+    *routed*, it doesn't even have to belong to a router (a "phantom RP").
+
+    Make **239.2.0.0/16** a BIDIR range with RP **2.2.2.22** (R2's Loopback1),
+    on every router. The other groups keep R1 as their sparse-mode RP.
+  hints:
+    - "XR (R1, R2, R5): `ipv4 access-list BIDIR-GROUPS` → `10 permit ipv4 any 239.2.0.0 0.0.255.255`; `router pim` → `address-family ipv4` → `rp-address 2.2.2.22 BIDIR-GROUPS bidir`."
+    - "XE (R3, R4): `ip pim bidir-enable`, `ip access-list standard BIDIR-GROUPS` → `permit 239.2.0.0 0.0.255.255`, `ip pim rp-address 2.2.2.22 BIDIR-GROUPS bidir`."
+    - "Verify: XE `show ip pim rp mapping` (2.2.2.22, bidir), `show ip mroute 239.2.2.2` (a (*,G) with flag `B`, no (S,G)), `show ip pim interface df`; XR `show pim group-map`, `show pim df winner`, `show mrib route 239.2.2.2`."
+  solution:
+    R1: |
+      ipv4 access-list BIDIR-GROUPS
+       10 permit ipv4 any 239.2.0.0 0.0.255.255
+      !
+      router pim
+       address-family ipv4
+        rp-address 2.2.2.22 BIDIR-GROUPS bidir
+       !
+      !
+    R2: |
+      ipv4 access-list BIDIR-GROUPS
+       10 permit ipv4 any 239.2.0.0 0.0.255.255
+      !
+      router pim
+       address-family ipv4
+        rp-address 2.2.2.22 BIDIR-GROUPS bidir
+       !
+      !
+    R5: |
+      ipv4 access-list BIDIR-GROUPS
+       10 permit ipv4 any 239.2.0.0 0.0.255.255
+      !
+      router pim
+       address-family ipv4
+        rp-address 2.2.2.22 BIDIR-GROUPS bidir
+       !
+      !
+    R3: |
+      ip pim bidir-enable
+      ip access-list standard BIDIR-GROUPS
+       permit 239.2.0.0 0.0.255.255
+      ip pim rp-address 2.2.2.22 BIDIR-GROUPS bidir
+    R4: |
+      ip pim bidir-enable
+      ip access-list standard BIDIR-GROUPS
+       permit 239.2.0.0 0.0.255.255
+      ip pim rp-address 2.2.2.22 BIDIR-GROUPS bidir
+  checks:
+    - type: cli
+      device: R4
+      command: show ip pim rp mapping 239.2.2.2
+      expect:
+        - {regex: '2\.2\.2\.22'}
+        - {regex: '(?i)bidir'}
+      describe: "R4 (XE): 239.2.2.2 maps to the BIDIR RP 2.2.2.22"
+    - type: cli
+      device: R4
+      command: show ip mroute 239.2.2.2
+      expect:
+        - {regex: '\(\*, 239\.2\.2\.2\), .*flags: .*B'}
+        - {not_regex: '\(10\.1\.3\.10, 239\.2\.2\.2\)'}
+      describe: "R4 (XE): a bidirectional (*,G) for 239.2.2.2 and no (S,G)"
+    - type: cli
+      device: R2
+      command: show pim group-map 239.2.2.2
+      expect:
+        - {regex: 'BD\s+config\s+\d+\s+2\.2\.2\.22'}
+      describe: "R2 (XR): 239.2.2.2 maps to the BIDIR (BD) RP 2.2.2.22"
+    - type: cli
+      device: R2
+      command: show pim df winner
+      expect:
+        - {regex: '2\.2\.2\.22\s+GigabitEthernet0/0/0/1\s+10\.0\.24\.1\s'}
+      describe: "R2 (XR): R2 is the designated forwarder on its link to R4"
+    - type: cli
+      device: R4
+      command: show ip pim interface df
+      expect:
+        - {regex: 'GigabitEthernet3\s+2\.2\.2\.22\s+\*10\.1\.4\.1\s'}
+      describe: "R4 (XE): R4 is the designated forwarder on RCV1's LAN"
+    - type: cli
+      device: RCV1
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.2.2.2 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV1 receives the BIDIR group 239.2.2.2"
+    - type: cli
+      device: RCV2
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.2.2.2 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV2 receives the BIDIR group 239.2.2.2 (IOS XR last hop)"
+
+- id: bsr
+  title: "Dynamic RP discovery with BSR"
+  body: |
+    Static RPs have to be configured on every router. The **bootstrap router
+    (BSR)** mechanism (PIMv2, RFC 5059) distributes RP information instead:
+
+    - **Candidate RPs** unicast *C-RP advertisements* (address, group ranges,
+      priority) to the elected BSR.
+    - **Candidate BSRs** elect one BSR (highest priority, then highest
+      address), which floods the **RP set** hop by hop in *bootstrap
+      messages* to every PIM router.
+    - Every router then runs the same hash function to pick an RP per group.
+
+    (Cisco's older **Auto-RP** does the same with candidate RPs announcing to
+    224.0.1.39 and a *mapping agent* announcing to 224.0.1.40.)
+
+    Make **R1** both candidate BSR and candidate RP for **239.1.0.0/16** only,
+    so the BIDIR range keeps its static RP. Learned RPs take precedence over
+    static ones on IOS XE.
+  hints:
+    - "XR (R1): `ipv4 access-list BSR-GROUPS` → `10 permit ipv4 any 239.1.0.0 0.0.255.255`; `router pim` → `address-family ipv4` → `bsr candidate-bsr 1.1.1.1` and `bsr candidate-rp 1.1.1.1 group-list BSR-GROUPS`."
+    - "Nothing to configure elsewhere: every PIM router listens to bootstrap messages."
+    - "Verify: XE `show ip pim rp mapping` (\"Info source: 1.1.1.1 ... via bootstrap\"), `show ip pim bsr-router`; XR `show pim bsr election`, `show pim bsr rp-cache`, `show pim group-map`."
+  solution:
+    R1: |
+      ipv4 access-list BSR-GROUPS
+       10 permit ipv4 any 239.1.0.0 0.0.255.255
+      !
+      router pim
+       address-family ipv4
+        bsr candidate-bsr 1.1.1.1
+        bsr candidate-rp 1.1.1.1 group-list BSR-GROUPS
+       !
+      !
+  checks:
+    - type: cli
+      device: R4
+      command: show ip pim rp mapping
+      expect:
+        - {regex: '(?s)239\.1\.0\.0/16.{0,200}?RP 1\.1\.1\.1.{0,200}?(?i:bootstrap)'}
+      describe: "R4 (XE): learns R1 as RP for 239.1.0.0/16 from bootstrap messages"
+    - type: cli
+      device: R5
+      command: show pim bsr election
+      expect:
+        - {regex: '1\.1\.1\.1'}
+      describe: "R5 (XR): R1 (1.1.1.1) is the elected BSR"
+    - type: cli
+      device: RCV1
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.1.1.1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV1 still receives 239.1.1.1 with the learned RP"
+
+- id: ipv6
+  title: "IPv6 multicast: PIMv6 and MLDv2"
+  body: |
+    IPv6 multicast uses the same PIM (**PIMv6**), and **MLD** instead of IGMP:
+    **MLDv1** ≈ IGMPv2, **MLDv2** ≈ IGMPv3 (source filtering, needed for
+    SSM). Both platforms run MLDv2 by default, and IPv6 SSM uses
+    **ff3x::/32** by default.
+
+    SRC also sends to **ff05::1** (site-local scope, sparse mode) and the SSM
+    channel **(2001:db8:1:3::10, ff3e::1)**. Enable IPv6 multicast routing on
+    every router with **R1's IPv6 loopback, `2001:db8::1`, as the RP**.
+
+    | | IOS XR | IOS XE |
+    |---|---|---|
+    | Enable | `multicast-routing` → `address-family ipv6` → `interface all enable` | `ipv6 multicast-routing` (PIMv6 and MLD on every IPv6 interface) |
+    | Static RP | `router pim` → `address-family ipv6` → `rp-address 2001:db8::1` | `ipv6 pim rp-address 2001:DB8::1` |
+
+    (IPv6 also offers **embedded RP**: groups ff7x::/16 carry the RP address
+    inside the group address itself, so no RP configuration is needed.)
+  hints:
+    - "XR (R1, R2, R5): `multicast-routing` → `address-family ipv6` → `interface all enable`; `router pim` → `address-family ipv6` → `rp-address 2001:db8::1`."
+    - "XE (R3, R4): `ipv6 multicast-routing`, `ipv6 pim rp-address 2001:DB8::1`."
+    - "Verify: XE `show ipv6 pim neighbor`, `show ipv6 mld groups`, `show ipv6 mroute ff05::1`; XR `show pim ipv6 neighbor`, `show mld groups`, `show mrib ipv6 route ff05::1`."
+  solution:
+    R1: |
+      multicast-routing
+       address-family ipv6
+        interface all enable
+       !
+      !
+      router pim
+       address-family ipv6
+        rp-address 2001:db8::1
+       !
+      !
+    R2: |
+      multicast-routing
+       address-family ipv6
+        interface all enable
+       !
+      !
+      router pim
+       address-family ipv6
+        rp-address 2001:db8::1
+       !
+      !
+    R5: |
+      multicast-routing
+       address-family ipv6
+        interface all enable
+       !
+      !
+      router pim
+       address-family ipv6
+        rp-address 2001:db8::1
+       !
+      !
+    R3: |
+      ipv6 multicast-routing
+      ipv6 pim rp-address 2001:DB8::1
+    R4: |
+      ipv6 multicast-routing
+      ipv6 pim rp-address 2001:DB8::1
+  checks:
+    - type: cli
+      device: R4
+      command: show ipv6 mld groups
+      expect:
+        - {regex: '(?i)FF05::1\s'}
+        - {regex: '(?i)FF3E::1\s'}
+      describe: "R4 (XE): MLD groups ff05::1 and ff3e::1 from RCV1"
+    - type: cli
+      device: R4
+      command: show ipv6 mroute ff05::1
+      expect:
+        - {regex: '(?i)\(2001:DB8:1:3::10, FF05::1\)'}
+      describe: "R4 (XE): (2001:db8:1:3::10, ff05::1) state"
+    - type: cli
+      device: R5
+      command: show mld groups GigabitEthernet0/0/0/1
+      expect:
+        - {regex: '(?i)ff05::1'}
+      describe: "R5 (XR): RCV2's MLD groups"
+    - type: cli
+      device: RCV1
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst ff05::1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV1 receives the IPv6 stream ff05::1"
+    - type: cli
+      device: RCV1
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst ff3e::1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV1 receives the IPv6 SSM channel (2001:db8:1:3::10, ff3e::1)"
+    - type: cli
+      device: RCV2
+      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst ff05::1 2>&1
+      expect:
+        - {regex: '3 packets captured'}
+      describe: "RCV2 receives ff05::1 (IOS XR last hop)"
