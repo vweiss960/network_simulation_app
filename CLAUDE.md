@@ -115,6 +115,14 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   existing SQLite DB automatically (additive only).
 
 ### Device access (`services/device_exec.py`, `routes/device.py`)
+- Credentials: new Cisco devices are provisioned with `admin` / `cisco1`
+  (`DeviceKind.default_*`; `create_node` stores them as
+  `credentials["provision"]`). XRd gets them in its base config (so every
+  new XRd has a startup config); vrnetlab VMs via clab `env`
+  `USERNAME`/`PASSWORD`. Devices without `provision` predate this and keep the
+  image's own login (`builtin_*`: XRd clab/clab@123, XE admin/admin) with
+  their YAML unchanged. Editing the login on the canvas only changes what the
+  app logs in with, never the device's definition.
 - `target_for(db, topology, node)` resolves mgmt IP (lease or container IP),
   credentials (`lab_view.node_credentials`) and family; every caller (REST,
   snapshots, future grader / agent) goes through it.

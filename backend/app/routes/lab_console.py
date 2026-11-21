@@ -139,7 +139,7 @@ async def console_ws(
     # it doesn't have a built-in REPL. Wrap it in a small bash loop so the
     # user gets a prompt and can type commands one at a time. For full
     # interactive XR CLI (config mode, tab completion, history), SSH to
-    # the node — clab/clab@123 by default.
+    # the node (lab_view.node_credentials).
     if entrypoint == ["/pkg/bin/xr_cli"]:
         cmd_list = [
             "bash", "-c",

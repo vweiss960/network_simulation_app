@@ -67,6 +67,8 @@ def create_node(db: Session, topology_id: int, *, template_id: int | None = None
         node.network = network or ({"mode": "internal"} if icon == "switch" else {"mode": "access", "nic": "", "vlan": 0})
     else:
         node.interfaces = k.interfaces(count)
+        if k.default_user and (k.default_user, k.default_password) != k.builtin_credentials:
+            node.credentials = {"provision": {"username": k.default_user, "password": k.default_password}}
     db.add(node)
     db.flush()
     return node

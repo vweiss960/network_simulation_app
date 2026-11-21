@@ -206,7 +206,7 @@ function NodeInspector({ node }: { node: Device }) {
         <textarea className={`${field} font-mono text-xs h-48`} spellCheck={false} value={config}
           onChange={e => setConfig(e.target.value)}
           placeholder={node.kind === 'cisco_xrd'
-            ? '! Merged after the containerlab defaults (user clab/clab@123, SSH, NETCONF, gRPC)\ninterface Loopback0\n ipv4 address 10.0.0.1 255.255.255.255'
+            ? '! Merged after the containerlab defaults (login user, SSH, NETCONF, gRPC)\ninterface Loopback0\n ipv4 address 10.0.0.1 255.255.255.255'
             : 'Day-0 configuration applied when the device boots'} />
         {config !== nextConfig && (
           <>

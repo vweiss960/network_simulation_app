@@ -15,7 +15,10 @@ def test_yaml_uses_node_kind_image_and_kernel_names(db):
     make_link(db, t, p1, pe)
     doc = _doc(db, t)
     assert doc["name"] == f"plabs-{t.id}-Core-Lab"
-    assert doc["topology"]["nodes"]["P1"] == {"kind": "cisco_xrd", "image": "ios-xr/xrd-control-plane:25.4.2"}
+    p1_entry = doc["topology"]["nodes"]["P1"]
+    assert p1_entry["kind"] == "cisco_xrd" and p1_entry["image"] == "ios-xr/xrd-control-plane:25.4.2"
+    assert p1_entry["startup-config"].startswith("configs/P1-")       # carries the admin/cisco1 login
+    assert doc["topology"]["nodes"]["PE1"]["env"] == {"USERNAME": "admin", "PASSWORD": "cisco1"}
     # Every port is pre-provisioned as a host half; cables are host patches.
     links = [l["endpoints"] for l in doc["topology"]["links"]]
     assert links[0] == ["P1:Gi0-0-0-0", f"host:pp{t.id}n{p1.id}p0"]
@@ -63,7 +66,7 @@ def test_xrd_startup_config_keeps_clab_defaults(db, tmp_path, monkeypatch):
     ref = yaml.safe_load(spec["yaml"])["topology"]["nodes"]["P1"]["startup-config"]
     assert ref.startswith("configs/P1-") and ref.endswith(".cfg")
     body = open(spec["rendered_config_paths"][0]).read()
-    assert "username clab" in body and "ssh server netconf" in body
+    assert "username admin\n" in body and " secret cisco1\n" in body and "ssh server netconf" in body
     assert "ipv4 address 1.1.1.1/32" in body and body.rstrip().endswith("end")
 
 
@@ -106,3 +109,40 @@ def test_frr_startup_config_is_mounted_and_shell_lines_run(db, tmp_path, monkeyp
     text = (tmp_path / f"plabs-{t.id}-T" / src).read_text()
     assert "router isis CORE" in text and "ip link" not in text
     assert cy.frr_startup("linux", "plabs/host:latest", "x") is None
+
+
+def test_devices_made_before_provisioning_keep_the_image_login(db):
+    """Devices with no stored credentials predate provisioning: their YAML
+    must not change (that would recreate them) and the app logs in with the
+    image's own credentials."""
+    from app.services.lab_view import node_credentials
+    t = make_topology(db)
+    p1 = make_node(db, t, name="P1", kind="cisco_xrd", image="x")
+    pe = make_node(db, t, name="PE1", kind="cisco_csr1000v", image="vrnetlab/csr")
+    assert node_credentials(p1) == ("admin", "cisco1") and node_credentials(pe) == ("admin", "cisco1")
+    p1.credentials, pe.credentials = {}, {}
+    db.commit()
+    nodes = _doc(db, t)["topology"]["nodes"]
+    assert nodes["P1"] == {"kind": "cisco_xrd", "image": "x"} and "env" not in nodes["PE1"]
+    assert node_credentials(p1) == ("clab", "clab@123") and node_credentials(pe) == ("admin", "admin")
+
+
+def test_editing_the_login_never_changes_the_device(db):
+    from app.services.lab_view import node_credentials
+    t = make_topology(db)
+    pe = make_node(db, t, name="PE1", kind="cisco_csr1000v", image="vrnetlab/csr")
+    before = generate_clab_yaml(db, t.id)["yaml"]
+    pe.credentials = {**pe.credentials, "username": "netops", "password": "x"}
+    db.commit()
+    assert generate_clab_yaml(db, t.id)["yaml"] == before
+    assert node_credentials(pe) == ("netops", "x")
+
+
+def test_captured_starting_config_drops_the_platform_login():
+    from app.services.lessons import starting_config_from_running
+    xr = "username admin\n group root-lr\n secret 10 $6$abc\n!\nusername admin2\n group root-lr\n!\nrouter isis 1\n!\n"
+    out = starting_config_from_running("cisco_xrd", xr)
+    assert "username admin\n" not in out and "username admin2" in out and "router isis 1" in out
+    xe = "username admin privilege 15 password 0 cisco1\nusername bob secret 0 x\nrouter ospf 1\n"
+    out = starting_config_from_running("cisco_csr1000v", xe)
+    assert "username admin " not in out and "username bob" in out

@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.config import LAB_STATE_DIR
 from app.models.topology import Topology
-from app.services.lab_view import compute_lab_view
+from app.models.node_instance import NodeInstance
+from app.services.lab_view import compute_lab_view, provision_credentials
 
 
 def _first_host(subnet: str, default: str) -> str:
@@ -25,7 +26,8 @@ def _first_host(subnet: str, default: str) -> str:
     return default
 
 
-def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str, mgmt_distance: int | None = None) -> str:
+def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str, mgmt_distance: int | None = None,
+                    username: str = "clab", password: str = "clab@123") -> str:
     """containerlab's own first-boot config for cisco_xrd. A user
     startup-config REPLACES clab's defaults on XRd, so we prepend this to keep
     the clab user, SSH, NETCONF, gRPC and the mgmt default route.
@@ -37,10 +39,10 @@ def xrd_base_config(node_name: str, gw_v4: str, gw_v6: str, mgmt_distance: int |
         "!\n"
         f"hostname {node_name}\n"
         "!\n"
-        "username clab\n"
+        f"username {username}\n"
         " group root-lr\n"
         " group cisco-support\n"
-        " secret clab@123\n"
+        f" secret {password}\n"
         "!\n"
         "grpc\n"
         " port 9339\n"
@@ -178,11 +180,16 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
     clab_nodes: dict = {}
     included_nodes = []
     rendered_config_paths: list[str] = []
+    from app.services.device_kinds import get_kind as _gk
     for n in view["nodes"]:
         if n["is_bridge"]:
             continue    # a host Linux bridge (lab_service prepares it); ports join it in apply_patches
         entry: dict = {"kind": n["lab_kind"], "image": n["lab_image"]}
-        from app.services.device_kinds import get_kind as _gk
+        node_row = db.get(NodeInstance, n["id"])
+        creds = provision_credentials(node_row) if node_row else None   # None: the image's own
+        if creds and _gk(n["lab_kind"]).is_vm:
+            # vrnetlab: containerlab builds --username/--password from these.
+            entry["env"] = {"USERNAME": creds[0], "PASSWORD": creds[1]}
         body = day0_config(_gk(n["lab_kind"]).family, n.get("startup_config") or "").strip("\n")
         cmds = linux_exec_commands(n["lab_kind"], n["lab_image"], body)
         if cmds is not None:
@@ -199,7 +206,9 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
         # In a lesson lab every XRd gets our base config (floating mgmt
         # default), even a blank one — clab's own default would shadow OSPF.
         learning_lab = bool(topology.lesson_id or getattr(topology, "scenario_id", None))
-        lesson_xrd = learning_lab and n["lab_kind"] == "cisco_xrd"
+        # Same for an XRd provisioned with non-default credentials: they live
+        # in that base config.
+        lesson_xrd = n["lab_kind"] == "cisco_xrd" and (learning_lab or bool(creds))
         if body or lesson_xrd:
             configs_dir.mkdir(parents=True, exist_ok=True)
             text = body + "\n" if body else ""
@@ -207,8 +216,8 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
                 # Lesson labs: the mgmt default must not shadow the lab's own
                 # routing (kept as-is for other labs: changing it would
                 # recreate their XRd devices).
-                text = xrd_base_config(n["clab_name"], gw_v4, gw_v6,
-                                       254 if learning_lab else None) + text + "end\n"
+                text = xrd_base_config(n["clab_name"], gw_v4, gw_v6, 254 if learning_lab else None,
+                                       *(creds or ())) + text + "end\n"
             # Content hash in the file name: a changed startup config changes
             # the YAML, so a reconcile recreates exactly that device.
             digest = hashlib.sha1(text.encode()).hexdigest()[:8]

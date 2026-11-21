@@ -508,6 +508,7 @@ def starting_config_from_running(kind: str, text: str) -> str:
     user, SSH / NETCONF / gRPC), which would carry this lab's addresses."""
     fam = get_kind(kind).family
     mgmt = get_kind(kind).mgmt_iface
+    user = get_kind(kind).default_user
     drop_blocks = ("username clab", "grpc", "line default", "netconf-yang agent", "ssh server", "hostname ",
                    f"interface {mgmt}", "vrf definition clab-mgmt", "ip vrf clab-mgmt") if fam != "linux" else ()
     out, skipping = [], False
@@ -516,7 +517,9 @@ def starting_config_from_running(kind: str, text: str) -> str:
             if line.startswith((" ", "\t")):
                 continue
             skipping = False
-        if drop_blocks and line.startswith(drop_blocks):
+        platform_user = user and fam != "linux" and (line == f"username {user}"
+                                                     or line.startswith(f"username {user} "))
+        if platform_user or (drop_blocks and line.startswith(drop_blocks)):
             skipping = True
             continue
         if mgmt and mgmt in line and fam != "linux":

@@ -11,6 +11,7 @@ from app.schemas.schemas import NodeCreate, NodeUpdate, NodeOut, NodePositions
 from app.services import lab_service
 from app.services.device_kinds import is_bridge
 from app.services.host_net import Segment
+from app.services.lab_view import node_credentials
 from app.services.topology_ops import (RESTART_FIELDS, TopologyError, check_interface_count, create_node,
                                        set_interface_count, set_network)
 
@@ -26,7 +27,7 @@ def node_out(n: NodeInstance) -> dict:
         "id": n.id, "topology_id": n.topology_id, "template_id": n.template_id,
         "name": n.name, "kind": n.kind, "image_ref": n.image_ref or "", "icon": n.icon or "router",
         "x": n.x or 0.0, "y": n.y or 0.0, "interfaces": n.interfaces,
-        "mgmt_ipv4": n.mgmt_ipv4 or "", "username": n.credentials.get("username", ""),
+        "mgmt_ipv4": n.mgmt_ipv4 or "", "username": "" if is_bridge(n.kind) else node_credentials(n)[0],
         "startup_config": n.startup_config or "",
         "min_memory_mb": n.min_memory_mb or 0, "min_cpu_cores": n.min_cpu_cores or 0,
         "color": n.color or "", "notes": n.notes or "",

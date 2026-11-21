@@ -45,8 +45,15 @@ class DeviceKind:
     kernel_iface: Callable[[int], str]
     config_iface: Callable[[int], str]
     mgmt_iface: str = "eth0"
+    # Credentials new devices of this kind are provisioned with (see
+    # topology_ops.create_node / clab_yaml). builtin_* = what the image /
+    # containerlab sets up by itself when we don't override it: devices
+    # created before provisioning existed (no "provision" in their
+    # credentials) still log in with those.
     default_user: str = ""
     default_password: str = ""
+    builtin_user: str | None = None
+    builtin_password: str | None = None
     # Command to run via `docker exec` for an interactive CLI (fallback when
     # the device can't be reached over SSH, and the primary path for linux).
     exec_cli: list[str] = field(default_factory=lambda: ["sh"])
@@ -67,6 +74,11 @@ class DeviceKind:
     # kind is recreated on a link change (see lab_service._recreate_plan).
     live_links: bool = False
 
+    @property
+    def builtin_credentials(self) -> tuple[str, str]:
+        return (self.default_user if self.builtin_user is None else self.builtin_user,
+                self.default_password if self.builtin_password is None else self.builtin_password)
+
     def interfaces(self, count: int) -> list[dict]:
         count = max(0, min(count, self.max_interfaces))
         return [
@@ -85,7 +97,7 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         kernel_iface=_pattern("Gi0-0-0-{n0}"),
         config_iface=_pattern("GigabitEthernet0/0/0/{n0}"),
         mgmt_iface="MgmtEth0/RP0/CPU0/0",
-        default_user="clab", default_password="clab@123",
+        default_user="admin", default_password="cisco1", builtin_user="clab", builtin_password="clab@123",
         exec_cli=["/pkg/bin/xr_cli"],
         boot_seconds=120, min_memory_mb=2048, min_cpu_cores=2,
         max_interfaces=16, default_interfaces=4,
@@ -102,7 +114,7 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         kernel_iface=_pattern("eth{n1}"),
         config_iface=_pattern("GigabitEthernet0/0/0/{n0}"),
         mgmt_iface="MgmtEth0/RP0/CPU0/0",
-        default_user="clab", default_password="clab@123",
+        default_user="admin", default_password="cisco1", builtin_user="clab", builtin_password="clab@123",
         exec_cli=["telnet", "127.0.0.1", "5000"],
         boot_seconds=600, min_memory_mb=16384, min_cpu_cores=4, is_vm=True,
         max_interfaces=16, default_interfaces=4,
@@ -114,7 +126,7 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         kernel_iface=_pattern("eth{n1}"),
         config_iface=_pattern("GigabitEthernet{n2}"),
         mgmt_iface="GigabitEthernet1",
-        default_user="admin", default_password="admin",
+        default_user="admin", default_password="cisco1", builtin_user="admin", builtin_password="admin",
         exec_cli=["telnet", "127.0.0.1", "5000"],
         boot_seconds=300, min_memory_mb=4096, min_cpu_cores=2, is_vm=True,
         max_interfaces=8, default_interfaces=4,
@@ -128,7 +140,7 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         kernel_iface=_pattern("eth{n1}"),
         config_iface=_pattern("GigabitEthernet1/0/{n1}"),
         mgmt_iface="GigabitEthernet0/0",
-        default_user="admin", default_password="admin",
+        default_user="admin", default_password="cisco1", builtin_user="admin", builtin_password="admin",
         exec_cli=["telnet", "127.0.0.1", "5000"],
         boot_seconds=720, min_memory_mb=18432, min_cpu_cores=4, is_vm=True,
         max_interfaces=24, default_interfaces=8,
@@ -142,7 +154,7 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         kernel_iface=_pattern("eth{n1}"),
         config_iface=_pattern("GigabitEthernet{n2}"),
         mgmt_iface="GigabitEthernet1",
-        default_user="admin", default_password="admin",
+        default_user="admin", default_password="cisco1", builtin_user="admin", builtin_password="admin",
         exec_cli=["telnet", "127.0.0.1", "5000"],
         boot_seconds=300, min_memory_mb=4096, min_cpu_cores=1, is_vm=True,
         max_interfaces=8, default_interfaces=4,
@@ -158,7 +170,7 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
         kernel_iface=_pattern("eth{n1}"),
         config_iface=_vios_name,
         mgmt_iface="GigabitEthernet0/0",
-        default_user="admin", default_password="admin",
+        default_user="admin", default_password="cisco1", builtin_user="admin", builtin_password="admin",
         exec_cli=["telnet", "127.0.0.1", "5000"],
         boot_seconds=180, min_memory_mb=768, min_cpu_cores=1, is_vm=True,
         max_interfaces=15, default_interfaces=4,

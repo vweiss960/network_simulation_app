@@ -31,9 +31,27 @@ def safe_lab_name(topology: Topology) -> str:
 
 
 def node_credentials(node: NodeInstance) -> tuple[str, str]:
+    """What the app logs in with: the node's own override, else what it was
+    provisioned with (new devices: the kind's default), else — a device made
+    before provisioning existed — the image's built-in credentials."""
     k = get_kind(node.kind)
     creds = node.credentials
-    return creds.get("username") or k.default_user, creds.get("password") or k.default_password
+    base = creds.get("provision") or {}
+    bu, bp = k.builtin_credentials
+    return (creds.get("username") or base.get("username") or bu,
+            creds.get("password") or base.get("password") or bp)
+
+
+def provision_credentials(node: NodeInstance) -> tuple[str, str] | None:
+    """Credentials the device must be booted with, when they differ from what
+    the image sets up by itself (None: leave the image's own). Fixed when the
+    device is created, so editing the login on the canvas never changes the
+    device's definition (which would recreate it)."""
+    p = node.credentials.get("provision") or {}
+    if not p.get("username"):
+        return None
+    pair = (p["username"], p.get("password") or "")
+    return None if pair == get_kind(node.kind).builtin_credentials else pair
 
 
 def compute_lab_view(db: Session, topology_id: int) -> dict:
