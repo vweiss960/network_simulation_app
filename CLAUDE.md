@@ -278,8 +278,10 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   PIM-SM multicast, enforces interface ACLs, and is a BGP flowspec controller (CSR installs
   the rules as client). XRd has **no** uRPF, input policing, LPTS policer config, CFM, G.8032
   or MACsec, and is **no L2VPN PE**: xconnects, bridge domains and VPLS PWs come up
-  (LDP-signalled, state up) but its l2transport ACs never receive a frame — XR is P-only
-  for L2 services (it label-switches other PEs' PWs fine). CSR 1000v does LDP sync / session protection / auth / label filtering, CoPP,
+  (LDP-signalled, state up) but the bridge domain / xconnect forwards nothing (AC and PW
+  counters stay 0; a local host MAC may show, learned on the RP, but never crosses a PW).
+  So an XRd PE is graded on signalling only (`l2vpn-carrier-ethernet` R2: VPLS member +
+  XR-to-XE E-Line), traffic between CSR PEs; it label-switches other PEs' PWs fine. CSR 1000v does LDP sync / session protection / auth / label filtering, CoPP,
   uRPF, MQC (police, shape, WRED), PIM SM/SSM/BIDIR, IGMPv3/MLD, EVC rewrite, 802.1ad,
   EoMPLS xconnect, VPLS VFI (bridge-domain), 802.1ad on EFPs, CFM **down MEPs only** (no `cfm mep` under
   a service instance → no up MEPs on xconnects), 802.3ah, flowspec client — but is capped at **1 Mb/s**

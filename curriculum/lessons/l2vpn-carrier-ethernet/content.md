@@ -24,8 +24,11 @@ The service types, each **port-based** (*private*: the whole UNI) or
 sites, never each other. Examples are a hub data centre, or an ISP aggregating
 subscribers who mustn't see each other. In VPLS or EVPN, leaf attachment
 circuits and pseudowires get an extra split-horizon group, so traffic from a
-leaf is never forwarded to another leaf. IOS XR supports it on its L2VPN
-platforms (EVPN E-Tree); no image in this lab does.
+leaf is never forwarded to another leaf. On IOS XR, `etree leaf` marks an
+attachment circuit (or a whole bridge domain) as a leaf; everything else is a
+root. EVPN E-Tree (RFC 8317) also advertises a leaf label so remote PEs filter
+leaf-to-leaf traffic. In this lab R2 (XRd) shows the roles; no image here
+forwards E-Tree traffic.
 
 ## Building blocks on the PE
 
@@ -50,11 +53,22 @@ bridge-domain 50                              ! multipoint (VPLS)
 
 **IOS XR: l2transport sub-interfaces and the l2vpn tree.**
 
-*In this lab XR is only a P router for the L2 services. XRd Control Plane
-signals pseudowires and brings xconnects, bridge domains and VFIs up, but it
-has no Layer 2 data plane: its attachment circuits never receive a frame. XR
-as an L2VPN PE needs an ASR 9000 / NCS (or XRd vRouter). The configuration is
-the same:*
+In this lab, **R2** is an IOS XR PE running on **XRd Control Plane**, which
+has a full L2VPN control plane but no Layer 2 data plane:
+
+| | XRd Control Plane (R2) |
+|---|---|
+| `l2transport` interfaces / sub-interfaces, rewrites | Configured and up |
+| Pseudowire signalling (targeted LDP, labels, VC type / MTU negotiation) | Works: xconnects and VPLS PWs come up with the IOS XE PEs |
+| Bridge domain, VFI, xconnect state | Up |
+| Label-switching other PEs' pseudowires (as a P router, like R1) | Works |
+| Forwarding customer frames (AC ↔ PW) | **No**: AC and pseudowire counters stay at 0 |
+| MAC learning | Local host MACs may appear (learned on the RP), but none cross a pseudowire: other PEs never learn them |
+| E-Tree roles, PBB edge / core bridge domains | Configured and up (no traffic) |
+| CFM / Y.1731, 802.3ah, G.8032 | Not in the CLI |
+
+So R2's tasks check signalling, and traffic is proven between the IOS XE PEs.
+On an ASR 9000, NCS or XRv 9000 the same configuration forwards:
 
 ```
 interface GigabitEthernet0/0/0/3.100 l2transport
@@ -104,7 +118,9 @@ further. The backbone edge wraps the whole customer frame in a new Ethernet
 header with **backbone MAC addresses** (B-DA / B-SA), a **B-VLAN**, and a
 24-bit **I-SID** (service instance ID): 16 million services. Core switches
 learn only backbone MACs, never customer MACs. PBB-EVPN combines it with
-EVPN on IOS XR (ASR 9000). No image in this lab supports it.
+EVPN on IOS XR (ASR 9000). On XR a **PBB edge** bridge domain (customer ACs,
+`pbb edge i-sid … core-bridge …`) feeds a **PBB core** bridge domain (`pbb
+core`). R2 (XRd) builds both here, configuration and state only.
 
 **ITU-T G.8032 (Ethernet ring protection switching, ERPS)** gives
 sub-50 ms protection on Ethernet rings without spanning tree:
@@ -215,6 +231,7 @@ demarcation device, or both ends of a wholesale circuit as in this lab.
 | Pseudowires | `show l2vpn atom vc`, `show mpls l2transport vc <id> detail` | `show l2vpn xconnect [detail]` |
 | VPLS | `show l2vpn vfi`, `show bridge-domain 50` | `show l2vpn bridge-domain [detail]` |
 | MAC table | `show bridge-domain 50 mac-address` | `show l2vpn forwarding bridge-domain mac-address location …` |
+| One bridge domain | `show bridge-domain 50` | `show l2vpn bridge-domain bd-name B [detail]` |
 | Service instances | `show ethernet service instance [detail]` | `show interfaces …l2transport`, `show l2vpn xconnect interface …` |
 | CFM | `show ethernet cfm maintenance-points local / remote`, `ping ethernet …` | `show ethernet cfm peer meps`, `ping ethernet cfm …` |
 | Link OAM | `show ethernet oam summary` | `show ethernet oam summary` |

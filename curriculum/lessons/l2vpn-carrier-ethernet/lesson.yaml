@@ -5,15 +5,18 @@ summary: >-
   pseudowire with VLAN tag translation between sites, an E-LAN for three sites
   with VPLS, an E-Access service handing a customer's VLAN to a partner over an
   802.1ad (Q-in-Q) ENNI, and Ethernet OAM (CFM) to monitor the E-Line end to
-  end. Ethernet service instances on IOS XE PEs, an IOS XR core; E-Tree,
-  802.1ah PBB and G.8032 rings in the readings. Covers CCNP SPCOR 4.2 a–d.
+  end. Ethernet service instances on IOS XE PEs, an IOS XR core, and an IOS
+  XR PE (XRd: l2transport, bridge domains and an XR-to-XE pseudowire, checked
+  on signalling; XRd has no L2 data plane), plus E-Tree leaf/root roles and
+  802.1ah PBB bridge domains on XR (configuration and state). G.8032 rings in
+  the readings. Covers CCNP SPCOR 4.2 a–d.
 level: advanced
 track: service_provider
 topic: L2VPN
 tags: [l2vpn, carrier-ethernet, mef, e-line, e-lan, eompls, vpls, pseudowire, evc, 802.1ad, qinq, cfm, ethernet-oam, iosxr, iosxe, ccnp-spcor]
-minutes: 90
+minutes: 120
 ai_policy: hints
 hints_mode: on_request
 status: published
-version: "1.1"
+version: "1.2"
 author: Phanero Labs

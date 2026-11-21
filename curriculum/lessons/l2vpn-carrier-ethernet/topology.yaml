@@ -1,11 +1,13 @@
 name: Carrier Ethernet over MPLS
 description: >-
-  An MPLS core (IS-IS CORE + LDP, already running) with P router R1 (IOS XR)
-  and three IOS XE PEs. Customer A (E-Line) has sites on R3 and R4, tagged
+  An MPLS core (IS-IS CORE + LDP, already running) with P router R1 (IOS XR),
+  three IOS XE PEs and an IOS XR PE, R2 (XRd: signals L2 services but has no
+  Layer 2 data plane). Customer A (E-Line) has sites on R3 and R4, tagged
   with different VLANs; customer B (E-LAN) has untagged sites on all three
   PEs; customer C (E-Access) has a C-tagged site on R3 and is delivered to a
   partner network on R5 through an 802.1ad ENNI. R4 and R5 also share a
-  direct Ethernet link (a wholesale circuit) used for Ethernet OAM.
+  direct Ethernet link (a wholesale circuit) used for Ethernet OAM. R2 adds a
+  fourth customer B site (B4) and customer D, an XR-to-XE E-Line (D1 - D2).
 nodes:
   - name: A1
     kind: linux
@@ -27,6 +29,8 @@ nodes:
     startup_config: |
       ip link set eth1 up
       ip addr add 192.168.50.1/24 dev eth1
+      # keepalive: a broadcast every 30 s keeps this site's MAC in every PE's table
+      setsid ping -b -q -i 30 192.168.50.255 >/dev/null 2>&1 < /dev/null &
   - name: C1
     kind: linux
     image: plabs/host:latest
@@ -85,7 +89,7 @@ nodes:
     kind: cisco_xrd
     image: ios-xr/xrd-control-plane:25.4.2
     icon: router
-    interfaces: 3
+    interfaces: 4
     position: [560, 260]
     startup_config: |
       interface Loopback0
@@ -104,6 +108,11 @@ nodes:
       interface GigabitEthernet0/0/0/2
        description to R5 Gi2 (core)
        ipv4 address 10.0.15.1 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/3
+       description to R2 Gi0/0/0/0 (core)
+       ipv4 address 10.0.12.1 255.255.255.252
        no shutdown
       !
       router isis CORE
@@ -132,6 +141,11 @@ nodes:
         address-family ipv4 unicast
         !
        !
+       interface GigabitEthernet0/0/0/3
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
       !
       mpls oam
       !
@@ -142,6 +156,55 @@ nodes:
        interface GigabitEthernet0/0/0/1
        !
        interface GigabitEthernet0/0/0/2
+       !
+       interface GigabitEthernet0/0/0/3
+       !
+      !
+  - name: R2
+    kind: cisco_xrd
+    image: ios-xr/xrd-control-plane:25.4.2
+    icon: router
+    interfaces: 3
+    position: [560, 470]
+    startup_config: |
+      interface Loopback0
+       ipv4 address 2.2.2.2 255.255.255.255
+      !
+      interface GigabitEthernet0/0/0/0
+       description to R1 Gi0/0/0/3 (core)
+       ipv4 address 10.0.12.2 255.255.255.252
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/1
+       description Customer B - UNI South (untagged)
+       no shutdown
+      !
+      interface GigabitEthernet0/0/0/2
+       description Customer D - UNI West (VLAN 400)
+       no shutdown
+      !
+      router isis CORE
+       is-type level-2-only
+       net 49.0001.0000.0000.0002.00
+       address-family ipv4 unicast
+        metric-style wide
+       !
+       interface Loopback0
+        passive
+        address-family ipv4 unicast
+        !
+       !
+       interface GigabitEthernet0/0/0/0
+        point-to-point
+        address-family ipv4 unicast
+        !
+       !
+      !
+      mpls oam
+      !
+      mpls ldp
+       router-id 2.2.2.2
+       interface GigabitEthernet0/0/0/0
        !
       !
   - name: R4
@@ -191,7 +254,7 @@ nodes:
     kind: cisco_csr1000v
     image: vrnetlab/cisco_csr1000v:17.03.08
     icon: router
-    interfaces: 4
+    interfaces: 5
     position: [860, 400]
     startup_config: |
       interface Loopback0
@@ -218,6 +281,11 @@ nodes:
       !
       interface GigabitEthernet5
        description wholesale link to R4 Gi5 (Ethernet OAM)
+       no ip address
+       no shutdown
+      !
+      interface GigabitEthernet6
+       description Customer D - UNI East (VLAN 400)
        no ip address
        no shutdown
       !
@@ -250,6 +318,8 @@ nodes:
     startup_config: |
       ip link set eth1 up
       ip addr add 192.168.50.2/24 dev eth1
+      # keepalive: a broadcast every 30 s keeps this site's MAC in every PE's table
+      setsid ping -b -q -i 30 192.168.50.255 >/dev/null 2>&1 < /dev/null &
   - name: B3
     kind: linux
     image: plabs/host:latest
@@ -259,6 +329,8 @@ nodes:
     startup_config: |
       ip link set eth1 up
       ip addr add 192.168.50.3/24 dev eth1
+      # keepalive: a broadcast every 30 s keeps this site's MAC in every PE's table
+      setsid ping -b -q -i 30 192.168.50.255 >/dev/null 2>&1 < /dev/null &
   - name: C2
     kind: linux
     image: plabs/host:latest
@@ -272,6 +344,39 @@ nodes:
       ip link add link eth1.300 name eth1.300.10 type vlan id 10
       ip link set eth1.300.10 up
       ip addr add 192.168.30.2/24 dev eth1.300.10
+  - name: B4
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [420, 640]
+    startup_config: |
+      ip link set eth1 up
+      ip addr add 192.168.50.4/24 dev eth1
+      # keepalive: a broadcast every 30 s keeps this site's MAC in every PE's table
+      setsid ping -b -q -i 30 192.168.50.255 >/dev/null 2>&1 < /dev/null &
+  - name: D1
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [700, 640]
+    startup_config: |
+      ip link set eth1 up
+      ip link add link eth1 name eth1.400 type vlan id 400
+      ip link set eth1.400 up
+      ip addr add 192.168.40.1/24 dev eth1.400
+  - name: D2
+    kind: linux
+    image: plabs/host:latest
+    icon: host
+    interfaces: 1
+    position: [1080, 700]
+    startup_config: |
+      ip link set eth1 up
+      ip link add link eth1 name eth1.400 type vlan id 400
+      ip link set eth1.400 up
+      ip addr add 192.168.40.2/24 dev eth1.400
 links:
   - [A1, eth1, R3, GigabitEthernet3, "VLAN 100"]
   - [B1, eth1, R3, GigabitEthernet4]
@@ -284,6 +389,10 @@ links:
   - [R5, GigabitEthernet3, B3, eth1]
   - [R5, GigabitEthernet4, C2, eth1, "ENNI · S-VLAN 300 / C-VLAN 10"]
   - [R4, GigabitEthernet5, R5, GigabitEthernet5, "wholesale link · CFM + 802.3ah"]
+  - [R1, GigabitEthernet0/0/0/3, R2, GigabitEthernet0/0/0/0]
+  - [R2, GigabitEthernet0/0/0/1, B4, eth1]
+  - [R2, GigabitEthernet0/0/0/2, D1, eth1, "VLAN 400"]
+  - [R5, GigabitEthernet6, D2, eth1, "VLAN 400"]
 annotations:
-  - {id: core, type: group, x: 220, y: 20, w: 820, h: 560, text: "MPLS CORE · IS-IS + LDP · P: R1 (IOS XR) · PEs: R3, R4, R5 (IOS XE)", color: blue, locked: true}
-  - {id: legend, type: text, x: 0, y: 600, w: 1200, h: 40, text: "Customer A = E-Line (EVPL) · Customer B = E-LAN (VPLS) · Customer C = E-Access over an 802.1ad ENNI", color: gray, locked: true}
+  - {id: core, type: group, x: 220, y: 20, w: 820, h: 580, text: "MPLS CORE · IS-IS + LDP · P: R1 (IOS XR) · PEs: R3, R4, R5 (IOS XE), R2 (IOS XR, control plane only)", color: blue, locked: true}
+  - {id: legend, type: text, x: 0, y: 780, w: 1200, h: 40, text: "Customer A = E-Line (EVPL) · Customer B = E-LAN (VPLS) · Customer C = E-Access over an 802.1ad ENNI · Customer D = XR-to-XE E-Line (signalling only)", color: gray, locked: true}

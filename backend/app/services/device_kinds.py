@@ -105,8 +105,9 @@ KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
                     "the vRouter image adds a forwarding plane but needs hugepages.",
         notes="Control Plane: label-switches (LDP, L3VPN PE, EoMPLS/BGP-LU transit), PIM-SM, ACLs, LACP bundles, "
               "GR/NSF, BGP flowspec controller; needs `mpls oam` for MPLS ping. NO BFD (sessions stay down), "
-              "no uRPF, input policing, CFM, G.8032 or MACsec, and NOT an L2VPN PE (xconnects/VPLS come up but "
-              "attachment circuits pass no frames) - use IOS XE PEs for L2 services. One RP: NSR is config-only.",
+              "no uRPF, input policing, CFM, G.8032 or MACsec. As an L2VPN PE only the control plane works "
+              "(xconnects/VPLS PWs signal and show up, but nothing is forwarded between AC and PW) - carry "
+              "L2 traffic on IOS XE PEs. One RP: NSR is config-only.",
         services={"ssh": 22, "netconf": 830, "gnmi": 9339},
     ),
     DeviceKind(

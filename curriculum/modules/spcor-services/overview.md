@@ -16,7 +16,9 @@ This module builds what it *sells* on top of it:
    IGP.
 4. **L2VPN and Carrier Ethernet (4.2)** — an E-Line pseudowire with VLAN
    translation, an E-LAN with VPLS, E-Access over an 802.1ad ENNI, and
-   Ethernet OAM (802.3ah, CFM); E-Tree, 802.1ah PBB and G.8032 in the readings.
+   Ethernet OAM (802.3ah, CFM); an IOS XR PE joins the E-LAN and builds an
+   XR-to-XE E-Line (signalling only: XRd has no L2 data plane); E-Tree and
+   802.1ah PBB on XR as configuration and state; G.8032 in the readings.
 
 More lessons follow, in this order: multicast (4.4), QoS (4.5), control plane
 security (1.5) and data plane security (1.7).
@@ -28,7 +30,8 @@ security (1.5) and data plane security (1.7).
 - The core routers are **IOS XR** (XRd) and the PEs **IOS XE** (CSR 1000v):
   expect to configure every feature in both syntaxes.
 - A few blueprint topics need hardware no lab image has (MACsec, BGPsec,
-  G.8032 rings, 802.1ah PBB, E-Tree): they are covered in the readings.
+  G.8032 rings) or a data plane XRd lacks (E-Tree and 802.1ah PBB traffic):
+  they are covered in the readings, plus configuration and state on XR.
 
 ## Before you start
 

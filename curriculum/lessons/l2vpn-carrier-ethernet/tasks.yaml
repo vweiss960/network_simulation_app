@@ -85,11 +85,25 @@
     VPLS avoids loops with **split horizon**: a frame received from one
     pseudowire is never sent out another — the full mesh means it never needs
     to be.
+
+    **How a VPLS PE learns MAC addresses.** Nothing *advertises* MACs in VPLS
+    (that's what EVPN adds, in BGP route type 2). Each PE learns from the
+    **data plane**, like a switch: an unknown, broadcast or multicast frame is
+    **flooded** to the local ACs and every pseudowire, and the source MAC of a
+    frame is learned against the port it came in on: the service instance for
+    a local site, the **pseudowire** for a remote one. Entries age out after
+    300 seconds of silence. (Customer B's hosts send a broadcast every 30
+    seconds, so their MACs stay learned.)
+
+    On each PE, `show bridge-domain 50` lists the learned MACs with their
+    **pseudoport**: `GigabitEthernet4.EFP50` for the local site, and
+    `VPLS-B.<id>` (one per pseudowire) for each remote site. Expect **one**
+    local MAC and **two** learned over the VFI.
   hints:
     - "XE: `interface GigabitEthernet4` → `service instance 50 ethernet` → `encapsulation untagged`."
     - "XE: `l2vpn vfi context VPLS-B` → `vpn id 50` → `member 4.4.4.4 encapsulation mpls` → `member 5.5.5.5 encapsulation mpls` (each PE: the other two)."
     - "XE: `bridge-domain 50` → `member GigabitEthernet4 service-instance 50` → `member vfi VPLS-B`."
-    - "Verify: `show l2vpn vfi`, `show l2vpn atom vc` (two VCs per PE), `show bridge-domain 50` (members and learned MACs)."
+    - "Verify: `show l2vpn vfi`, `show l2vpn atom vc` (two VCs per PE), `show bridge-domain 50` (members and learned MACs: one on the local service instance, two on `VPLS-B.<id>` pseudoports)."
   solution:
     R3: |
       interface GigabitEthernet4
@@ -151,9 +165,303 @@
         - {regex: '3\.3\.3\.3\s+50\s+\S+\s+VPLS-B\s+UP'}
         - {regex: '4\.4\.4\.4\s+50\s+\S+\s+VPLS-B\s+UP'}
       describe: "R5 (XE): VPLS pseudowires to R3 and R4 UP"
+    - type: cli
+      device: R3
+      command: show bridge-domain 50
+      expect:
+        - {regex: 'forward\s+dynamic\s+\d+\s+GigabitEthernet4\.EFP50', count: 1}
+        - {regex: 'forward\s+dynamic\s+\d+\s+VPLS-B\.\d+', count: 2}
+      describe: "R3 (XE): learned 1 MAC from its local site and 2 over the VPLS pseudowires"
+    - type: cli
+      device: R4
+      command: show bridge-domain 50
+      expect:
+        - {regex: 'forward\s+dynamic\s+\d+\s+GigabitEthernet4\.EFP50', count: 1}
+        - {regex: 'forward\s+dynamic\s+\d+\s+VPLS-B\.\d+', count: 2}
+      describe: "R4 (XE): learned 1 MAC from its local site and 2 over the VPLS pseudowires"
+    - type: cli
+      device: R5
+      command: show bridge-domain 50
+      expect:
+        - {regex: 'forward\s+dynamic\s+\d+\s+GigabitEthernet3\.EFP50', count: 1}
+        - {regex: 'forward\s+dynamic\s+\d+\s+VPLS-B\.\d+', count: 2}
+      describe: "R5 (XE): learned 1 MAC from its local site and 2 over the VPLS pseudowires"
     - {type: ping, from: B1, to: 192.168.50.2, count: 5, min_success: 80, describe: "B1 reaches B2 on the E-LAN"}
     - {type: ping, from: B1, to: 192.168.50.3, count: 5, min_success: 80, describe: "B1 reaches B3"}
     - {type: ping, from: B2, to: 192.168.50.3, count: 5, min_success: 80, describe: "B2 reaches B3"}
+
+- id: e-lan-xr
+  title: "An IOS XR PE joins the E-LAN"
+  body: |
+    Customer B opens a fourth site, **B4** (`192.168.50.4`), on **R2**: an
+    **IOS XR** PE. XR builds the same VPLS service with a different
+    configuration model: the UNI becomes an **`l2transport`** interface, and
+    the bridge domain, with its VFI and pseudowires, lives in the **`l2vpn`**
+    tree:
+
+    ```
+    interface GigabitEthernet0/0/0/1
+     l2transport
+    !
+    l2vpn
+     bridge group CUST-B
+      bridge-domain B
+       interface GigabitEthernet0/0/0/1
+       vfi VPLS-B
+        neighbor 3.3.3.3 pw-id 50
+        ...
+    ```
+
+    The XR `pw-id` is the XE VFI's `vpn id` (50). A VPLS mesh must be
+    **full**, so the three IOS XE PEs each add R2 (`2.2.2.2`) to their VFI as
+    well.
+
+    > **Lab platform note.** R2 is **XRd Control Plane**. It signals the
+    > service for real: the pseudowires come up over targeted LDP, and the
+    > bridge domain, attachment circuit and VFI all show *up*. But XRd has **no
+    > Layer 2 data plane**: the bridge domain forwards nothing between B4's
+    > port and the pseudowires. R2 may list B4's MAC on Gi0/0/0/1 (learned in
+    > software on the route processor), yet its AC and pseudowire counters
+    > stay at 0, no other PE ever learns B4's MAC, and B4 can't reach B1–B3.
+    > The checks here are control-plane only; B1–B3 keep proving the E-LAN
+    > forwards between the IOS XE PEs. On an ASR 9000, NCS or XRv 9000 the
+    > same configuration forwards.
+    >
+    > Look at it yourself: `show l2vpn bridge-domain bd-name B detail` (PWs
+    > up, every packet counter 0), `show l2vpn forwarding bridge-domain
+    > mac-address location 0/RP0/CPU0`, and on an IOS XE PE
+    > `show bridge-domain 50`: still two MACs learned over the VFI (B2 and B3,
+    > or B1 and B3…), never B4's, although the pseudowire to 2.2.2.2 is up.
+  hints:
+    - "XR: `interface GigabitEthernet0/0/0/1` → `l2transport` (the whole port is the UNI: untagged, port-based)."
+    - "XR: `l2vpn` → `bridge group CUST-B` → `bridge-domain B` → `interface GigabitEthernet0/0/0/1` and `vfi VPLS-B` → `neighbor 3.3.3.3 pw-id 50` (and 4.4.4.4, 5.5.5.5)."
+    - "XE (R3, R4, R5): `l2vpn vfi context VPLS-B` → `member 2.2.2.2 encapsulation mpls`."
+    - "Verify: XR `show l2vpn bridge-domain brief` / `show l2vpn bridge-domain bd-name B detail`; XE `show l2vpn atom vc` (now three VCs per PE)."
+  solution:
+    R2: |
+      interface GigabitEthernet0/0/0/1
+       l2transport
+      !
+      l2vpn
+       bridge group CUST-B
+        bridge-domain B
+         interface GigabitEthernet0/0/0/1
+         !
+         vfi VPLS-B
+          neighbor 3.3.3.3 pw-id 50
+          !
+          neighbor 4.4.4.4 pw-id 50
+          !
+          neighbor 5.5.5.5 pw-id 50
+          !
+         !
+        !
+       !
+      !
+    R3: |
+      l2vpn vfi context VPLS-B
+       member 2.2.2.2 encapsulation mpls
+      !
+    R4: |
+      l2vpn vfi context VPLS-B
+       member 2.2.2.2 encapsulation mpls
+      !
+    R5: |
+      l2vpn vfi context VPLS-B
+       member 2.2.2.2 encapsulation mpls
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show l2vpn bridge-domain bd-name B
+      expect:
+        - {regex: 'bridge-domain: B, id: \d+, state: up'}
+        - {regex: 'ACs: 1 \(1 up\)'}
+        - {regex: 'PWs: 3 \(3 up\)'}
+      describe: "R2 (XR): bridge domain B up, its AC up and all three VPLS pseudowires up"
+    - type: cli
+      device: R3
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '2\.2\.2\.2\s+50\s+\S+\s+VPLS-B\s+UP'}
+      describe: "R3 (XE): VPLS pseudowire to R2 UP"
+    - type: cli
+      device: R4
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '2\.2\.2\.2\s+50\s+\S+\s+VPLS-B\s+UP'}
+      describe: "R4 (XE): VPLS pseudowire to R2 UP"
+    - type: cli
+      device: R5
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '2\.2\.2\.2\s+50\s+\S+\s+VPLS-B\s+UP'}
+      describe: "R5 (XE): VPLS pseudowire to R2 UP"
+    - {type: ping, from: B1, to: 192.168.50.3, count: 5, min_success: 80, describe: "The E-LAN still forwards between the IOS XE PEs (B1 reaches B3)"}
+
+- id: e-line-xr
+  title: "E-Line between IOS XR and IOS XE"
+  body: |
+    Customer D buys an **E-Line** between a site on R2 (IOS XR, D1) and a site
+    on R5 (IOS XE, D2). Both sites hand over **VLAN 400**; the provider pops the
+    tag at each edge, so the frame crosses the core untagged (VC type 5).
+
+    On XR the UNI is an **`l2transport` sub-interface** with the same
+    `encapsulation` / `rewrite` ideas as an XE service instance, and the
+    pseudowire is a **`p2p`** in an **`xconnect group`**:
+
+    | PE | UNI | Matches | Rewrite | Pseudowire |
+    |---|---|---|---|---|
+    | R2 (XR) | Gi0/0/0/2.400 → D1 | `dot1q 400` | pop 1, symmetric | `neighbor ipv4 5.5.5.5 pw-id 400` |
+    | R5 (XE) | Gi6, service instance 400 → D2 | `dot1q 400` | pop 1, symmetric | `member 2.2.2.2 400 encapsulation mpls` |
+
+    The two ends must agree on the **VC ID** (400), the **VC type** (Ethernet:
+    both pop the tag) and the **MTU**: a mismatch leaves the VC down, and
+    `show l2vpn xconnect detail` / `show mpls l2transport vc 400 detail` say why.
+
+    > **Lab platform note.** XRd signals this pseudowire for real (targeted
+    > LDP, labels exchanged, the xconnect *UP* end to end), but has no Layer 2
+    > data plane: **D1 can't reach D2**. The checks are signalling only. On an
+    > ASR 9000, NCS or XRv 9000 the same configuration forwards.
+  hints:
+    - "XR: `interface GigabitEthernet0/0/0/2.400 l2transport` → `encapsulation dot1q 400` → `rewrite ingress tag pop 1 symmetric`."
+    - "XR: `l2vpn` → `xconnect group CUST-D` → `p2p EL-D` → `interface GigabitEthernet0/0/0/2.400` and `neighbor ipv4 5.5.5.5 pw-id 400`."
+    - "XE: `interface GigabitEthernet6` → `service instance 400 ethernet` → `encapsulation dot1q 400` → `rewrite ingress tag pop 1 symmetric`; then `l2vpn xconnect context EL-D` → `member GigabitEthernet6 service-instance 400` → `member 2.2.2.2 400 encapsulation mpls`."
+    - "Verify: XR `show l2vpn xconnect [detail]`; XE `show l2vpn atom vc`, `show mpls l2transport vc 400 detail`."
+  solution:
+    R2: |
+      interface GigabitEthernet0/0/0/2.400 l2transport
+       encapsulation dot1q 400
+       rewrite ingress tag pop 1 symmetric
+      !
+      l2vpn
+       xconnect group CUST-D
+        p2p EL-D
+         interface GigabitEthernet0/0/0/2.400
+         neighbor ipv4 5.5.5.5 pw-id 400
+         !
+        !
+       !
+      !
+    R5: |
+      interface GigabitEthernet6
+       service instance 400 ethernet
+        encapsulation dot1q 400
+        rewrite ingress tag pop 1 symmetric
+       !
+      !
+      l2vpn xconnect context EL-D
+       member GigabitEthernet6 service-instance 400
+       member 2.2.2.2 400 encapsulation mpls
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show l2vpn xconnect group CUST-D
+      expect:
+        - {regex: 'CUST-D\s+EL-D\s+UP'}
+      describe: "R2 (XR): xconnect EL-D is UP (AC and pseudowire)"
+    - type: cli
+      device: R5
+      command: show l2vpn atom vc
+      expect:
+        - {regex: '2\.2\.2\.2\s+400\s+p2p\s+EL-D\s+UP'}
+      describe: "R5 (XE): pseudowire EL-D to R2 (VC 400) is UP"
+
+- id: etree-pbb-xr
+  title: "E-Tree and PBB (802.1ah) on IOS XR"
+  body: |
+    Two more Carrier Ethernet building blocks, both on R2 (IOS XR).
+
+    **E-Tree (rooted multipoint).** Customer B's new site B4 is a branch that
+    may talk to the other sites but must never be reachable from another
+    *branch*. MEF calls that an **E-Tree**: **leaf** UNIs can only exchange
+    frames with **root** UNIs, never with each other; roots talk to everyone.
+    A PE enforces it with an extra split-horizon rule: a frame received from a
+    leaf is never forwarded to another leaf. On IOS XR the role is set per
+    attachment circuit (or for a whole bridge domain) with `etree leaf`;
+    everything not marked leaf is a root. In EVPN E-Tree (RFC 8317) PEs also
+    advertise a *leaf label*, so remote PEs can drop leaf-to-leaf traffic at
+    ingress.
+
+    Make **B4's AC (Gi0/0/0/1) a leaf** in bridge domain B. The other sites
+    stay roots.
+
+    **PBB, 802.1ah (MAC-in-MAC).** A provider backbone bridge wraps each
+    customer frame in a new Ethernet header: backbone MACs (B-DA / B-SA), a
+    B-VLAN and a 24-bit **I-SID**, the service ID. On IOS XR this takes two
+    bridge domains in one bridge group:
+
+    - a **PBB edge** bridge domain holding the customer ACs, mapped to an
+      I-SID and to a core bridge domain;
+    - a **PBB core** bridge domain, the backbone side (in PBB-EVPN the core
+      bridge domain is bound to an EVPN instance, and the core learns only
+      B-MACs).
+
+    Build bridge group **PBB** with core bridge domain **PBB-CORE** and edge
+    bridge domain **PBB-EDGE**, I-SID **1000**, with a new customer AC
+    **Gi0/0/0/2.500** (VLAN 500 on D1's port).
+
+    > **Lab platform note.** XRd Control Plane models both completely: the
+    > E-Tree roles and the PBB bridge domains, I-SID and backbone source MAC
+    > all show up. With no Layer 2 data plane it can't demonstrate either
+    > with traffic (leaf-to-leaf blocking, MAC-in-MAC frames). The checks are
+    > configuration and state only.
+  hints:
+    - "E-Tree: `l2vpn` → `bridge group CUST-B` → `bridge-domain B` → `interface GigabitEthernet0/0/0/1` → `etree leaf`."
+    - "Verify: `show l2vpn bridge-domain bd-name B detail | include E-Tree` (the AC: Leaf; the pseudowires: Root)."
+    - "PBB: `interface GigabitEthernet0/0/0/2.500 l2transport` → `encapsulation dot1q 500`; then `l2vpn` → `bridge group PBB` → `bridge-domain PBB-CORE` → `pbb core`, and `bridge-domain PBB-EDGE` → `interface GigabitEthernet0/0/0/2.500` and `pbb edge i-sid 1000 core-bridge PBB-CORE`."
+    - "Verify: `show l2vpn bridge-domain group PBB brief`, `show l2vpn bridge-domain bd-name PBB-EDGE detail`, `show l2vpn pbb backbone-source-mac`."
+  solution:
+    R2: |
+      l2vpn
+       bridge group CUST-B
+        bridge-domain B
+         interface GigabitEthernet0/0/0/1
+          etree leaf
+         !
+        !
+       !
+      !
+      interface GigabitEthernet0/0/0/2.500 l2transport
+       encapsulation dot1q 500
+      !
+      l2vpn
+       bridge group PBB
+        bridge-domain PBB-CORE
+         pbb core
+         !
+        !
+        bridge-domain PBB-EDGE
+         interface GigabitEthernet0/0/0/2.500
+         !
+         pbb edge i-sid 1000 core-bridge PBB-CORE
+         !
+        !
+       !
+      !
+  checks:
+    - type: cli
+      device: R2
+      command: show l2vpn bridge-domain bd-name B detail
+      expect:
+        - {regex: '(?s)AC: GigabitEthernet0/0/0/1, state is up.{0,600}?E-Tree: Leaf'}
+        - {regex: 'PW: neighbor \S+, PW ID 50, state is up', count: 3}
+      describe: "R2 (XR): B4's AC is an E-Tree leaf and the three VPLS pseudowires are still up"
+    - type: cli
+      device: R2
+      command: show l2vpn bridge-domain group PBB brief
+      expect:
+        - {regex: 'PBB:PBB-CORE\s+\d+\s+up'}
+        - {regex: 'PBB:PBB-EDGE\s+\d+\s+up\s+1/1'}
+      describe: "R2 (XR): PBB core and edge bridge domains up, the edge AC up"
+    - type: cli
+      device: R2
+      command: show l2vpn bridge-domain bd-name PBB-EDGE detail
+      expect:
+        - {regex: 'PBB Edge, state is up'}
+        - {regex: '(?i)i-sid:?\s*1000'}
+      describe: "R2 (XR): PBB edge up with I-SID 1000"
 
 - id: e-access
   title: "E-Access over an 802.1ad ENNI (Q-in-Q)"
