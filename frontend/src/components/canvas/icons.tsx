@@ -85,6 +85,14 @@ const DRAW: Record<string, Draw> = {
       <line x1="17" y1="29" x2="17" y2="39" /><line x1="31" y1="29" x2="31" y2="39" />
     </>
   ),
+  traffic: ({ fill, dash }) => (
+    <>
+      <rect x="4" y="7" width="40" height="34" rx="6" fill={fill} strokeDasharray={dash} />
+      <polyline points="9,20 13,20 16,13 20,26 24,15 27,22 30,20 39,20" />
+      {arrow(10, 30, 34, 30, 4)}
+      {arrow(38, 35.5, 14, 35.5, 4)}
+    </>
+  ),
   cloud: ({ fill, dash }) => (
     <path fill={fill} strokeDasharray={dash}
       d="M14 37h21a8 8 0 0 0 1.2-15.9A11 11 0 0 0 15.3 18.4 9.5 9.5 0 0 0 14 37z" />

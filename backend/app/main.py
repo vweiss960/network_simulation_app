@@ -1,6 +1,7 @@
 import logging
 import re
 
+import os
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -13,7 +14,7 @@ from app.models.database import SessionLocal, init_db
 from app.models.node_template import NodeTemplate
 from app.models.user import User
 from app.routes import auth as auth_routes
-from app.routes import agent, capture, device, lessons, modules, troubleshooting, uploads, lab, lab_console, lab_network, links, node_templates, nodes, topologies
+from app.routes import agent, capture, device, lessons, modules, troubleshooting, traffic, uploads, lab, lab_console, lab_network, links, node_templates, nodes, topologies
 
 class _RedactTokens(logging.Filter):
     """Console WebSockets carry the JWT as ?token=…; keep it out of access logs."""
@@ -54,6 +55,7 @@ app.include_router(device.router, dependencies=auth_dep)
 app.include_router(uploads.router, dependencies=auth_dep)
 app.include_router(agent.router, dependencies=auth_dep)
 app.include_router(capture.router, dependencies=auth_dep)
+app.include_router(traffic.router, dependencies=auth_dep)
 # Learning add-on (PLABS_LEARNING_ENABLED): checked per request, so the
 # routes simply answer 404 while it's off.
 def _learning_on():
@@ -107,6 +109,10 @@ SEED_TEMPLATES = [
     dict(name="Automation Workstation", vendor="Linux", model="workstation", kind="linux",
          image_ref="plabs/workstation:latest", icon="workstation", interface_count=1,
          description="Python, ncclient, netmiko, pyATS, Ansible, gnmic — for automation labs."),
+    dict(name="Traffic Generator", vendor="Linux", model="traffic", kind="linux",
+         image_ref="plabs/traffic:latest", icon="traffic", interface_count=1,
+         description="Sends UDP streams (a DSCP per stream, unicast or multicast), joins multicast groups "
+                     "(IGMP/MLD, any-source or SSM), reflects traffic, with live rate / loss / jitter / DSCP stats."),
 ]
 
 
@@ -165,6 +171,9 @@ def startup():
         db.commit()
         from app.services.lab_service import restore_host_network
         restore_host_network(db)
+        if os.environ.get("PLABS_BUILD_IMAGES", "1") != "0":
+            from app.services import builtin_images
+            builtin_images.ensure()        # background: missing / outdated built-in lab images
         from app.services.lab_network import start_renewer
         start_renewer()
     finally:

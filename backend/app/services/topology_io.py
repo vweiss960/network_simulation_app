@@ -54,6 +54,8 @@ def export_topology(db: Session, topology_id: int) -> dict:
         if n.kind == "bridge":
             d.pop("image")
             d["network"] = n.network
+        if n.traffic:
+            d["traffic"] = n.traffic
         out_nodes.append(d)
     links = db.query(Link).filter(Link.topology_id == topology_id).order_by(Link.id).all()
     return {
@@ -147,6 +149,12 @@ def build_into(db: Session, topology: Topology, spec: dict) -> None:
             n.enabled = 0
         if nd.get("notes"):
             n.notes = str(nd["notes"])[:4000]
+        if isinstance(nd.get("traffic"), dict):
+            from app.services.traffic_gen import TrafficConfigError, normalize
+            try:
+                n.traffic = normalize(nd["traffic"])
+            except TrafficConfigError as e:
+                raise TopologyError(f"Node {n.name}: traffic generator: {e}")
         ids[n.name] = n.id
     for row in spec.get("links") or []:
         if isinstance(row, dict):

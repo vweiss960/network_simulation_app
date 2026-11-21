@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 build() { echo "==> $2"; docker build -t "$2" "device_images/$1"; }
 build linux-host            plabs/host:latest
 build frr-lab               plabs/frr:latest
+build traffic               plabs/traffic:latest
 if [ -d device_images/automation-workstation ]; then
   build automation-workstation plabs/workstation:latest
 fi

@@ -137,5 +137,5 @@ so the lab's flows are a few hundred kb/s.
 | Shaper, queues, drops | `show policy-map interface Gi3 output` | `show qos interface Gi0/0/0/1 output` |
 | Where a policy is attached | `show running-config \| section service-policy` | `show policy-map targets` |
 | Policy / class definitions | `show policy-map NAME`, `show class-map` | `show running-config policy-map NAME`, `show running-config class-map` |
-| DSCP on the wire | `tcpdump -nvi eth1` on a host (`tos 0xb8` = EF) | |
+| DSCP on arrival | the receiving traffic generator's panel (per stream, last 10 s), or a packet capture on the cable | |
 | MPLS label pushed | `show mpls forwarding-table 10.1.4.0` | `show mpls forwarding` |

@@ -1,6 +1,7 @@
 import type { Device, DeviceKind, LabNetworkInfo, LabState, Link, MgmtSettings, NetworkSpec, NodeTemplate, Snapshot, Topology, Annotation,
   LessonAttempt, LessonDetail, LessonSection, LessonSummary, LessonTask, PublicTask, TaskResult,
-  ModuleDetail, ModuleItem, ModuleMeta, ModuleSummary, ScenarioSummary, ScenarioDetail, ScenarioAttemptView, Difficulty } from '../types';
+  ModuleDetail, ModuleItem, ModuleMeta, ModuleSummary, ScenarioSummary, ScenarioDetail, ScenarioAttemptView, Difficulty,
+  TrafficConfig, TrafficState } from '../types';
 
 const BASE = '/api';
 
@@ -9,6 +10,12 @@ function authHeaders(): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) h['Authorization'] = `Bearer ${token}`;
   return h;
+}
+
+export interface BuiltinImage {
+  image: string; directory: string; description: string; depends_on: string | null;
+  state: 'present' | 'missing' | 'outdated' | 'queued' | 'building' | 'failed' | 'no source';
+  log?: string; started?: number; finished?: number;
 }
 
 export class ApiError extends Error {
@@ -246,6 +253,13 @@ export const api = {
   capturePacket: (tid: number, cid: string, n: number) => request<PacketDetail>(`/topologies/${tid}/captures/${cid}/packets/${n}`),
   captureMatch: (tid: number, cid: string, filter: string) =>
     request<{ numbers: number[] }>(`/topologies/${tid}/captures/${cid}/match?filter=${encodeURIComponent(filter)}`),
+  // Built-in (open-source) lab images
+  listBuiltinImages: () => request<BuiltinImage[]>('/lab/builtin-images'),
+  buildBuiltinImage: (image: string) => request<BuiltinImage[]>('/lab/builtin-images/build', json('POST', { image })),
+  // Traffic generator nodes
+  getTraffic: (tid: number, nid: number) => request<TrafficState>(`/topologies/${tid}/nodes/${nid}/traffic`),
+  putTraffic: (tid: number, nid: number, config: TrafficConfig) =>
+    request<TrafficState>(`/topologies/${tid}/nodes/${nid}/traffic`, json('PUT', { config })),
   // Lessons
   listLessons: () => request<LessonSummary[]>('/lessons'),
   getLesson: (id: number, full = false) => request<LessonDetail>(`/lessons/${id}${full ? '?full=true' : ''}`),

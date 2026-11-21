@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.link import Link
 from app.models.node_instance import NodeInstance
 from app.models.node_template import NodeTemplate
-from app.services.device_kinds import get_kind, is_bridge, is_known_kind
+from app.services.device_kinds import get_kind, is_bridge, is_known_kind, is_traffic_image
 
 
 class TopologyError(ValueError):
@@ -67,6 +67,9 @@ def create_node(db: Session, topology_id: int, *, template_id: int | None = None
         node.network = network or ({"mode": "internal"} if icon == "switch" else {"mode": "access", "nic": "", "vlan": 0})
     else:
         node.interfaces = k.interfaces(count)
+        if is_traffic_image(kind, node.image_ref):
+            from app.services.traffic_gen import default_config
+            node.traffic = default_config()
         if k.default_user and (k.default_user, k.default_password) != k.builtin_credentials:
             node.credentials = {"provision": {"username": k.default_user, "password": k.default_password}}
     db.add(node)

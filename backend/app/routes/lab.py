@@ -6,6 +6,8 @@ image management endpoints, which are global (/api/lab/images).
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
+
+from app.auth.dependencies import require_admin
 from sqlalchemy.orm import Session
 
 from app.models.database import get_db
@@ -358,6 +360,28 @@ def load_image(req: LoadImageRequest):
         return load_device_image(req.filename)
     except LabError as e:
         raise HTTPException(400, str(e))
+
+
+@images_router.get("/builtin-images")
+def builtin_images_status():
+    """The open-source images that ship with Phanero Labs and their build state."""
+    from app.services import builtin_images
+    return builtin_images.status()
+
+
+class BuildBuiltinRequest(BaseModel):
+    image: str
+
+
+@images_router.post("/builtin-images/build")
+def build_builtin_image(req: BuildBuiltinRequest, _admin=Depends(require_admin)):
+    """(Re)build one built-in image now (and the images built FROM it)."""
+    from app.services import builtin_images
+    if req.image not in {b[0] for b in builtin_images.BUILTIN}:
+        raise HTTPException(404, f"{req.image} isn't a built-in image")
+    if not builtin_images.ensure(force={req.image}):
+        raise HTTPException(409, "A build is already running; try again when it finishes")
+    return builtin_images.status()
 
 
 @images_router.post("/images/upload")

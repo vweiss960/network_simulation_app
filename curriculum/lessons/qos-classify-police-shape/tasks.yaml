@@ -1,8 +1,10 @@
 - id: classify-mark
   title: "Classify and mark at the trust boundary"
   body: |
-    H1 sends two flows to H2, both **unmarked** (DSCP 0): *voice* (UDP port
-    **5004**) and *bulk* data (UDP port **5005**). The provider doesn't trust
+    H1 sends two streams to H2, both **unmarked** (DSCP 0): *voice* (UDP port
+    **5004**) and *bulk* data (UDP port **5005**). H1 and H2 are traffic
+    generators: double-click H2 to watch each stream arrive (rate, loss, and
+    the DSCP it carries) while you work. The provider doesn't trust
     customer markings: it **classifies** traffic at its edge, the UNI on R3
     (Gi3), and **marks** it into its own classes, the *trust boundary*. Every
     router after that only looks at the marking.
@@ -25,7 +27,7 @@
   hints:
     - "XE: `ip access-list extended VOICE-ACL` → `permit udp any any eq 5004` (and BULK-ACL for 5005); `class-map match-any VOICE` → `match access-group name VOICE-ACL`."
     - "XE: `policy-map CUSTOMER-IN` → `class VOICE` → `set dscp ef`, `class BULK` → `set dscp af11`, `class class-default` → `set dscp default`; `interface GigabitEthernet3` → `service-policy input CUSTOMER-IN`."
-    - "Verify: `show policy-map interface GigabitEthernet3 input` (packets per class); on H2, `tcpdump -nvi eth1 udp port 5004` shows `tos 0xb8` (EF), port 5005 `tos 0x28` (AF11)."
+    - "Verify: `show policy-map interface GigabitEthernet3 input` (packets per class); double-click H2: its panel shows each stream's DSCP on arrival (VOICE ef, BULK af11)."
   solution:
     R3: |
       ip access-list extended VOICE-ACL
@@ -53,18 +55,8 @@
         - {regex: '(?s)Class-map: VOICE \(match-any\)\s+[1-9]\d* packets'}
         - {regex: '(?s)Class-map: BULK \(match-any\)\s+[1-9]\d* packets'}
       describe: "R3 (XE): CUSTOMER-IN classifies voice and bulk traffic on Gi3"
-    - type: cli
-      device: H2
-      command: timeout 6 tcpdump -c 3 -nvi eth1 udp dst port 5004 2>&1
-      expect:
-        - {regex: 'tos 0xb8', count: 3}
-      describe: "H2: voice arrives marked EF (tos 0xb8)"
-    - type: cli
-      device: H2
-      command: timeout 6 tcpdump -c 3 -nvi eth1 udp dst port 5005 2>&1
-      expect:
-        - {regex: 'tos 0x28', count: 3}
-      describe: "H2: bulk arrives marked AF11 (tos 0x28)"
+    - {type: traffic, device: H2, flow: {stream: VOICE}, dscp: ef, min_pps: 45, describe: "H2: VOICE arrives marked EF"}
+    - {type: traffic, device: H2, flow: {stream: BULK}, dscp: af11, min_pps: 65, describe: "H2: BULK arrives marked AF11"}
 
 - id: mpls-exp
   title: "DSCP to MPLS EXP in the core"
@@ -220,7 +212,7 @@
     Replace BULK's fixed `set dscp af11` with the policer.
   hints:
     - "XE: `policy-map CUSTOMER-IN` → `class BULK` → `no set dscp af11`, then `police cir 256000 pir 384000` → `conform-action set-dscp-transmit af11` → `exceed-action set-dscp-transmit af12` → `violate-action drop`."
-    - "Verify: `show policy-map interface GigabitEthernet3 input` (conformed / exceeded / violated counters and rates); on H2, `tcpdump -nvi eth1 udp port 5005` shows both `tos 0x28` (AF11) and `tos 0x30` (AF12)."
+    - "Verify: `show policy-map interface GigabitEthernet3 input` (conformed / exceeded / violated counters and rates); H2's panel shows BULK arriving as a mix of af11 and af12, at fewer packets/s than H1 sends."
   solution:
     R3: |
       policy-map CUSTOMER-IN
@@ -239,13 +231,8 @@
         - {regex: 'exceeded [1-9]\d* packets'}
         - {regex: 'violated [1-9]\d* packets'}
       describe: "R3 (XE): the BULK policer (CIR 256k, PIR 384k) is marking down and dropping"
-    - type: cli
-      device: H2
-      command: timeout 8 tcpdump -c 40 -nvi eth1 udp dst port 5005 2>&1
-      expect:
-        - {regex: 'tos 0x28'}
-        - {regex: 'tos 0x30'}
-      describe: "H2: bulk arrives as AF11 (conform) and AF12 (exceed)"
+    - {type: traffic, device: H2, flow: {stream: BULK}, dscp: [af11, af12], max_pps: 55,
+       describe: "H2: BULK arrives as AF11 (conform) and AF12 (exceed), cut to the peak rate (~47 of 75 packets/s)"}
 
 - id: shaping
   title: "Shape the customer port: hierarchical QoS with LLQ"
@@ -301,6 +288,8 @@
         - {regex: '(?s)Class-map: BULK \(match-any\).*?\(queue depth/total drops/no-buffer drops\) \d+/[1-9]\d*/\d+'}
         - {regex: '(?s)Class-map: VOICE \(match-any\).*?b/w exceed drops: 0\s'}
       describe: "R4 (XE): the port is shaped to 400 kb/s; bulk queues and drops under congestion, voice in the priority queue loses nothing"
+    - {type: traffic, device: H2, flow: {stream: VOICE}, dscp: ef, min_pps: 45, max_loss: 1,
+       describe: "H2: VOICE still arrives complete (no loss) through the congested port"}
 
 - id: wred
   title: "Congestion avoidance with DSCP-based WRED"

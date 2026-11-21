@@ -33,8 +33,8 @@ Two equivalent ways; don't run both (they share ports 8100 / 8880).
   the console's right-click paste — on https.
   After backend changes: `docker compose restart backend`.
 
-Lab images: `./scripts/build-images.sh` builds `plabs/host`, `plabs/frr` and
-`plabs/workstation` (automation toolbox: ncclient, netmiko, scrapli, pyATS,
+Lab images: `./scripts/build-images.sh` builds `plabs/host`, `plabs/frr`,
+`plabs/traffic` (traffic generator, FROM plabs/host) and `plabs/workstation` (automation toolbox: ncclient, netmiko, scrapli, pyATS,
 Ansible + Cisco collections, gnmic, pyang).
 Vendor images (XRd tarballs, qcow2) are loaded/built from the Images page;
 vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
@@ -208,6 +208,24 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
 - Captures are in memory; files live in `$PLABS_CAPTURE_DIR` or the temp dir
   (not `lab_state`: tshark can't read back its own file on that bind mount),
   are swept at startup, and stop on lab destroy. Closing the tab deletes one.
+
+### Traffic generator nodes (`services/traffic_gen.py`, `routes/traffic.py`, `device_images/traffic`)
+- Template "Traffic Generator" = kind `linux`, image `plabs/traffic` (`device_kinds.is_traffic_image`),
+  icon `traffic`. Its main process `plabs-traffic` (one Python file) sends UDP streams (per-stream
+  DSCP, rate, size, TTL; unicast or multicast, v4/v6), joins groups (ASM, or SSM with a source,
+  IGMPv3 / MLDv2) or listens on unicast ports, and reflects stream packets back to their sender
+  (keep or re-mark DSCP). Packets carry magic + seq + timestamp + stream name → per-flow pps,
+  loss, jitter and **arrival DSCP** (IP_RECVTOS / IPV6_RECVTCLASS); reflections give RTT and the
+  DSCP at the reflector / on return.
+- Config = `NodeInstance.traffic` (normalized by `traffic_gen.normalize`), written to
+  `<lab dir>/traffic/<node>/config.json`; clab binds that dir at `/etc/plabs-traffic` (constant
+  bind → editing never changes the YAML / restarts). The daemon re-reads it every second and
+  writes `stats.json` there. `GET|PUT /api/topologies/{t}/nodes/{n}/traffic` (live, no reconcile);
+  topology_io exports `traffic:`. UI: double-click → `TrafficView` tab in the console drawer.
+- Lesson check `type: traffic` (`lesson_checks.eval_traffic`, reads stats.json via docker exec):
+  `flow: {stream|src|dst|group|port}` or `stream: NAME` (+ `reflected`), `min_pps`, `max_pps`,
+  `max_loss`, `dscp` (name / list), `dscp_at_reflector`, `present: false`. The multicast and QoS
+  lessons use generators for every source / receiver.
 
 ### Learning add-on (`PLABS_LEARNING_ENABLED`, default off)
 Lessons and modules (curricula later) are an optional add-on. Off: the

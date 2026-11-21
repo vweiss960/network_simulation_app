@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Play, Radio, RotateCw, Square, Terminal, Trash2, FileText, Zap, X } from 'lucide-react';
+import { Activity, Play, Radio, RotateCw, Square, Terminal, Trash2, FileText, Zap, X } from 'lucide-react';
+import { isTrafficNode } from '../../utils/traffic';
 import { useLabStore } from '../../stores/useLabStore';
 import { api } from '../../utils/api';
 import type { Device, Link } from '../../types';
@@ -111,6 +112,7 @@ function NodeInspector({ node }: { node: Device }) {
           </div>
         )}
         <div className="mt-3 flex flex-wrap gap-1.5">
+          {isTrafficNode(node) && <Btn icon={<Activity size={13} />} onClick={() => openConsole(node.id, 'traffic')}>Traffic</Btn>}
           <Btn icon={<Terminal size={13} />} onClick={() => openConsole(node.id)} disabled={!running}>Console</Btn>
           <Btn icon={<FileText size={13} />} onClick={() => openConsole(node.id, 'logs')} disabled={!rt || rt.state === 'absent'}>Logs</Btn>
           {running
@@ -202,6 +204,15 @@ function NodeInspector({ node }: { node: Device }) {
         </table>
       </Section>
 
+      {isTrafficNode(node) ? (
+      <Section title="Traffic generator">
+        <p className="text-xs text-surface-400 mb-2">
+          Its address, streams, receivers and reflector are set in its panel (double-click the device) and apply live.
+        </p>
+        <button className="text-xs px-2 py-1 rounded bg-primary-600 hover:bg-primary-500 text-white"
+          onClick={() => openConsole(node.id, 'traffic')}>Open the traffic panel</button>
+      </Section>
+      ) : (
       <Section title="Startup config">
         <textarea className={`${field} font-mono text-xs h-48`} spellCheck={false} value={config}
           onChange={e => setConfig(e.target.value)}
@@ -217,6 +228,7 @@ function NodeInspector({ node }: { node: Device }) {
           </>
         )}
       </Section>
+      )}
 
       <div className="p-3">
         <button onClick={() => { if (!deployed || confirm(`Delete ${node.name}? Its container will be removed from the running lab.`)) deleteNode(node.id); }}

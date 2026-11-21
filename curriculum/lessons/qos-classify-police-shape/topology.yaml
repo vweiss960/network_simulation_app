@@ -2,24 +2,24 @@ name: QoS across an MPLS core
 description: >-
   An MPLS core (IS-IS CORE + LDP, already running): IOS XE ingress PE R3,
   IOS XR P router R1, IOS XE egress PE R4. H1 (customer site A) sends two
-  unmarked UDP flows to H2 (site B) from boot: voice (port 5004, 50
-  packets/s) and bulk (port 5005, 600 kb/s). No QoS is configured yet.
+  unmarked UDP streams to H2 (site B) from boot: VOICE (port 5004, 50
+  packets/s of 160 bytes) and BULK (port 5005, 75 packets/s of 1000 bytes,
+  ~600 kb/s). Both are traffic generators: double-click one to change the
+  streams or see what arrives, with its DSCP. No QoS is configured yet.
 nodes:
   - name: H1
     kind: linux
-    image: plabs/host:latest
-    icon: host
+    image: plabs/traffic:latest
+    icon: traffic
     interfaces: 1
     position: [40, 240]
-    startup_config: |
-      ip link set eth1 up
-      ip addr add 10.1.3.10/24 dev eth1
-      ip route add 10.0.0.0/8 via 10.1.3.1
-      # the customer's traffic, unmarked (DSCP 0), from boot:
-      # "voice": UDP 5004, 50 packets/s of 160 bytes (~70 kb/s on the wire)
-      setsid iperf -c 10.1.4.10 -u -p 5004 -l 160 -b 50pps -t 864000 >/dev/null 2>&1 < /dev/null &
-      # "bulk": UDP 5005 at 600 kb/s
-      setsid iperf -c 10.1.4.10 -u -p 5005 -l 1000 -b 600k -t 864000 >/dev/null 2>&1 < /dev/null &
+    traffic:
+      interface: {name: eth1, ipv4: 10.1.3.10/24, gateway4: 10.1.3.1, ipv6: '', gateway6: ''}
+      streams:
+      - {name: VOICE, dst: 10.1.4.10, port: 5004, rate_pps: 50, size: 160, dscp: 0, ttl: null, enabled: true}
+      - {name: BULK, dst: 10.1.4.10, port: 5005, rate_pps: 75, size: 1000, dscp: 0, ttl: null, enabled: true}
+      receivers: []
+      reflector: {enabled: false, port: 7, dscp: keep}
   - name: R3
     kind: cisco_csr1000v
     image: vrnetlab/cisco_csr1000v:17.03.08
@@ -143,16 +143,17 @@ nodes:
       !
   - name: H2
     kind: linux
-    image: plabs/host:latest
-    icon: host
+    image: plabs/traffic:latest
+    icon: traffic
     interfaces: 1
     position: [1040, 240]
-    startup_config: |
-      ip link set eth1 up
-      ip addr add 10.1.4.10/24 dev eth1
-      ip route add 10.0.0.0/8 via 10.1.4.1
-      setsid iperf -s -u -p 5004 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -p 5005 >/dev/null 2>&1 < /dev/null &
+    traffic:
+      interface: {name: eth1, ipv4: 10.1.4.10/24, gateway4: 10.1.4.1, ipv6: '', gateway6: ''}
+      streams: []
+      receivers:
+      - {group: '', source: '', port: 5004, ipv6: false}
+      - {group: '', source: '', port: 5005, ipv6: false}
+      reflector: {enabled: false, port: 7, dscp: keep}
 links:
   - [H1, eth1, R3, GigabitEthernet3, "UNI · voice UDP 5004 + bulk UDP 5005"]
   - [R3, GigabitEthernet2, R1, GigabitEthernet0/0/0/0, "MPLS · EXP"]

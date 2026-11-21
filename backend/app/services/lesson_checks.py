@@ -8,6 +8,13 @@ Check types (one dict each, in a task's `checks` list):
                                                      cost, via = text in the entry (next hop / interface)
   ping    {from, to, count?, source?, min_success?}  percent of pings answered
   config  {device, expect: [...]}                    the running config
+  traffic {device, flow | stream, min_pps?,          a traffic generator's live stats (traffic_gen):
+           max_pps?, max_loss?, dscp?,               `flow` {stream?, src?, dst? (or group?), port?}
+           reflected?, dscp_at_reflector?,           selects received flows (summed); `stream` NAME one
+           present?}                                 of its own streams (`reflected: true` = the copies a
+                                                     reflector sent back). dscp: a name / number, or a
+                                                     list (each seen, together ≥ 90% of the packets);
+                                                     present: false = nothing matching is arriving
 
 `expect` items: {contains | not_contains | regex | not_regex: str,
 count?: int (at least this many matches), ignore_case?: bool}.
@@ -27,7 +34,7 @@ from app.models.node_instance import NodeInstance
 from app.services import device_exec
 from app.services.device_kinds import is_bridge
 
-CHECK_TYPES = ("cli", "route", "ping", "config")
+CHECK_TYPES = ("cli", "route", "ping", "config", "traffic")
 EXPECT_KEYS = ("contains", "not_contains", "regex", "not_regex")
 EXCERPT = 1500
 CHECK_TIMEOUT = 90
@@ -63,6 +70,8 @@ def validate_check(c: dict, devices: set[str] | None = None) -> list[str]:
                 int(c["metric"])
             except (TypeError, ValueError):
                 errs.append("route 'metric' must be a number")
+    if t == "traffic":
+        errs += _validate_traffic(c)
     if t in ("cli", "config"):
         exp = c.get("expect")
         if not isinstance(exp, list) or not exp:
@@ -98,6 +107,10 @@ def describe(c: dict) -> str:
         return f"{c.get('from')}: ping {c.get('to')}"
     if t == "config":
         return f"{c.get('device')}: running config"
+    if t == "traffic":
+        what = (f"stream {c['stream']}" + (" (reflected)" if c.get("reflected") else "")) if c.get("stream") \
+            else "receiving " + ", ".join(f"{k} {v}" for k, v in (c.get("flow") or {}).items())
+        return f"{c.get('device')}: {what}"
     return str(t)
 
 
@@ -231,6 +244,9 @@ def _command(c: dict, t) -> str:
         return route_command(t.family, t.image, ipv6=bool(net and net.version == 6))
     if kind == "ping":
         return device_exec.ping_command(t.family, str(c["to"]), int(c.get("count") or 5), c.get("source"))
+    if kind == "traffic":
+        from app.services.traffic_gen import STATS_COMMAND
+        return STATS_COMMAND
     if kind == "config":
         if t.family == "linux":
             return "show running-config"            # FRR: vtysh
@@ -265,6 +281,8 @@ def _evaluate(c: dict, t, output: str) -> dict:
             res["output"] = "\n".join(near) if near else _excerpt(output)
         if not res["ok"]:
             res["detail"] = f"no {what} route in the table" if want else f"{what} is still in the table"
+    elif kind == "traffic":
+        res["ok"], res["detail"], res["output"] = eval_traffic(c, output)
     elif kind == "ping":
         res["output"] = _excerpt(output)
         pct = device_exec.ping_success(output)
@@ -359,3 +377,141 @@ def run_checks(db: Session, topology_id: int, checks: list[dict]) -> list[dict]:
 
 def task_result(results: list[dict]) -> dict:
     return {"passed": bool(results) and all(r["ok"] for r in results), "checked_at": time.time(), "checks": results}
+
+
+# --- traffic generator checks --------------------------------------------------------
+
+_TRAFFIC_KEYS = {"type", "device", "describe", "flow", "stream", "min_pps", "max_pps", "max_loss", "dscp",
+                 "reflected", "dscp_at_reflector", "present"}
+
+
+def _dscp_list(v) -> list[int]:
+    from app.services.traffic_gen import dscp_value
+    return [dscp_value(x) for x in (v if isinstance(v, list) else [v])]
+
+
+def _validate_traffic(c: dict) -> list[str]:
+    errs = []
+    unknown = set(c) - _TRAFFIC_KEYS
+    if unknown:
+        errs.append(f"traffic check: unknown keys {', '.join(sorted(unknown))}")
+    if bool(c.get("flow")) == bool(c.get("stream")):
+        errs.append("traffic needs exactly one of 'flow' (what it receives) or 'stream' (one it sends)")
+    if c.get("flow") is not None and not isinstance(c.get("flow"), dict):
+        errs.append("traffic 'flow' must be a mapping (stream / src / dst / group / port)")
+    elif isinstance(c.get("flow"), dict) and set(c["flow"]) - {"stream", "src", "dst", "group", "port"}:
+        errs.append("traffic 'flow' keys are stream, src, dst (or group) and port")
+    for k in ("min_pps", "max_pps", "max_loss"):
+        if c.get(k) is not None:
+            try:
+                float(c[k])
+            except (TypeError, ValueError):
+                errs.append(f"traffic '{k}' must be a number")
+    for k in ("dscp", "dscp_at_reflector"):
+        if c.get(k) is not None:
+            try:
+                _dscp_list(c[k])
+            except ValueError as e:
+                errs.append(f"traffic '{k}': {e}")
+    if c.get("dscp_at_reflector") is not None and not c.get("reflected"):
+        errs.append("traffic 'dscp_at_reflector' needs 'reflected: true'")
+    return errs
+
+
+def _dscp_ok(counts: dict, want: list[int]) -> tuple[bool, str]:
+    from app.services.traffic_gen import dscp_label
+    total = sum(counts.values())
+    seen = {int(k): v for k, v in counts.items()}
+    if not total:
+        return False, "no packets in the last 10 s to read a DSCP from"
+    got = ", ".join(f"{dscp_label(k)} {100 * v / total:.0f}%" for k, v in sorted(seen.items(), key=lambda x: -x[1]))
+    missing = [w for w in want if not seen.get(w)]
+    share = sum(seen.get(w, 0) for w in want) / total
+    if missing or share < 0.9:
+        return False, f"arriving as {got}; expected {', '.join(dscp_label(w) for w in want)}"
+    return True, got
+
+
+def _flow_line(f: dict) -> str:
+    from app.services.traffic_gen import dscp_label
+    d = ", ".join(f"{dscp_label(int(k))}×{v}" for k, v in (f.get("dscp") or {}).items())
+    name = f" {f['stream']}" if f.get("stream") else ""
+    loss = "" if f.get("loss_pct") is None else f", loss {f['loss_pct']}%"
+    return f"{f.get('src')} → {f.get('dst')}:{f.get('port')}{name}: {f.get('pps')} pps{loss}, DSCP {d or '-'}"
+
+
+def _age(d: dict) -> float:
+    """Seconds since a flow was last seen (0.0 is "just now", not missing)."""
+    v = d.get("last_seen_s")
+    return 99.0 if v is None else float(v)
+
+
+def eval_traffic(c: dict, output: str) -> tuple[bool, str, str]:
+    """(ok, detail, excerpt) for a traffic check from plabs-traffic's stats.json."""
+    import json
+    try:
+        st = json.loads(output)
+    except ValueError:
+        return False, "the traffic generator isn't reporting (not started yet?)", _excerpt(output)
+    if c.get("stream"):
+        s = next((x for x in st.get("streams") or [] if x.get("name") == c["stream"]), None)
+        if s is None:
+            names = ", ".join(x.get("name", "?") for x in st.get("streams") or []) or "none"
+            return False, f"no running stream {c['stream']!r} (running: {names})", ""
+        if s.get("error"):
+            return False, f"stream {c['stream']}: {s['error']}", ""
+        if c.get("reflected"):
+            r = s.get("reflected") or {}
+            if not r or _age(r) > 5:
+                return (c.get("present") is False), "nothing is coming back from a reflector", ""
+            agg = {"pps": r.get("pps") or 0, "loss_pct": r.get("loss_pct"), "dscp": r.get("dscp_back") or {}}
+            text = (f"stream {c['stream']} reflected: {agg['pps']} pps, loss {agg['loss_pct']}%, "
+                    f"DSCP back {agg['dscp']}, at the reflector {r.get('dscp_at_reflector')}, RTT {r.get('rtt_ms')} ms")
+        else:
+            agg = {"pps": s.get("pps") or 0, "loss_pct": None, "dscp": {str(s.get("dscp", 0)): 1}}
+            text = f"stream {c['stream']}: sending {agg['pps']} pps to {s.get('dst')}:{s.get('port')}"
+            r = {}
+    else:
+        want = dict(c.get("flow") or {})
+        if "group" in want:
+            want["dst"] = want.pop("group")
+        flows = [f for f in st.get("flows") or [] if _age(f) <= 5]
+        def match(f):
+            return all(str(f.get(k, "")).lower() == str(v).lower() for k, v in want.items())
+        sel = [f for f in flows if match(f)]
+        text = "\n".join(_flow_line(f) for f in (sel or flows)[:12]) or "(nothing arriving)"
+        if not sel:
+            if c.get("present") is False:
+                return True, "", text
+            return False, "nothing matching is arriving" + ("" if flows else " (no traffic at all)"), text
+        if c.get("present") is False:
+            return False, "it's still arriving", text
+        pps = sum(float(f.get("pps") or 0) for f in sel)
+        losses = [(float(f["loss_pct"]), float(f.get("pps") or 0)) for f in sel if f.get("loss_pct") is not None]
+        loss = (sum(l * w for l, w in losses) / max(1e-9, sum(w for _, w in losses))) if losses else None
+        dscp: dict = {}
+        for f in sel:
+            for k, v in (f.get("dscp") or {}).items():
+                dscp[k] = dscp.get(k, 0) + v
+        agg = {"pps": pps, "loss_pct": loss, "dscp": dscp}
+        r = {}
+    if c.get("present") is False and agg["pps"] > 0:
+        return False, f"still {agg['pps']} pps", text
+    if c.get("min_pps") is not None and agg["pps"] < float(c["min_pps"]):
+        return False, f"{agg['pps']} pps (need at least {c['min_pps']})", text
+    if c.get("max_pps") is not None and agg["pps"] > float(c["max_pps"]):
+        return False, f"{agg['pps']} pps (expected at most {c['max_pps']})", text
+    if c.get("max_loss") is not None:
+        if agg["loss_pct"] is None:
+            return False, "loss can't be measured yet (needs a few seconds of traffic)", text
+        if agg["loss_pct"] > float(c["max_loss"]):
+            return False, f"{agg['loss_pct']:.1f}% loss (at most {c['max_loss']}% allowed)", text
+    if c.get("dscp") is not None:
+        ok, why = _dscp_ok(agg["dscp"], _dscp_list(c["dscp"]))
+        if not ok:
+            return False, why, text
+    if c.get("dscp_at_reflector") is not None:
+        ok, why = _dscp_ok(r.get("dscp_at_reflector") or {}, _dscp_list(c["dscp_at_reflector"]))
+        if not ok:
+            return False, "at the reflector: " + why, text
+    return True, "", text

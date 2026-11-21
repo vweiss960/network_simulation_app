@@ -88,7 +88,8 @@ interface LabStore {
   stopLab: (force?: boolean) => Promise<StopResult | null>;
   nodeAction: (id: number, action: 'start' | 'stop' | 'restart') => Promise<void>;
 
-  openConsole: (nodeId: number, type?: 'console' | 'logs', cli?: string) => void;
+  /** Open a device tab: its console, its logs, or a traffic generator's panel. */
+  openConsole: (nodeId: number, type?: 'console' | 'logs' | 'traffic', cli?: string) => void;
   closeConsole: (id: string) => void;
   /** Running packet captures: capture id → link id (drives the cable marker). */
   capturing: Record<string, number>;
@@ -320,8 +321,9 @@ export const useLabStore = create<LabStore>((set, get) => ({
     try {
       const r = await api.destroyLab(tid);
       toast.success(`Lab destroyed (${r.removed_count} containers removed)`);
-      // Captures stop with the lab but stay open to read and download.
-      const keep = get().consoleTabs.filter(t => t.type === 'capture');
+      // Captures stop with the lab but stay open to read and download; traffic
+      // generator panels stay too (their config is still editable).
+      const keep = get().consoleTabs.filter(t => t.type === 'capture' || t.type === 'traffic');
       set({ consoleTabs: keep, activeConsoleId: keep[keep.length - 1]?.id ?? null, capturing: {} });
     } catch (e) { toast.error(errMsg(e)); }
     finally { set({ busy: null }); get().pollLab(); }

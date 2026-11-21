@@ -205,3 +205,41 @@ export interface ScenarioAttemptView {
   theme: string | null; story: string | null; changes: Record<string, string> | null;
   history: { difficulty: Difficulty; faults: number; outcome: string; started_at: number | null; ended_at: number; hints: number; checks: number; rebuilt?: boolean; theme?: string }[];
 }
+
+// --- Traffic generator nodes (backend services/traffic_gen.py) ------------------
+
+export interface TrafficInterface { name: string; ipv4: string; gateway4: string; ipv6: string; gateway6: string }
+export interface TrafficStreamCfg {
+  name: string; dst: string; port: number; rate_pps: number; size: number;
+  dscp: number; ttl: number | null; enabled: boolean;
+}
+export interface TrafficReceiverCfg { group: string; source: string; port: number; ipv6?: boolean }
+export interface TrafficReflectorCfg { enabled: boolean; port: number; dscp: 'keep' | number }
+export interface TrafficConfig {
+  interface: TrafficInterface; streams: TrafficStreamCfg[];
+  receivers: TrafficReceiverCfg[]; reflector: TrafficReflectorCfg;
+}
+/** DSCP value → packet count over the last 10 s. */
+export type DscpCounts = Record<string, number>;
+export interface TrafficStreamStats {
+  name: string; dst: string; port: number; dscp: number; sent: number; pps: number; error: string;
+  reflected?: { received: number; pps: number; loss_pct: number | null; dscp_back: DscpCounts;
+                dscp_at_reflector: DscpCounts; rtt_ms: number | null; last_seen_s: number };
+}
+export interface TrafficFlowStats {
+  src: string; dst: string; port: number; stream: string; multicast: boolean; packets: number;
+  lost: number; reordered: number; jitter_ms: number; last_seen_s: number;
+  pps: number; kbps: number; loss_pct: number | null; dscp: DscpCounts;
+}
+export interface TrafficStats {
+  ts: number; config_error: string;
+  interface: Partial<TrafficInterface> & { error: string };
+  streams: TrafficStreamStats[];
+  receivers: { group: string; source: string; port: number; joined: boolean; error: string }[];
+  flows: TrafficFlowStats[];
+  reflector: { enabled?: boolean; port?: number; dscp?: 'keep' | number; reflected: number };
+}
+export interface TrafficState {
+  node_id: number; name: string; config: TrafficConfig; running: boolean; container: string;
+  stats: TrafficStats | null; dscp_names: Record<string, number>;
+}

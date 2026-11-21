@@ -4,6 +4,7 @@ import { Upload } from 'lucide-react';
 import { api } from '../../utils/api';
 import QcowImageManager from '../panels/QcowImageManager';
 import UploadsPanel from './UploadsPanel';
+import BuiltinImages from './BuiltinImages';
 import { useUploadStore } from '../../stores/useUploadStore';
 
 /** Device images: container tarballs (docker load) and qcow2 VMs (vrnetlab build). */
@@ -68,6 +69,8 @@ export default function ImagesPage() {
         </div>
 
         <UploadsPanel />
+
+        <BuiltinImages />
 
         <section>
           <div className="flex items-center justify-between mb-2">

@@ -15,6 +15,7 @@ import AskAIBar from './AskAIBar';
 import AddDevicePicker from './AddDevicePicker';
 import AIChatPanel from '../agent/AIChatPanel';
 import type { Annotation } from '../../types';
+import { isTrafficNode } from '../../utils/traffic';
 
 const nodeTypes = { device: DeviceNode, group: GroupNode, text: TextNode, note: NoteNode };
 const ANN = 'a:';                       // React Flow id prefix for annotations
@@ -278,6 +279,7 @@ export default function Canvas() {
       x: e.clientX, y: e.clientY, items: [
         { label: 'Edit node', onClick: () => setEditingNode(id) },
         { label: '', onClick: () => {}, divider: true },
+        ...(isTrafficNode(node) ? [{ label: 'Traffic generator…', onClick: () => openConsole(id, 'traffic') }] : []),
         { label: 'Open console', onClick: () => openConsole(id), disabled: !running },
         { label: 'Open shell (sh)', onClick: () => openConsole(id, 'console', 'sh'), disabled: !running || node?.kind === 'linux' },
         { label: 'View logs', onClick: () => openConsole(id, 'logs'), disabled: !live },
@@ -309,7 +311,7 @@ export default function Canvas() {
     });
   }, [deployed, select, deleteLink, openCapture]);
 
-  // Double-click → console. Detected from click timing: the first click
+  // Double-click → console (a traffic generator's panel). Detected from click timing: the first click
   // re-renders the node as selected, which makes browsers drop the native
   // dblclick event.
   const lastClick = useRef<{ id: string; t: number }>({ id: '', t: 0 });
@@ -320,8 +322,10 @@ export default function Canvas() {
     const dbl = lastClick.current.id === n.id && now - lastClick.current.t < 400;
     lastClick.current = { id: n.id, t: dbl ? 0 : now };
     select({ type: 'node', id: Number(n.id) });
-    if (dbl && lab?.nodes?.[n.id]?.state === 'running') openConsole(Number(n.id));
-  }, [lab, select, openConsole]);
+    if (!dbl) return;
+    if (isTrafficNode(nodes.find(x => x.id === Number(n.id)))) openConsole(Number(n.id), 'traffic');
+    else if (lab?.nodes?.[n.id]?.state === 'running') openConsole(Number(n.id));
+  }, [lab, nodes, select, openConsole]);
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') { setTool('select'); setEditingNode(null); return; }

@@ -91,6 +91,14 @@ _XR_SERVICES = {"ssh": 22, "netconf": 830, "gnmi": 57400}
 # IOS-XE gNMI: insecure server on 50052 (`gnxi` / `gnmi-yang server`), TLS on 9339.
 _XE_SERVICES = {"ssh": 22, "netconf": 830, "restconf": 443, "gnmi": 50052}
 
+TRAFFIC_IMAGE = "plabs/traffic:latest"
+
+
+def is_traffic_image(kind: str, image: str) -> bool:
+    """A traffic generator node: a Linux container running plabs-traffic."""
+    return kind == "linux" and "plabs/traffic" in (image or "")
+
+
 KINDS: dict[str, DeviceKind] = {k.kind: k for k in [
     DeviceKind(
         kind="cisco_xrd", label="Cisco XRd", family="iosxr",

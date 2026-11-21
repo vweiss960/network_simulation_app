@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -29,6 +30,8 @@ import yaml
 
 from app.services import device_exec as dx
 from app.services import lesson_checks as lc
+from app.services import traffic_gen
+from app.services.device_kinds import is_traffic_image
 
 MGMT = "172.31.252"
 CREDS = {"cisco_xrd": ("clab", "clab@123")}
@@ -133,6 +136,11 @@ def main() -> int:
                 "topology": {"nodes": {}, "links": []}}
         for name, n in nodes.items():
             clab["topology"]["nodes"][name] = {"kind": n["kind"], "image": n["image"], "mgmt-ipv4": ips[name]}
+            if is_traffic_image(n["kind"], n.get("image", "")):
+                d = labdir / "traffic" / name
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "config.json").write_text(json.dumps(traffic_gen.normalize(n.get("traffic") or {})))
+                clab["topology"]["nodes"][name]["binds"] = [f"traffic/{name}:{traffic_gen.CONTAINER_DIR}"]
         for l in topo.get("links") or []:
             a1, i1, b1, j1 = l[:4]
             clab["topology"]["links"].append({"endpoints": [f"{a1}:{kernel(nodes[a1]['kind'], i1)}",
@@ -143,7 +151,7 @@ def main() -> int:
         t0 = time.time()
         for name, n in nodes.items():
             t = targets[name]
-            if n["kind"] == "linux":
+            if n["kind"] == "linux" and not is_traffic_image(n["kind"], n.get("image", "")):
                 for line in (n.get("startup_config") or "").splitlines():
                     if line.strip() and not line.strip().startswith("#"):
                         sh(f"docker exec {t.container} sh -c {lc_quote(line.strip())}", check=False)

@@ -22,10 +22,11 @@ import { useLabStore } from '../stores/useLabStore';
 import { useAgentStore } from '../stores/useAgentStore';
 import { usePresence } from '../hooks/usePresence';
 import CaptureView from './CaptureView';
+import TrafficView from './TrafficView';
 
 export type ConsoleTab = {
   id: string;        // node-id + kind ("console:42", "logs:42") or "capture:<capture id>"
-  type: 'console' | 'logs' | 'capture';
+  type: 'console' | 'logs' | 'capture' | 'traffic';
   nodeId: number;    // 0 for a capture
   nodeName: string;  // tab label ("R1 ⇄ R2" for a capture)
   cli?: string;
@@ -302,7 +303,7 @@ export default function LabConsoleDrawer({ tabs, activeId, onSetActive, onClose 
                         {t.type === 'capture'
                           ? <span className={`w-2 h-2 rounded-full ${capturing[t.captureId!] ? 'animate-pulse' : ''}`}
                               style={{ background: capturing[t.captureId!] ? '#f14c4c' : '#6e7681' }} />
-                          : <span className="w-2 h-2 rounded-full" style={{ background: t.type === 'console' ? '#23d18b' : '#3b8eea' }} />}
+                          : <span className="w-2 h-2 rounded-full" style={{ background: t.type === 'console' ? '#23d18b' : t.type === 'traffic' ? '#d7ba7d' : '#3b8eea' }} />}
                         <span>{t.nodeName}</span>
                         <span style={{ color: '#6e7681' }} className="text-[10px]">{t.type === 'console' ? (t.cli || 'cli') : t.type}</span>
                         <button className={`ml-0.5 rounded p-0.5 hover:bg-[#ffffff1a] ${on ? '' : 'opacity-0 group-hover:opacity-100'}`}
@@ -361,6 +362,7 @@ export default function LabConsoleDrawer({ tabs, activeId, onSetActive, onClose 
                 ? <LabConsole nodeId={t.nodeId} nodeName={t.nodeName} cli={t.cli}
                     focused={shown && (!split || gi === activeGroup)} onRotate={rotate} />
                 : t.type === 'capture' ? <CaptureView captureId={t.captureId!} />
+                : t.type === 'traffic' ? <TrafficView nodeId={t.nodeId} />
                 : <LabLogs nodeId={t.nodeId} />}
             </div>
           );

@@ -15,6 +15,7 @@ from app.config import LAB_STATE_DIR
 from app.models.topology import Topology
 from app.models.node_instance import NodeInstance
 from app.services.lab_view import compute_lab_view, provision_credentials
+from app.services.device_kinds import is_traffic_image
 
 
 def _first_host(subnet: str, default: str) -> str:
@@ -190,6 +191,22 @@ def generate_clab_yaml(db: Session, topology_id: int, assign_ips: bool = False) 
         if creds and _gk(n["lab_kind"]).is_vm:
             # vrnetlab: containerlab builds --username/--password from these.
             entry["env"] = {"USERNAME": creds[0], "PASSWORD": creds[1]}
+        if is_traffic_image(n["lab_kind"], n["lab_image"]):
+            # A traffic generator: its config is a file it re-reads live, in a
+            # directory it mounts. The bind never changes, so edits don't
+            # recreate it (services/traffic_gen.py).
+            from app.services import traffic_gen
+            traffic_gen.write_config(lab_name, n["clab_name"], node_row.traffic if node_row else {})
+            entry["binds"] = [f"traffic/{n['clab_name']}:{traffic_gen.CONTAINER_DIR}"]
+            if mgmt.bridged and n.get("mgmt_ip"):
+                entry["mgmt-ipv4"] = n["mgmt_ip"]
+            clab_nodes[n["clab_name"]] = entry
+            included_nodes.append({
+                "id": n["id"], "name": n["clab_name"], "kind": n["lab_kind"], "image": n["lab_image"],
+                "min_memory_mb": n["min_memory_mb"], "min_cpu_cores": n["min_cpu_cores"],
+                "requires_hugepages": n["requires_hugepages"],
+            })
+            continue
         body = day0_config(_gk(n["lab_kind"]).family, n.get("startup_config") or "").strip("\n")
         cmds = linux_exec_commands(n["lab_kind"], n["lab_image"], body)
         if cmds is not None:

@@ -5,27 +5,25 @@ description: >-
   IOS XE last-hop router R4 (receiver RCV1) and IOS XR last-hop router R5
   (receiver RCV2). SRC sends to 239.1.1.1, 232.1.1.1, 239.2.2.2, ff05::1 and
   ff3e::1 at 10 packets/s from boot; RCV1 and RCV2 join all five (232.1.1.1
-  and ff3e::1 source-specific). No multicast routing is configured yet.
+  and ff3e::1 source-specific). All three are traffic generators: double-click
+  one to see its streams and what arrives. No multicast routing is configured yet.
 nodes:
   - name: SRC
     kind: linux
-    image: plabs/host:latest
-    icon: host
+    image: plabs/traffic:latest
+    icon: traffic
     interfaces: 1
     position: [40, 260]
-    startup_config: |
-      ip link set eth1 up
-      ip addr add 10.1.3.10/24 dev eth1
-      ip -6 addr add 2001:db8:1:3::10/64 dev eth1 nodad
-      ip route add 10.0.0.0/8 via 10.1.3.1
-      ip route add 224.0.0.0/4 dev eth1
-      ip -6 route add 2001:db8::/32 via 2001:db8:1:3::1
-      # the source: 10 packets/s to each test group, forever
-      setsid iperf -c 239.1.1.1 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -c 232.1.1.1 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -c 239.2.2.2 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -V -c ff05::1 -B 2001:db8:1:3::10 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -V -c ff3e::1 -B 2001:db8:1:3::10 -u -T 16 -l 64 -b 10pps -t 864000 >/dev/null 2>&1 < /dev/null &
+    traffic:
+      interface: {name: eth1, ipv4: 10.1.3.10/24, gateway4: 10.1.3.1, ipv6: '2001:db8:1:3::10/64', gateway6: '2001:db8:1:3::1'}
+      streams:
+      - {name: SM, dst: 239.1.1.1, port: 5001, rate_pps: 10, size: 64, dscp: 0, ttl: 16, enabled: true}
+      - {name: SSM, dst: 232.1.1.1, port: 5001, rate_pps: 10, size: 64, dscp: 0, ttl: 16, enabled: true}
+      - {name: BIDIR, dst: 239.2.2.2, port: 5001, rate_pps: 10, size: 64, dscp: 0, ttl: 16, enabled: true}
+      - {name: V6-SM, dst: 'ff05::1', port: 5001, rate_pps: 10, size: 64, dscp: 0, ttl: 16, enabled: true}
+      - {name: V6-SSM, dst: 'ff3e::1', port: 5001, rate_pps: 10, size: 64, dscp: 0, ttl: 16, enabled: true}
+      receivers: []
+      reflector: {enabled: false, port: 7, dscp: keep}
   - name: R3
     kind: cisco_csr1000v
     image: vrnetlab/cisco_csr1000v:17.03.08
@@ -296,42 +294,36 @@ nodes:
       !
   - name: RCV1
     kind: linux
-    image: plabs/host:latest
-    icon: host
+    image: plabs/traffic:latest
+    icon: traffic
     interfaces: 1
     position: [1140, 140]
-    startup_config: |
-      ip link set eth1 up
-      ip addr add 10.1.4.10/24 dev eth1
-      ip -6 addr add 2001:db8:1:4::10/64 dev eth1 nodad
-      ip route add 10.0.0.0/8 via 10.1.4.1
-      ip route add 224.0.0.0/4 dev eth1
-      ip -6 route add 2001:db8::/32 via 2001:db8:1:4::1
-      # receivers: join the test groups (IGMP / MLD reports come from these sockets)
-      setsid iperf -s -u -B 239.1.1.1%eth1 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -B 232.1.1.1%eth1 -H 10.1.3.10 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -B 239.2.2.2%eth1 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -V -B ff05::1%eth1 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -V -B ff3e::1%eth1 -H 2001:db8:1:3::10 >/dev/null 2>&1 < /dev/null &
+    traffic:
+      interface: {name: eth1, ipv4: 10.1.4.10/24, gateway4: 10.1.4.1, ipv6: '2001:db8:1:4::10/64', gateway6: '2001:db8:1:4::1'}
+      streams: []
+      receivers:
+      - {group: 239.1.1.1, source: '', port: 5001}
+      - {group: 232.1.1.1, source: 10.1.3.10, port: 5001}
+      - {group: 239.2.2.2, source: '', port: 5001}
+      - {group: 'ff05::1', source: '', port: 5001}
+      - {group: 'ff3e::1', source: '2001:db8:1:3::10', port: 5001}
+      reflector: {enabled: false, port: 7, dscp: keep}
   - name: RCV2
     kind: linux
-    image: plabs/host:latest
-    icon: host
+    image: plabs/traffic:latest
+    icon: traffic
     interfaces: 1
     position: [1140, 400]
-    startup_config: |
-      ip link set eth1 up
-      ip addr add 10.1.5.10/24 dev eth1
-      ip -6 addr add 2001:db8:1:5::10/64 dev eth1 nodad
-      ip route add 10.0.0.0/8 via 10.1.5.1
-      ip route add 224.0.0.0/4 dev eth1
-      ip -6 route add 2001:db8::/32 via 2001:db8:1:5::1
-      # receivers: join the test groups (IGMP / MLD reports come from these sockets)
-      setsid iperf -s -u -B 239.1.1.1%eth1 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -B 232.1.1.1%eth1 -H 10.1.3.10 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -B 239.2.2.2%eth1 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -V -B ff05::1%eth1 >/dev/null 2>&1 < /dev/null &
-      setsid iperf -s -u -V -B ff3e::1%eth1 -H 2001:db8:1:3::10 >/dev/null 2>&1 < /dev/null &
+    traffic:
+      interface: {name: eth1, ipv4: 10.1.5.10/24, gateway4: 10.1.5.1, ipv6: '2001:db8:1:5::10/64', gateway6: '2001:db8:1:5::1'}
+      streams: []
+      receivers:
+      - {group: 239.1.1.1, source: '', port: 5001}
+      - {group: 232.1.1.1, source: 10.1.3.10, port: 5001}
+      - {group: 239.2.2.2, source: '', port: 5001}
+      - {group: 'ff05::1', source: '', port: 5001}
+      - {group: 'ff3e::1', source: '2001:db8:1:3::10', port: 5001}
+      reflector: {enabled: false, port: 7, dscp: keep}
 links:
   - [SRC, eth1, R3, GigabitEthernet3, "source LAN · 10.1.3.0/24"]
   - [R3, GigabitEthernet2, R1, GigabitEthernet0/0/0/0]

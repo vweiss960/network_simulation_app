@@ -44,6 +44,9 @@ class NodeInstance(Base):
     # Powered on: part of the lab when it's deployed. Off devices (started one
     # at a time) aren't created; their cables are patched in when they start.
     enabled = Column(Integer, default=1)
+    # Traffic generator nodes (plabs/traffic image): interface, streams,
+    # receivers and reflector — services/traffic_gen.py.
+    traffic_json = Column(Text, default="")
 
     topology = relationship("Topology", back_populates="nodes")
 
@@ -96,3 +99,14 @@ class NodeInstance(Base):
             if i.get("name") == config_name:
                 return i.get("kernel") or config_name
         return config_name
+
+    @property
+    def traffic(self) -> dict:
+        try:
+            return dict(json.loads(self.traffic_json or "{}"))
+        except Exception:
+            return {}
+
+    @traffic.setter
+    def traffic(self, value):
+        self.traffic_json = json.dumps(dict(value or {})) if value else ""

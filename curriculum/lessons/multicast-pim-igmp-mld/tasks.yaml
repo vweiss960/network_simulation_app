@@ -2,7 +2,10 @@
   title: "PIM sparse mode with a static RP on IOS XR"
   body: |
     SRC (`10.1.3.10`) is already sending to **239.1.1.1**, and RCV1 and RCV2
-    have joined it, but no router runs multicast yet. Build **PIM sparse mode
+    have joined it, but no router runs multicast yet. All three are **traffic
+    generators**: double-click one to open its panel. SRC lists its streams;
+    RCV1 / RCV2 list the groups they joined and, live, every stream arriving
+    (rate, loss, jitter). Build **PIM sparse mode
     (PIM-SM)** across the core, with **R1 (`1.1.1.1`) as the rendezvous point
     (RP)** for every group.
 
@@ -108,18 +111,10 @@
         - {regex: '\(10\.1\.3\.10,239\.1\.1\.1\)'}
         - {regex: 'GigabitEthernet0/0/0/1 Flags:.*F'}
       describe: "R5 (XR): (10.1.3.10, 239.1.1.1) in the MRIB, forwarding to RCV2 on Gi0/0/0/1"
-    - type: cli
-      device: RCV1
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.1.1.1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV1 receives the 239.1.1.1 stream (via R3 → R1 → R2 → R4)"
-    - type: cli
-      device: RCV2
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.1.1.1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV2 receives the 239.1.1.1 stream (via R3 → R1 → R2 → R5)"
+    - {type: traffic, device: RCV1, flow: {group: "239.1.1.1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV1 receives the 239.1.1.1 stream (via R3 → R1 → R2 → R4)"}
+    - {type: traffic, device: RCV2, flow: {group: "239.1.1.1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV2 receives the 239.1.1.1 stream (via R3 → R1 → R2 → R5)"}
 
 - id: igmp
   title: "IGMP versions on the last-hop routers"
@@ -227,18 +222,10 @@
         - {regex: '\(10\.1\.3\.10,232\.1\.1\.1\)'}
         - {regex: 'GigabitEthernet0/0/0/1 Flags:.*F'}
       describe: "R5 (XR): (10.1.3.10, 232.1.1.1) forwarding to RCV2"
-    - type: cli
-      device: RCV1
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 232.1.1.1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV1 receives the SSM channel (10.1.3.10, 232.1.1.1)"
-    - type: cli
-      device: RCV2
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 232.1.1.1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV2 receives the SSM channel"
+    - {type: traffic, device: RCV1, flow: {group: "232.1.1.1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV1 receives the SSM channel (10.1.3.10, 232.1.1.1)"}
+    - {type: traffic, device: RCV2, flow: {group: "232.1.1.1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV2 receives the SSM channel"}
 
 - id: bidir
   title: "PIM bidirectional (BIDIR) with its own RP"
@@ -330,18 +317,10 @@
       expect:
         - {regex: 'GigabitEthernet3\s+2\.2\.2\.22\s+\*10\.1\.4\.1\s'}
       describe: "R4 (XE): R4 is the designated forwarder on RCV1's LAN"
-    - type: cli
-      device: RCV1
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.2.2.2 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV1 receives the BIDIR group 239.2.2.2"
-    - type: cli
-      device: RCV2
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.2.2.2 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV2 receives the BIDIR group 239.2.2.2 (IOS XR last hop)"
+    - {type: traffic, device: RCV1, flow: {group: "239.2.2.2"}, min_pps: 8, max_loss: 5,
+       describe: "RCV1 receives the BIDIR group 239.2.2.2"}
+    - {type: traffic, device: RCV2, flow: {group: "239.2.2.2"}, min_pps: 8, max_loss: 5,
+       describe: "RCV2 receives the BIDIR group 239.2.2.2 (IOS XR last hop)"}
 
 - id: bsr
   title: "Dynamic RP discovery with BSR"
@@ -390,12 +369,8 @@
       expect:
         - {regex: '1\.1\.1\.1'}
       describe: "R5 (XR): R1 (1.1.1.1) is the elected BSR"
-    - type: cli
-      device: RCV1
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst 239.1.1.1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV1 still receives 239.1.1.1 with the learned RP"
+    - {type: traffic, device: RCV1, flow: {group: "239.1.1.1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV1 still receives 239.1.1.1 with the learned RP"}
 
 - id: ipv6
   title: "IPv6 multicast: PIMv6 and MLDv2"
@@ -480,21 +455,9 @@
       expect:
         - {regex: '(?i)ff05::1'}
       describe: "R5 (XR): RCV2's MLD groups"
-    - type: cli
-      device: RCV1
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst ff05::1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV1 receives the IPv6 stream ff05::1"
-    - type: cli
-      device: RCV1
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst ff3e::1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV1 receives the IPv6 SSM channel (2001:db8:1:3::10, ff3e::1)"
-    - type: cli
-      device: RCV2
-      command: timeout 8 tcpdump -c 3 -ni eth1 udp and dst ff05::1 2>&1
-      expect:
-        - {regex: '3 packets captured'}
-      describe: "RCV2 receives ff05::1 (IOS XR last hop)"
+    - {type: traffic, device: RCV1, flow: {group: "ff05::1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV1 receives the IPv6 stream ff05::1"}
+    - {type: traffic, device: RCV1, flow: {group: "ff3e::1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV1 receives the IPv6 SSM channel (2001:db8:1:3::10, ff3e::1)"}
+    - {type: traffic, device: RCV2, flow: {group: "ff05::1"}, min_pps: 8, max_loss: 5,
+       describe: "RCV2 receives ff05::1 (IOS XR last hop)"}

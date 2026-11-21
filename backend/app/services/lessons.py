@@ -318,7 +318,8 @@ def seed_bundled(db: Session, root: Path) -> list[str]:
 # --- summaries ---------------------------------------------------------------------------
 
 _ICON_NOUN = {"router": "router", "switch": "switch", "l3switch": "switch", "host": "host", "server": "server",
-              "firewall": "firewall", "workstation": "workstation", "cloud": "cloud", "pc": "host"}
+              "firewall": "firewall", "workstation": "workstation", "cloud": "cloud", "pc": "host",
+              "traffic": "traffic generator"}
 
 
 def topology_summary(topology_yaml: str) -> str:
@@ -331,7 +332,7 @@ def topology_summary(topology_yaml: str) -> str:
     for n in devs.values():
         noun = _ICON_NOUN.get(str(n.get("icon") or "router"), "device")
         counts[noun] = counts.get(noun, 0) + 1
-    order = ["router", "switch", "firewall", "server", "workstation", "host", "cloud", "device"]
+    order = ["router", "switch", "firewall", "server", "workstation", "host", "traffic generator", "cloud", "device"]
     return " · ".join(f"{counts[k]} {k if counts[k] == 1 else (k + 'es' if k.endswith('ch') else k + 's')}"
                       for k in order if k in counts)
 
