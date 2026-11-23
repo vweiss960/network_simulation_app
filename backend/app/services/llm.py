@@ -138,13 +138,25 @@ class AgentConversation:
         else:
             self.messages.extend({"role": "tool", "tool_call_id": cid, "content": text} for cid, text, _ in results)
 
-    def step(self, system: str, on_text: TextCb, on_status: TextCb) -> Turn:
+    def step(self, system: str, on_text: TextCb, on_status: TextCb, cancel=None) -> Turn:
+        """`cancel` (a threading.Event): set by the user's Stop. The stream is
+        closed at once; the text so far is kept and no tool call runs."""
         if self.provider == "anthropic":
-            return self._step_anthropic(system, on_text, on_status)
-        return self._step_openai(system, on_text)
+            return self._step_anthropic(system, on_text, on_status, cancel)
+        return self._step_openai(system, on_text, cancel)
+
+    def _record_stopped(self, partial: str) -> Turn:
+        """Close a turn the user interrupted: keep what was said (no tool
+        calls, so the history stays valid for the next message)."""
+        text = (partial.strip() + "\n\n" if partial.strip() else "") + "(stopped by the user)"
+        if self.provider == "anthropic":
+            self.messages.append({"role": "assistant", "content": [{"type": "text", "text": text}]})
+        else:
+            self.messages.append({"role": "assistant", "content": text})
+        return Turn(stop="cancelled")
 
     # -- Claude -----------------------------------------------------------------
-    def _step_anthropic(self, system: str, on_text: TextCb, on_status: TextCb) -> Turn:
+    def _step_anthropic(self, system: str, on_text: TextCb, on_status: TextCb, cancel=None) -> Turn:
         kwargs: dict = {}
         if self.model in _FALLBACK_OK:
             # On a safety-classifier refusal the API re-runs the request on a
@@ -160,13 +172,21 @@ class AgentConversation:
             cache_control={"type": "ephemeral"},  # stable system + tools + growing history
             **kwargs,
         ) as stream:
+            partial: list[str] = []
             for event in stream:
+                if cancel is not None and cancel.is_set():
+                    break                       # leaving the block closes the connection
                 if event.type == "text":
+                    partial.append(event.text)
                     on_text(event.text)
                 elif event.type == "content_block_start" and getattr(event.content_block, "type", "") == "server_tool_use":
                     blk = event.content_block
                     on_status("Searching Cisco documentation" if blk.name == "web_search" else "Reading a Cisco document")
-            msg = stream.get_final_message()
+            else:
+                msg = stream.get_final_message()
+                partial = None                  # type: ignore[assignment]
+        if partial is not None:
+            return self._record_stopped("".join(partial))
 
         stop = msg.stop_reason
         # Keep the assistant turn exactly as returned (thinking, server-tool and
@@ -194,7 +214,7 @@ class AgentConversation:
             self.add_tool_results([(c.id, "Not run.", True) for c in calls])
 
     # -- OpenAI-compatible --------------------------------------------------------
-    def _step_openai(self, system: str, on_text: TextCb) -> Turn:
+    def _step_openai(self, system: str, on_text: TextCb, cancel=None) -> Turn:
         stream = self._client.chat.completions.create(
             model=self.model, stream=True, max_completion_tokens=16000,
             messages=[{"role": "system", "content": system}, *self.messages],
@@ -202,6 +222,9 @@ class AgentConversation:
         )
         text, finish, calls = [], None, {}
         for chunk in stream:
+            if cancel is not None and cancel.is_set():
+                stream.close()
+                return self._record_stopped("".join(text))
             if not chunk.choices:
                 continue
             ch = chunk.choices[0]

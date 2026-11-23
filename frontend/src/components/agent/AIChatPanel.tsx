@@ -6,6 +6,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, ChevronRight, History, Loader2, Plus, Send, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { useAgentStore, type ChatMessage, type Part } from '../../stores/useAgentStore';
+import { useLabStore } from '../../stores/useLabStore';
 import { usePresence } from '../../hooks/usePresence';
 import Markdown from './Markdown';
 
@@ -27,14 +28,21 @@ export default function AIChatPanel() {
     if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 160) el.scrollTop = el.scrollHeight;
   }, [messages, activity]);
   useEffect(() => { if (open) input.current?.focus(); }, [open]);
+  // Follow the lab that's open: its own chat, and a request still running there.
+  const labId = useLabStore(s => s.currentTopologyId);
+  useEffect(() => { if (open && labId) useAgentStore.getState().syncLab(); }, [open, labId]);
 
   // Unrolls down from where the Ask AI bar sits; rolls back up on close.
   const { mounted, visible } = usePresence(open, 320);
   if (!mounted) return null;
   const submit = (text = draft) => {
-    if (!text.trim() || busy) return;
-    send(text.trim());
+    const t = text.trim();
+    if (!t) return;
     setDraft('');
+    // While it's working: "stop" just stops it; anything else interrupts it
+    // and becomes the next instruction.
+    if (busy && /^(stop|cancel|halt|abort|quit|wait)[.!]*$/i.test(t)) { stop(); return; }
+    send(t);
   };
   const last = messages[messages.length - 1];
   const lastText = last?.role === 'assistant' ? last.parts.filter(p => p.kind === 'text').map(p => (p as { text: string }).text).join('') : '';
@@ -98,15 +106,18 @@ export default function AIChatPanel() {
           <textarea ref={input} value={draft} onChange={e => setDraft(e.target.value)} rows={1}
             disabled={!status?.enabled}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
-            placeholder={status?.enabled === false ? 'Assistant unavailable' : 'Ask, or tell me what to build or change…'}
+            placeholder={status?.enabled === false ? 'Assistant unavailable'
+              : busy ? 'Working… type to interrupt with a new instruction, or "stop"' : 'Ask, or tell me what to build or change…'}
             className="flex-1 resize-none bg-transparent text-sm outline-none max-h-40 placeholder:text-slate-400"
             style={{ height: Math.min(160, 22 + 20 * (draft.split('\n').length - 1)) }} />
-          {busy
+          {busy && !draft.trim()
             ? <button onClick={stop} title="Stop" className="p-1.5 rounded-lg bg-slate-800 text-white"><Square size={14} /></button>
             : <button onClick={() => submit()} disabled={!draft.trim() || !status?.enabled} title="Send (Enter)"
                 className="p-1.5 rounded-lg bg-blue-600 text-white disabled:opacity-40"><Send size={14} /></button>}
         </div>
-        <div className="mt-1.5 text-[11px] text-slate-400">Enter to send · Shift+Enter for a new line · changes it makes are logged</div>
+        <div className="mt-1.5 text-[11px] text-slate-400">
+          {busy ? 'Stop (■) or "stop" halts it now; a step already running (e.g. applying a config) finishes first'
+                : 'Enter to send · Shift+Enter for a new line · changes it makes are logged'}</div>
       </div>
     </div>
   );
@@ -215,7 +226,7 @@ function ConversationPicker() {
   const current = conversations.find(c => c.id === conversationId);
   return (
     <div ref={ref} className="relative min-w-0">
-      <button onClick={() => setOpen(o => !o)} disabled={busy} title="Your conversations in this lab"
+      <button onClick={() => setOpen(o => !o)} title="Your conversations in this lab"
         className="flex items-center gap-1.5 max-w-[260px] px-2 py-1 -ml-1 rounded-md hover:bg-slate-100 disabled:opacity-60">
         <span className="font-semibold text-[15px] text-slate-900 truncate">{current ? current.title : 'Lab assistant'}</span>
         <ChevronDown size={14} className="text-slate-500 shrink-0" />
@@ -234,7 +245,10 @@ function ConversationPicker() {
             <div key={c.id} className={`group flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 ${c.id === conversationId ? 'bg-blue-50/60' : ''}`}>
               <button className="flex-1 min-w-0 text-left" onClick={() => { openConversation(c.id); setOpen(false); }}>
                 <div className="text-sm text-slate-800 truncate">{c.title}</div>
-                <div className="text-[11px] text-slate-400">{ago(c.updated_at)} · {c.model}</div>
+                <div className="text-[11px] text-slate-400">
+                  {c.running && <span className="inline-flex items-center gap-1 text-blue-600 font-medium mr-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse" />working ·</span>}
+                  {ago(c.updated_at)} · {c.model}</div>
               </button>
               <button title="Delete conversation" onClick={() => { if (confirm(`Delete “${c.title}”?`)) deleteConversation(c.id); }}
                 className="p-1 rounded text-slate-400 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50">

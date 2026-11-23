@@ -125,9 +125,14 @@ export type AgentEvent =
   | { type: 'tool'; id: string; name: string; label: string; state: 'running' | 'done' | 'error'; summary?: string }
   | { type: 'lab_changed' }
   | { type: 'error'; message: string }
+  | { type: 'snapshot'; id: string; model: string; messages: any[]; running: boolean }
   | { type: 'done' };
 
-export interface AgentConversationSummary { id: string; title: string; model: string; updated_at: string | null }
+export interface AgentConversationSummary {
+  id: string; title: string; model: string; updated_at: string | null;
+  /** A request is running in it right now (on the server). */
+  running?: boolean;
+}
 
 export interface AIStatus {
   enabled: boolean; error: string | null; default_model: string;
@@ -140,6 +145,17 @@ export async function streamAgentChat(tid: number, body: { message: string; conv
   const res = await fetch(`${BASE}/topologies/${tid}/agent/chat`, {
     method: 'POST', headers: authHeaders(), body: JSON.stringify(body), signal,
   });
+  return readAgentStream(res, onEvent);
+}
+
+/** Follow a conversation: a snapshot of it, then its running request's events. */
+export async function attachAgentConversation(tid: number, cid: string, onEvent: (e: AgentEvent) => void,
+                                              signal?: AbortSignal): Promise<void> {
+  const res = await fetch(`${BASE}/topologies/${tid}/agent/conversations/${cid}/stream`, { headers: authHeaders(), signal });
+  return readAgentStream(res, onEvent);
+}
+
+async function readAgentStream(res: Response, onEvent: (e: AgentEvent) => void): Promise<void> {
   if (!res.ok || !res.body) {
     const text = await res.text();
     let detail = text;
@@ -170,7 +186,7 @@ export const api = {
   listAgentConversations: (tid: number) =>
     request<AgentConversationSummary[]>(`/topologies/${tid}/agent/conversations`),
   getAgentConversation: (tid: number, cid: string) =>
-    request<{ id: string; title: string; model: string; messages: any[] }>(`/topologies/${tid}/agent/conversations/${cid}`),
+    request<{ id: string; title: string; model: string; messages: any[]; running: boolean }>(`/topologies/${tid}/agent/conversations/${cid}`),
   deleteAgentConversation: (tid: number, cid: string) =>
     request<{ ok: boolean }>(`/topologies/${tid}/agent/conversations/${cid}`, json('DELETE')),
   stopAgent: (tid: number, cid: string) =>

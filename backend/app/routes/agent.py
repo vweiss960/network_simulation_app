@@ -58,15 +58,24 @@ def agent_chat(topology_id: int, body: ChatIn, user=Depends(get_current_user), d
 
     def worker():
         if not session.lock.acquire(blocking=False):
-            events.put({"type": "error", "message": "The assistant is still working on the previous message."})
-            events.put(None)
-            return
+            # A new message while the assistant is working interrupts it: stop
+            # the running request, wait for it to wind down, then run this one.
+            session.cancel.set()
+            events.put({"type": "status", "text": "Stopping the previous request"})
+            if not session.lock.acquire(timeout=180):
+                events.put({"type": "error", "message": "The previous request is still finishing a step "
+                                                        "(e.g. applying a config); try again in a moment."})
+                events.put(None)
+                return
+        # Follow this run (other tabs can attach too: …/stream). Registered
+        # only now: an interrupted run's last events must not end this stream.
+        lab_agent.listen(session, events)
         try:
-            lab_agent.run_and_save(session, body.message, username, events.put)
+            lab_agent.run_and_save(session, body.message, username)
         finally:
+            lab_agent.broadcast(session, {"type": "done"})
+            lab_agent.broadcast(session, None)
             session.lock.release()
-            events.put({"type": "done"})
-            events.put(None)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -106,15 +115,72 @@ def list_conversations(topology_id: int, user=Depends(get_current_user), db: Ses
     q = (db.query(AgentConversation).filter(AgentConversation.topology_id == topology_id,
                                             AgentConversation.username == user.username)
          .order_by(AgentConversation.updated_at.desc()).limit(100))
+    def running(cid: str) -> bool:
+        live = lab_agent.live_session(cid)
+        return bool(live and live.running)
     return [{"id": c.id, "title": c.title or "Untitled", "model": c.model,
-             "updated_at": c.updated_at.isoformat() if c.updated_at else None} for c in q]
+             "updated_at": c.updated_at.isoformat() if c.updated_at else None, "running": running(c.id)} for c in q]
 
 
 @router.get("/api/topologies/{topology_id}/agent/conversations/{conversation_id}")
 def get_conversation(topology_id: int, conversation_id: str, user=Depends(get_current_user),
                      db: Session = Depends(get_db)):
+    """A conversation: the live transcript while it's in memory (it may be
+    running), else the saved one."""
+    live = lab_agent.live_session(conversation_id)
+    if live and live.topology_id == topology_id:
+        _own_live(conversation_id, user)
+        return {"id": live.id, "title": live.title, "model": live.model,
+                "messages": lab_agent.snapshot(live), "running": live.running}
     c = _own(db, topology_id, conversation_id, user)
-    return {"id": c.id, "title": c.title, "model": c.model, "messages": json.loads(c.ui_json or "[]")}
+    return {"id": c.id, "title": c.title, "model": c.model, "messages": json.loads(c.ui_json or "[]"),
+            "running": False}
+
+
+@router.get("/api/topologies/{topology_id}/agent/conversations/{conversation_id}/stream")
+def attach_conversation(topology_id: int, conversation_id: str, user=Depends(get_current_user),
+                        db: Session = Depends(get_db)):
+    """Follow a conversation (SSE): a `snapshot` of the transcript so far,
+    then the running request's events until it ends. Lets a reloaded page,
+    or one that left the lab, pick a run back up."""
+    live = lab_agent.live_session(conversation_id)
+    if not live or live.topology_id != topology_id:
+        c = _own(db, topology_id, conversation_id, user)
+        msgs = json.loads(c.ui_json or "[]")
+
+        def done():
+            yield _sse({"type": "snapshot", "id": conversation_id, "model": c.model, "messages": msgs, "running": False})
+            yield _sse({"type": "done"})
+        return StreamingResponse(done(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    _own_live(conversation_id, user)
+    events: "queue.Queue[dict | None]" = queue.Queue()
+    msgs = lab_agent.listen(live, events)
+    running = live.running
+
+    def stream():
+        try:
+            yield _sse({"type": "snapshot", "id": live.id, "model": live.model, "messages": msgs, "running": running})
+            if not running:
+                yield _sse({"type": "done"})
+                return
+            while True:
+                try:
+                    ev = events.get(timeout=15)
+                except queue.Empty:
+                    if not live.running:            # ended while we weren't listening
+                        yield _sse({"type": "done"})
+                        return
+                    yield ": keepalive\n\n"
+                    continue
+                if ev is None:
+                    return
+                yield _sse(ev)
+        finally:
+            lab_agent.unlisten(live, events)
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.post("/api/topologies/{topology_id}/agent/conversations/{conversation_id}/stop")

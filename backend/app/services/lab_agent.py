@@ -201,6 +201,47 @@ class Session_:
     lock: threading.Lock = field(default_factory=threading.Lock)
     cancel: threading.Event = field(default_factory=threading.Event)
     used: float = field(default_factory=time.time)
+    # Browser tabs following the run (queues of UI events; None ends a stream).
+    listeners: list = field(default_factory=list)
+    ev_lock: threading.Lock = field(default_factory=threading.Lock)
+    saved_at: float = 0.0
+
+    @property
+    def running(self) -> bool:
+        return self.lock.locked()
+
+
+def listen(session: "Session_", q) -> list:
+    """Follow a session's events from now on; returns the transcript so far
+    (consistent with the events that follow)."""
+    import copy
+    with session.ev_lock:
+        session.listeners.append(q)
+        return copy.deepcopy(session.ui)
+
+
+def unlisten(session: "Session_", q) -> None:
+    with session.ev_lock:
+        if q in session.listeners:
+            session.listeners.remove(q)
+
+
+def broadcast(session: "Session_", ev: dict | None) -> None:
+    with session.ev_lock:
+        for q in list(session.listeners):
+            q.put(ev)
+        if ev is None:
+            session.listeners.clear()
+
+
+def snapshot(session: "Session_") -> list:
+    import copy
+    with session.ev_lock:
+        return copy.deepcopy(session.ui)
+
+
+def live_session(conversation_id: str) -> "Session_ | None":
+    return _SESSIONS.get(conversation_id)
 
 
 _SESSIONS: dict[str, Session_] = {}
@@ -388,9 +429,11 @@ def _save(session: Session_, username: str) -> None:
             db.add(rec)
         rec.title, rec.model = session.title, session.model
         rec.native_json = json.dumps(_jsonable(session.convo.messages))
-        rec.ui_json = json.dumps(session.ui)
+        with session.ev_lock:
+            rec.ui_json = json.dumps(session.ui)
         rec.updated_at = datetime.utcnow()
         db.commit()
+        session.saved_at = time.time()
     finally:
         db.close()
 
@@ -421,17 +464,33 @@ def _record(session: Session_, ev: dict) -> None:
         m["error"] = ev["message"]
 
 
-def run_and_save(session: Session_, user_text: str, username: str, emit: Emit) -> None:
-    """Run one user message (see run), keeping the saved conversation up to date."""
+SAVE_EVERY = 3.0      # seconds: a reload / another tab sees the run's progress
+
+
+def run_and_save(session: Session_, user_text: str, username: str, emit: Emit | None = None) -> None:
+    """Run one user message (see run), keeping the saved conversation up to
+    date as it goes and sending every event to the session's listeners."""
     session.cancel.clear()
     if not session.title:
         session.title = " ".join(user_text.split())[:80]
-    session.ui += [{"role": "user", "parts": [{"kind": "text", "text": user_text}]},
-                   {"role": "assistant", "parts": []}]
+    with session.ev_lock:
+        session.ui += [{"role": "user", "parts": [{"kind": "text", "text": user_text}]},
+                       {"role": "assistant", "parts": []}]
+    _save(session, username)
 
     def out(ev: dict) -> None:
-        _record(session, ev)
-        emit(ev)
+        with session.ev_lock:
+            _record(session, ev)
+            for q in list(session.listeners):
+                q.put(ev)
+        if emit:
+            emit(ev)
+        step_done = ev.get("type") == "tool" and ev.get("state") != "running"
+        if step_done or time.time() - session.saved_at > SAVE_EVERY:
+            try:
+                _save(session, username)
+            except Exception:                   # noqa: BLE001 — saving is best effort mid-run
+                pass
     try:
         run(session, user_text, username, out)
     except Exception as e:      # noqa: BLE001 — provider / API errors end up in the chat
@@ -456,7 +515,10 @@ def run(session: Session_, user_text: str, username: str, emit: Emit) -> None:
             emit({"type": "text", "delta": "\n\n_Stopped._"})
             return
         turn = convo.step(system, lambda d: emit({"type": "text", "delta": d}),
-                          lambda t: emit({"type": "status", "text": t}))
+                          lambda t: emit({"type": "status", "text": t}), cancel=session.cancel)
+        if turn.stop == "cancelled":
+            emit({"type": "text", "delta": "\n\n_Stopped._"})
+            return
         if turn.stop == "pause":
             continue
         if turn.note:

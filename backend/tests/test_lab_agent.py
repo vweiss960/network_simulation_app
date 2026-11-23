@@ -80,7 +80,7 @@ class FakeConvo:
     def add_user(self, text):
         self.user = text
 
-    def step(self, system, on_text, on_status):
+    def step(self, system, on_text, on_status, cancel=None):
         t = self.turns.pop(0)
         if t.text:
             on_text(t.text)
@@ -248,3 +248,89 @@ def test_wait_for_devices_waits_for_the_cli(db, lab, monkeypatch):
 def test_device_types_show_platform_notes(db, lab):
     out = call(db, lab.id, "list_device_types", {})
     assert "NO BFD" in out and "services ssh:22" in out
+
+
+
+def test_stop_mid_reply_ends_the_run(monkeypatch):
+    """A reply the user stopped (the stream was closed) runs no tool calls."""
+    session = lab_agent.Session_(id="x", topology_id=1, owner="u", model="m", convo=FakeConvo([
+        llm.Turn(stop="cancelled"),
+        llm.Turn(tool_calls=[llm.ToolCall("c1", "add_devices", {"devices": []})], stop="tool_use")]))
+    monkeypatch.setattr(lab_agent, "lesson_prompt", lambda tid: "")
+    events = []
+    lab_agent.run(session, "build it", "u", events.append)
+    assert events[-1] == {"type": "text", "delta": "\n\n_Stopped._"}
+    assert not any(e.get("type") == "tool" for e in events)
+    assert len(session.convo.turns) == 1          # stopped after the interrupted reply
+
+
+def test_llm_stream_stops_when_cancelled(monkeypatch):
+    """The Claude stream loop stops reading as soon as Stop is pressed and
+    keeps the text so far (no tool calls) so the history stays valid."""
+    import threading
+    from types import SimpleNamespace
+    cancel = threading.Event()
+
+    class FakeStream:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def __iter__(self):
+            yield SimpleNamespace(type="text", text="Building ")
+            cancel.set()                              # the user presses Stop
+            yield SimpleNamespace(type="text", text="the lab")
+            raise AssertionError("kept reading after Stop")
+        def get_final_message(self): raise AssertionError("should not be called")
+
+    c = llm.AgentConversation.__new__(llm.AgentConversation)
+    c.model, c.provider, c.messages, c._tools = "claude-x", "anthropic", [], []
+    c._client = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: FakeStream())))
+    seen = []
+    turn = c.step("sys", seen.append, lambda t: None, cancel=cancel)
+    assert turn.stop == "cancelled" and seen == ["Building "]
+    assert c.messages[-1]["role"] == "assistant" and "Building" in c.messages[-1]["content"][0]["text"]
+
+
+def test_listeners_follow_a_run_and_it_saves_as_it_goes(db, lab, monkeypatch):
+    """Every tab following a conversation gets its events; the transcript is
+    saved when the request starts and after each tool, not only at the end."""
+    import queue
+    from app.models.agent_conversation import AgentConversation
+    monkeypatch.setattr(lab_agent, "SessionLocal", lambda: db)
+    monkeypatch.setattr(db, "close", lambda: None)
+    saved_during = []
+    convo = FakeConvo([llm.Turn(tool_calls=[llm.ToolCall("c1", "get_lab_state", {})], stop="tool_use"),
+                       llm.Turn(text="All good.", stop="end")])
+    convo.messages = []
+    real_step = convo.step
+
+    def step(*a, **kw):
+        rec = db.get(AgentConversation, "live1")
+        saved_during.append(rec.ui_json if rec else None)
+        return real_step(*a, **kw)
+    convo.step = step
+    sess = lab_agent.Session_(id="live1", topology_id=lab.id, model="claude-opus-5-5", convo=convo)
+    q1, q2 = queue.Queue(), queue.Queue()
+    assert lab_agent.listen(sess, q1) == []
+    lab_agent.run_and_save(sess, "check the lab", "admin")
+    snap = lab_agent.listen(sess, q2)              # a tab that attaches afterwards
+    got = [q1.get_nowait() for _ in range(q1.qsize())]
+    assert [e["type"] for e in got if e["type"] == "tool"] == ["tool", "tool"]
+    assert any(e.get("delta") == "All good." for e in got) and q2.empty()
+    assert "check the lab" in (saved_during[0] or "")          # saved before the model's first reply
+    assert '"state": "done"' in saved_during[1]                 # and again after the tool
+    assert snap[-1]["parts"][-1]["text"] == "All good."
+
+
+def test_attach_to_a_saved_conversation_returns_it_and_ends(client, db, lab):
+    import json as _json
+    from app.models.agent_conversation import AgentConversation
+    db.add(AgentConversation(id="old1", topology_id=lab.id, username="tester", model="claude-opus-5-5",
+                             title="t", ui_json=_json.dumps([{"role": "user", "parts": [{"kind": "text", "text": "hi"}]}])))
+    db.commit()
+    r = client.get(f"/api/topologies/{lab.id}/agent/conversations/old1/stream")
+    frames = [_json.loads(l[6:]) for l in r.text.splitlines() if l.startswith("data: ")]
+    assert frames[0]["type"] == "snapshot" and frames[0]["running"] is False and frames[0]["messages"][0]["role"] == "user"
+    assert frames[-1] == {"type": "done"}
+    lst = client.get(f"/api/topologies/{lab.id}/agent/conversations").json()
+    assert lst[0]["id"] == "old1" and lst[0]["running"] is False
+    assert client.get(f"/api/topologies/{lab.id}/agent/conversations/old1").json()["running"] is False

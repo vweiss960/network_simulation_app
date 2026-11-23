@@ -190,7 +190,16 @@ vrnetlab is cloned into `$DEVICE_IMAGES_DIR/vrnetlab` at startup.
   are kept, status `stopped`, host networking (bridges, mgmt network, leases)
   kept. Deploy on a stopped lab = `start_lab`: `containerlab start` on the
   last applied YAML, patches, then a reconcile for edits made while stopped
-  (request_sync is a no-op while stopped). **Wipe** (UI name for destroy)
+  (request_sync is a no-op while stopped).
+  `containerlab stop` parks each device's data ports in `/run/netns/clab-park-<container>`
+  (veths to their host halves). Those namespaces live in memory: the compose file mounts
+  `/run/netns` **rshared** so they're host mounts that survive a backend restart, and
+  `lab_service.repair_parked_ports` rebuilds missing ones from the deployed YAML (`last_yaml`
+  links) before every start and at startup (server reboot); a "running" lab whose devices all
+  exited is marked stopped. `_repair_stale_networks` reattaches stopped containers to a
+  `plabs-mgmt` network recreated meanwhile (another lab's destroy removes it). A device added
+  while stopped has no container: its Start starts the lab, the reconcile creates it.
+  **Wipe** (UI name for destroy)
   needs the lab name typed and snapshots running devices first by default.
 - Console for a booting vrnetlab VM streams `docker logs` (vrnetlab owns the
   serial port while booting) and switches to SSH when it answers.
@@ -384,6 +393,16 @@ nav shows one **Learning** menu (Curricula — soon —, Modules, Lessons, Troub
   `fetch_cisco_doc`. Every change is logged in `agent_actions`
   (`GET …/agent/actions`). The prompt is Cisco-centric; vendor specifics stay
   in `device_exec` / `device_kinds`.
+- A request runs on the server (worker thread), independent of the page. Events go to every
+  listener (`lab_agent.listen` / `broadcast`); `GET …/agent/conversations/{id}/stream` attaches
+  (a `snapshot`, then live events) and `…/conversations` lists `running`. The transcript is
+  saved when a request starts, after each tool and every `SAVE_EVERY` s. The frontend store
+  follows the open lab's conversation (per-lab views; leaving a lab or opening another chat
+  only stops following) and reattaches to a running one.
+- Stop: `session.cancel` is checked inside the model stream (`llm.step(cancel=)` closes it and
+  records the partial reply, no tool calls) and before each tool; a tool already running
+  finishes (no half-applied configs). A message sent while running interrupts it (the chat route
+  sets cancel and waits for the lock); "stop" / "cancel" just stops.
 
 ### Layout
 `backend/app/`: `config.py` (env + paths, defaults inside the repo),
