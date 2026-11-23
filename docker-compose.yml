@@ -25,7 +25,16 @@ services:
     volumes:
       - ${PWD}:${PWD}
       - /var/run/docker.sock:/var/run/docker.sock
-      - /run/netns:/run/netns
+      # rshared: network namespaces the backend creates (containerlab's
+      # parked ports of stopped devices) are mounts on the HOST, so they
+      # survive a backend restart. Without it they vanished with the
+      # container and stopped labs couldn't start again.
+      - type: bind
+        source: /run/netns
+        target: /run/netns
+        bind:
+          propagation: rshared
+          create_host_path: true
       - /lib/modules:/lib/modules:ro
       - /etc/os-release:/host/os-release:ro
     environment:

@@ -15,6 +15,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import yaml
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -938,9 +939,96 @@ def gc_host_network(db: Session) -> list[str]:
     return host_net.gc_bridges(keep)
 
 
+def _lab_containers(lab_name: str) -> dict[str, str]:
+    """Container name → state (running, exited, created…) for a lab."""
+    rc, out, _ = _run(["docker", "ps", "-a", "--filter", f"label=containerlab={lab_name}",
+                       "--format", "{{.Names}} {{.State}}"], timeout=30)
+    if rc != 0:
+        return {}
+    return dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+
+
+def parked_ports(applied_yaml: str) -> dict[str, list[tuple[str, str]]]:
+    """From a deployed topology file: node → [(device interface, host half)]."""
+    try:
+        doc = yaml.safe_load(applied_yaml or "") or {}
+    except yaml.YAMLError:
+        return {}
+    out: dict[str, list[tuple[str, str]]] = {}
+    for l in (doc.get("topology") or {}).get("links") or []:
+        eps = [str(e) for e in (l or {}).get("endpoints") or []]
+        if len(eps) != 2:
+            continue
+        dev = next((e for e in eps if not e.startswith("host:")), None)
+        host = next((e for e in eps if e.startswith("host:")), None)
+        if dev and host and ":" in dev:
+            node, ifname = dev.split(":", 1)
+            out.setdefault(node, []).append((ifname, host.split(":", 1)[1]))
+    return out
+
+
+def repair_parked_ports(lab_name: str, applied_yaml: str) -> list[str]:
+    """Rebuild the parked ports of a lab's stopped devices when their
+    namespaces are gone (server reboot, or a backend restart on the
+    containerized install), so `containerlab start` finds them. Devices stay
+    stopped. Returns the devices rebuilt."""
+    from app.services import host_net
+    containers = _lab_containers(lab_name)
+    try:
+        mtu = int((yaml.safe_load(applied_yaml or "") or {}).get("mtu") or 9500)
+    except (yaml.YAMLError, ValueError, TypeError, AttributeError):
+        mtu = 9500
+    rebuilt = []
+    for node, ports in parked_ports(applied_yaml).items():
+        cname = f"clab-{lab_name}-{node}"
+        if containers.get(cname) not in ("exited", "created"):
+            continue                             # running (ports inside it) or not created
+        r = host_net.rebuild_parked(cname, node, ports, mtu)
+        if r == "ok":
+            rebuilt.append(node)
+        elif r != "alive":
+            print(f"[lab] {lab_name}: couldn't rebuild {node}'s ports: {r}", flush=True)
+    if rebuilt:
+        print(f"[lab] {lab_name}: rebuilt the parked ports of {', '.join(rebuilt)}", flush=True)
+    return rebuilt
+
+
+def mark_ports_owned(lab_name: str, applied_yaml: str) -> int:
+    """After a start: make sure every running device's ports carry
+    containerlab's ownership marker (ports rebuilt by an older version, or by
+    hand, lack it and the next reconcile refuses them)."""
+    from app.services import host_net
+    containers = _lab_containers(lab_name)
+    n = 0
+    for node, ports in parked_ports(applied_yaml).items():
+        cname = f"clab-{lab_name}-{node}"
+        if containers.get(cname) == "running" and host_net.netns_alive(cname):
+            n += host_net.mark_owned(cname, node, ports)
+    if n:
+        print(f"[lab] {lab_name}: added the containerlab ownership marker to {n} port ends", flush=True)
+    return n
+
+
 def restore_host_network(db: Session) -> None:
-    """After a host reboot bridges are gone; recreate them for running labs."""
-    for d in db.query(LabDeployment).filter(LabDeployment.status.in_(_ACTIVE_STATES)).all():
+    """After a host reboot bridges are gone; recreate them for running labs.
+    Stopped labs get their devices' parked ports back, so Start works. A
+    "running" lab whose devices all exited (the server rebooted) becomes
+    stopped and is rebuilt the same way."""
+    for d in db.query(LabDeployment).filter(LabDeployment.status.in_(_ACTIVE_STATES + ("stopped",))).all():
+        if not d.lab_name:
+            continue
+        if d.status in _ACTIVE_STATES:
+            states = set(_lab_containers(d.lab_name).values())
+            if states and "running" not in states:
+                print(f"[startup] {d.lab_name}: every device has exited (reboot?) — marking it stopped", flush=True)
+                d.status = "stopped"
+                db.commit()
+        if d.status == "stopped":
+            try:
+                repair_parked_ports(d.lab_name, d.last_yaml or "")
+            except Exception as e:                # noqa: BLE001
+                print(f"[startup] parked ports for {d.lab_name}: {e}", flush=True)
+            continue
         try:
             applied = d.last_yaml           # what's deployed; this isn't a deploy
             yaml_path, _, spec = _ensure_fresh_yaml(db, d.topology_id)
@@ -1248,6 +1336,9 @@ def _sync_worker(topology_id: int) -> None:
                 if rc != 0:
                     dep.status = "failed"
                     dep.last_error = (err or out or "reconcile failed")[-4000:]
+                    # Keep the topology that IS deployed: the next reconcile must
+                    # still see the change (not skip it as "already applied").
+                    dep.last_yaml = prev_yaml
                 else:
                     dep.status, dep.last_error = "running", ""
                 db.commit()
@@ -1324,6 +1415,16 @@ def _restart_with_pending(db: Session, topology_id: int, node_id: int) -> Option
     return {"ok": True, "node_id": node_id, "action": "recreate", "note": "Applying saved changes"}
 
 
+def _container_exists(db: Session, topology_id: int, node_id: int) -> bool:
+    from app.services.lab_view import compute_lab_view
+    cname = next((n["lab_container_name"] for n in compute_lab_view(db, topology_id)["nodes"]
+                  if n["id"] == node_id), None)
+    if not cname:
+        return False
+    rc, _out, _ = _run(["docker", "inspect", "--format", "{{.State.Status}}", cname], timeout=10)
+    return rc == 0
+
+
 def start_node(db: Session, topology_id: int, node_id: int) -> dict:
     """Start one device. On a lab that isn't deployed, only this device comes
     up (the others are powered off until started). A device that's off or
@@ -1334,9 +1435,11 @@ def start_node(db: Session, topology_id: int, node_id: int) -> dict:
     if not node or node.topology_id != topology_id:
         raise LabError("Device not found")
     dep = _get_or_create_deployment(db, topology_id)
-    if dep.status == "stopped" and node.enabled != 0 and not node.pending:
+    if dep.status == "stopped" and node.enabled != 0 and not node.pending and _container_exists(db, topology_id, node_id):
         return _node_action(db, topology_id, node_id, "start", 300)
-    if dep.status == "stopped":                 # off, or with saved changes: start the lab first
+    # Off, with saved changes, or added while the lab was stopped (never
+    # created): start the lab, whose reconcile then creates it.
+    if dep.status == "stopped":
         start_lab(db, topology_id)
         dep = _get_or_create_deployment(db, topology_id)
     if dep.status not in _ACTIVE_STATES and dep.status != "failed":
@@ -1439,6 +1542,45 @@ def stop_lab(db: Session, topology_id: int, force: bool = False) -> dict:
     return {"ok": True, "stopped": True, **saved}
 
 
+def _repair_stale_networks(lab_name: str) -> list[str]:
+    """Reattach a stopped lab's containers to networks that were recreated
+    while it was stopped. A shared management network (plabs-mgmt) is
+    removed when another lab is destroyed and nothing running uses it, then
+    created again with a new ID; the stopped containers still point at the
+    old one and `docker start` fails ("network … not found"). Returns the
+    containers fixed."""
+    import json
+    rc, out, _ = _run(["docker", "network", "ls", "-q", "--no-trunc"], timeout=20)
+    if rc != 0:
+        return []
+    live = set(out.split())
+    rc, out, _ = _run(["docker", "ps", "-a", "-q", "--filter", f"label=containerlab={lab_name}"], timeout=20)
+    fixed = []
+    for cid in out.split() if rc == 0 else []:
+        rc, raw, _ = _run(["docker", "inspect", "-f", "{{.Name}} {{json .NetworkSettings.Networks}}", cid], timeout=20)
+        if rc != 0 or " " not in raw:
+            continue
+        name, nets = raw.strip().split(" ", 1)
+        try:
+            nets = json.loads(nets) or {}
+        except ValueError:
+            continue
+        for net, ep in nets.items():
+            nid = (ep or {}).get("NetworkID") or ""
+            if not nid or nid in live:
+                continue
+            ip = ((ep or {}).get("IPAMConfig") or {}).get("IPv4Address") or ""
+            _run(["docker", "network", "disconnect", "-f", net, cid], timeout=20)
+            rc2, _o, e2 = _run(["docker", "network", "connect", *(["--ip", ip] if ip else []), net, cid], timeout=20)
+            if rc2 == 0:
+                fixed.append(name.lstrip("/"))
+            else:
+                print(f"[lab] {lab_name}: couldn't reattach {name} to {net}: {e2.strip()[:200]}", flush=True)
+    if fixed:
+        print(f"[lab] {lab_name}: reattached to recreated networks: {', '.join(fixed)}", flush=True)
+    return fixed
+
+
 def start_lab(db: Session, topology_id: int, start_all: bool = False) -> dict:
     """Start a stopped lab's devices (the same containers, with the config
     they saved), then apply anything edited while it was stopped."""
@@ -1457,6 +1599,8 @@ def start_lab(db: Session, topology_id: int, start_all: bool = False) -> dict:
         _prepare_host_network(db, topology_id, spec)
         dep.status, dep.started_at, dep.finished_at = "deploying", datetime.utcnow(), None
         db.commit()
+        _repair_stale_networks(dep.lab_name)
+        repair_parked_ports(dep.lab_name, applied)
         rc, out, err = _run(["containerlab", "start", "-t", str(yaml_path)], timeout=900, cwd=str(yaml_path.parent))
         dep = _get_or_create_deployment(db, topology_id)
         dep.finished_at = datetime.utcnow()
@@ -1467,6 +1611,7 @@ def start_lab(db: Session, topology_id: int, start_all: bool = False) -> dict:
             raise LabError(f"containerlab start failed: {dep.last_error}")
         dep.status, dep.last_error = "running", ""
         db.commit()
+        mark_ports_owned(dep.lab_name, applied)
         _apply_patches(spec)
     # Devices added / changed / powered on while the lab was stopped.
     _apply_pending_changes(db, topology_id)

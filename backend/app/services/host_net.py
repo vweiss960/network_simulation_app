@@ -160,6 +160,90 @@ def apply_patches(ports: list[str], patches: list[dict]) -> list[str]:
     return problems
 
 
+# --- parked ports of stopped devices ---------------------------------------------
+#
+# `containerlab stop` parks a device's data-plane interfaces in a network
+# namespace, /run/netns/clab-park-<container>, each still a veth to its host
+# half (host:pp…). Those namespaces live in memory: a server reboot loses them,
+# and with the containerized backend a restart did too. `containerlab start`
+# then fails, and the stopped device has no ports. rebuild_parked recreates
+# them as they were, without starting the device.
+
+PARK_PREFIX = "clab-park-"
+NETNS_DIR = "/run/netns"
+
+
+def clab_owner_altname(node: str, ifname: str) -> str:
+    """containerlab's ownership marker on a link end (links/link.go
+    ownershipAltNameFor): its reconcile refuses interfaces without it."""
+    return "clab-o-" + hashlib.sha1(f"{node}\0{ifname}".encode()).hexdigest()[:16]
+
+
+def _add_altname(ifname: str, alt: str, ns: str | None = None) -> None:
+    pre = ["ip", "-n", ns] if ns else ["ip"]
+    rc, out, _ = _run(pre + ["-d", "link", "show", ifname])
+    if rc == 0 and alt not in out:
+        _run(pre + ["link", "property", "add", "dev", ifname, "altname", alt])
+
+
+def park_ns(container: str) -> str:
+    return f"{PARK_PREFIX}{container}"
+
+
+def netns_alive(name: str) -> bool:
+    """A usable named netns (not a stale file left after its mount went away)."""
+    if not os.path.exists(f"{NETNS_DIR}/{name}"):
+        return False
+    rc, _o, _e = _run(["ip", "netns", "exec", name, "true"], timeout=10)
+    return rc == 0
+
+
+def rebuild_parked(container: str, node: str, ports: list[tuple[str, str]], mtu: int = 9500) -> str:
+    """Recreate a stopped device's parked namespace with its ports
+    [(device interface, host half)]. Returns "ok", "alive" (nothing to do)
+    or an error."""
+    ns = park_ns(container)
+    if netns_alive(ns):
+        return "alive"
+    stale = f"{NETNS_DIR}/{ns}"
+    if os.path.exists(stale):
+        try:
+            os.unlink(stale)                   # a plain file whose namespace is gone
+        except OSError as e:
+            return f"can't remove stale {stale}: {e}"
+    rc, _o, e = _run(["ip", "netns", "add", ns])
+    if rc != 0:
+        return f"ip netns add {ns}: {e.strip()}"
+    errs = []
+    for dev_if, half in ports:
+        if link_exists(half):
+            _run(["ip", "link", "del", half])  # its peer went with the namespace
+        rc, _o, e = _run(["ip", "link", "add", half, "mtu", str(mtu), "type", "veth",
+                          "peer", "name", dev_if, "mtu", str(mtu), "netns", ns])
+        if rc != 0:
+            errs.append(f"{dev_if}/{half}: {e.strip()[:120]}")
+            continue
+        _add_altname(half, clab_owner_altname("host", half))
+        _add_altname(dev_if, clab_owner_altname(node, dev_if), ns)
+        _run(["ip", "link", "set", half, "up"])
+    return "ok" if not errs else "; ".join(errs)
+
+
+def mark_owned(netns: str, node: str, ports: list[tuple[str, str]]) -> int:
+    """Give a running device's ports (in its netns) and their host halves
+    containerlab's ownership marker if missing. Returns how many were added."""
+    n = 0
+    for dev_if, half in ports:
+        for ifname, owner, ns in ((dev_if, node, netns), (half, "host", None)):
+            alt = clab_owner_altname(owner, ifname)
+            pre = ["ip", "-n", ns] if ns else ["ip"]
+            rc, out, _ = _run(pre + ["-d", "link", "show", ifname])
+            if rc == 0 and alt not in out:
+                _run(pre + ["link", "property", "add", "dev", ifname, "altname", alt])
+                n += 1
+    return n
+
+
 def vlan_ifname(nic: str, vlan: int) -> str:
     name = f"{nic}.{vlan}"
     if len(name) > _IFNAME_MAX:
